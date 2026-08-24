@@ -1,0 +1,292 @@
+{
+  "entities": {
+    "Role": {
+      "title": "Role",
+      "description": "RBAC role definitions and module permission scopes. Single source of truth for permissions — User references this via role_id, never duplicates a role label or permission flags locally.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique role ID, e.g. 'role-site-manager'" },
+        "name": { "type": "string", "description": "Role display title, e.g. 'Site Admin'" },
+        "permissions": {
+          "type": "object",
+          "description": "Boolean flags per module. This is the ONLY place permissions are defined.",
+          "properties": {
+            "floor_plan": { "type": "boolean" },
+            "valet_service": { "type": "boolean" },
+            "master_config": { "type": "boolean" },
+            "invoicing": { "type": "boolean" },
+            "audit_log_read": { "type": "boolean" }
+          }
+        },
+        "is_system_role": { "type": "boolean", "description": "True for built-in roles; prevents deletion" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "permissions"]
+    },
+    "Site": {
+      "title": "Site",
+      "description": "Master facility configuration entity for multi-tenant parking sites",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique site identifier" },
+        "site_code": { "type": "string", "description": "Short facility code, e.g. 'TP-HQ'" },
+        "site_name": { "type": "string", "description": "Display name of the site facility" },
+        "city": { "type": "string" },
+        "address": { "type": "string" },
+        "contact_person": { "type": "string" },
+        "contact_email": { "type": "string", "format": "email" },
+        "contact_phone": { "type": "string" },
+        "total_slots": { "type": "number", "description": "Total parking slot capacity" },
+        "basement_levels": { "type": "number" },
+        "has_puzzle_parking": { "type": "boolean" },
+        "has_ev_charging": { "type": "boolean" },
+        "domain_whitelist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Allowed email domains for auto employee registration"
+        },
+        "status": { "type": "string", "enum": ["ACTIVE", "ON_HOLD", "DEACTIVATED"] },
+        "hold_reason": { "type": "string", "description": "Reason if status is ON_HOLD" },
+        "pricing": {
+          "type": "object",
+          "description": "All money fields are integers in minor currency units (paise). Never use floats for money.",
+          "properties": {
+            "hourly_rate_paise": { "type": "integer", "description": "e.g. 5000 = INR 50.00" },
+            "daily_max_rate_paise": { "type": "integer" },
+            "monthly_pass_rate_paise": { "type": "integer" },
+            "currency": { "type": "string", "description": "ISO 4217 code, e.g. 'INR'" },
+            "tax_percentage_bps": { "type": "integer", "description": "Basis points, e.g. 1800 = 18.00%" }
+          },
+          "required": ["hourly_rate_paise", "daily_max_rate_paise", "monthly_pass_rate_paise", "currency", "tax_percentage_bps"]
+        },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "site_code", "site_name", "city", "address", "status", "pricing"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile entity. Document ID = Firebase Auth UID. role_id and assigned_sites are the ONLY sources of permission/scope truth — do not add a separate 'role' label or a singular 'site_id' field, both create ambiguity with role_id/assigned_sites.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID, matches document ID" },
+        "email": { "type": "string", "format": "email" },
+        "full_name": { "type": "string" },
+        "username": { "type": "string" },
+        "phone": { "type": "string" },
+        "designation": { "type": "string" },
+        "role_id": { "type": "string", "description": "FK -> /roles/{roleId}. This is the single source of permission truth." },
+        "site_scope_type": { "type": "string", "enum": ["ALL_SITES", "SPECIFIC_SITES"] },
+        "assigned_sites": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "FK[] -> /sites/{siteId}. This is the single source of site-access truth. Empty array if site_scope_type is ALL_SITES."
+        },
+        "status": { "type": "string", "enum": ["pending", "approved", "active", "suspended"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "last_login_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "full_name", "role_id", "site_scope_type", "assigned_sites", "status"]
+    },
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "Registered vehicle asset profile. Document ID in Firestore MUST be the normalized_vehicle_number itself (not an opaque auto-ID) — this is what enforces one record per physical vehicle across the whole system. Do not add site_id or user_id here; vehicles can move between employees/sites over their lifetime, so ownership/site-assignment belongs on Registration instead.",
+      "type": "object",
+      "properties": {
+        "normalized_vehicle_number": { "type": "string", "description": "Also the Firestore document ID. Clean uppercase alphanumeric plate, e.g. 'KA01EX5544'" },
+        "raw_vehicle_number": { "type": "string", "description": "Display format, e.g. 'KA-01-EX-5544'" },
+        "vehicle_type": { "type": "string", "description": "e.g. 'SEDAN', 'SUV', 'CSUV', 'HATCHBACK', 'EV', 'TWO_WHEELER'" },
+        "vehicle_brand": { "type": "string", "description": "Make and model, e.g. 'Tesla Model Y'" },
+        "active_registration_id": { "type": "string", "description": "FK -> /registrations/{id}, null if no approved registration currently active" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["normalized_vehicle_number", "raw_vehicle_number", "vehicle_type"]
+    },
+    "Registration": {
+      "title": "Registration",
+      "description": "Employee vehicle registration request and authorization pass. Firestore document ID must be an auto-generated ID (Firestore addDoc), never a sequential string like 'REG-4019' — sequential IDs cause write hotspotting at scale. Employee details are captured as an explicit point-in-time snapshot, distinct from the live user_id FK.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firestore auto-generated document ID" },
+        "site_id": { "type": "string", "description": "FK -> /sites/{siteId}" },
+        "user_id": { "type": "string", "description": "FK -> /users/{uid}. Live source of truth for employee identity." },
+        "employee_id": { "type": "string", "description": "Internal HR employee ID, e.g. 'EMP-2041'" },
+        "normalized_vehicle_number": { "type": "string", "description": "FK -> /vehicles/{normalized_vehicle_number}" },
+        "vehicle_number": { "type": "string", "description": "Raw display-format plate at time of registration" },
+        "snapshot": {
+          "type": "object",
+          "description": "Explicit point-in-time copy of employee details for audit purposes. NOT live data — do not sync this back from User; if fields change on User, this stays as it was at registration time.",
+          "properties": {
+            "name": { "type": "string" },
+            "email": { "type": "string", "format": "email" },
+            "department": { "type": "string" },
+            "designation": { "type": "string" },
+            "mobile": { "type": "string" }
+          },
+          "required": ["name", "email", "department", "mobile"]
+        },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "registration_type": { "type": "string", "enum": ["EMPLOYEE_SELF", "PARKING_ADMIN"] },
+        "rejection_reason": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "reviewed_at": { "type": "string", "format": "date-time" },
+        "reviewed_by": { "type": "string", "description": "FK -> /users/{uid} of the approving admin" }
+      },
+      "required": ["id", "site_id", "user_id", "normalized_vehicle_number", "vehicle_number", "snapshot", "status"]
+    },
+    "InventorySlot": {
+      "title": "InventorySlot",
+      "description": "Physical or mechanical parking slot pallet. Document ID format is a naturally-sharded composite like 'B1-P01-S01' (this is fine to keep, unlike Registration's IDs). CRITICAL: any write that changes 'status' MUST happen inside a Firestore runTransaction() that re-reads status first and aborts if it isn't in the expected prior state — this is the only thing that prevents two concurrent gate-entry events from double-booking the same slot. Never implement status changes as a plain read-then-write.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "e.g. 'B1-P01-S01'" },
+        "site_id": { "type": "string", "description": "FK -> /sites/{siteId}" },
+        "slot_number": { "type": "string" },
+        "basement": { "type": "string", "enum": ["B1", "B2", "B3", "Ground", "Driveway"] },
+        "floor_location": { "type": "string" },
+        "puzzle_number": { "type": "string" },
+        "camera_number": { "type": "string" },
+        "slot_type": { "type": "string", "enum": ["SEDAN", "SUV", "CSUV", "TWO_WHEELER", "EV"] },
+        "parking_type": { "type": "string", "enum": ["PUZZLE", "STACK", "GROUND"] },
+        "allocation": { "type": "string", "enum": ["EMPLOYEE", "TRANSPORT", "VISITOR", "VIP", "HANDICAP"] },
+        "status": { "type": "string", "enum": ["VACANT", "OCCUPIED", "RESERVED", "MAINTENANCE"] },
+        "normalized_vehicle_number": { "type": "string", "description": "FK -> /vehicles/{normalized_vehicle_number}, null when VACANT. Never store a raw plate string here." },
+        "active_parking_log_id": { "type": "string", "description": "FK -> /parking_logs/{logId}, null when VACANT" },
+        "occupied_since": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "site_id", "slot_number", "basement", "slot_type", "parking_type", "status"]
+    },
+    "ParkingLog": {
+      "title": "ParkingLog",
+      "description": "Audit entry and exit log for parked vehicles, linked by FK to both slot and vehicle rather than raw strings.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firestore auto-generated document ID" },
+        "site_id": { "type": "string", "description": "FK -> /sites/{siteId}" },
+        "slot_id": { "type": "string", "description": "FK -> /inventory_slots/{slotId}" },
+        "normalized_vehicle_number": { "type": "string", "description": "FK -> /vehicles/{normalized_vehicle_number}" },
+        "entry_time": { "type": "string", "format": "date-time" },
+        "exit_time": { "type": "string", "format": "date-time" },
+        "entry_camera": { "type": "string" },
+        "exit_camera": { "type": "string" },
+        "duration_minutes": { "type": "number", "description": "Computed on exit" },
+        "anpr_confidence": { "type": "number", "description": "OCR confidence score, 0-1" },
+        "status": { "type": "string", "enum": ["ACTIVE", "COMPLETED", "EXCEPTION"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "site_id", "slot_id", "normalized_vehicle_number", "entry_time", "status"]
+    },
+    "ValetTicket": {
+      "title": "ValetTicket",
+      "description": "Valet guest check-in, key tag, and vehicle retrieval record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firestore auto-generated document ID" },
+        "site_id": { "type": "string", "description": "FK -> /sites/{siteId}" },
+        "ticket_number": { "type": "string", "description": "Human readable ticket code" },
+        "normalized_vehicle_number": { "type": "string", "description": "FK -> /vehicles/{normalized_vehicle_number}" },
+        "slot_id": { "type": "string", "description": "FK -> /inventory_slots/{slotId}, set once assigned" },
+        "locker_id": { "type": "string", "description": "Physical key tag / locker identifier" },
+        "guest_name": { "type": "string" },
+        "guest_phone": { "type": "string" },
+        "status": { "type": "string", "enum": ["RECEIVED", "PARKED", "RETRIEVAL_REQUESTED", "RETRIEVED_DELIVERED", "CANCELLED"] },
+        "runner_id": { "type": "string", "description": "FK -> /users/{uid}" },
+        "sms_status": { "type": "string", "enum": ["SENT", "DELIVERED", "FAILED"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "site_id", "ticket_number", "normalized_vehicle_number", "locker_id", "status"]
+    },
+    "SiteInvoice": {
+      "title": "SiteInvoice",
+      "description": "SaaS multi-tenancy invoices and billing records. Money fields are integers in minor units (paise), matching Site.pricing — never floats.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firestore auto-generated document ID" },
+        "site_id": { "type": "string", "description": "FK -> /sites/{siteId}" },
+        "invoice_number": { "type": "string" },
+        "period_start": { "type": "string", "format": "date-time" },
+        "period_end": { "type": "string", "format": "date-time" },
+        "subtotal_paise": { "type": "integer" },
+        "tax_paise": { "type": "integer" },
+        "total_paise": { "type": "integer" },
+        "currency": { "type": "string", "description": "ISO 4217 code" },
+        "payment_status": { "type": "string", "enum": ["PENDING", "PAID", "OVERDUE", "CANCELLED"] },
+        "paid_at": { "type": "string", "format": "date-time" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "site_id", "invoice_number", "subtotal_paise", "tax_paise", "total_paise", "currency", "payment_status"]
+    },
+    "SecurityAuditLog": {
+      "title": "SecurityAuditLog",
+      "description": "Cryptographic audit trail. prev_hash/entry_hash form a SHA-256 HMAC chain — each new entry's prev_hash must equal the previous entry's entry_hash, so the sequence is tamper-evident. Do not omit the hash chain fields.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firestore auto-generated document ID" },
+        "site_id": { "type": "string", "description": "FK -> /sites/{siteId}, null for platform-level events" },
+        "actor_uid": { "type": "string", "description": "FK -> /users/{uid}" },
+        "action": { "type": "string", "description": "e.g. 'SLOT_ALLOCATED', 'REGISTRATION_APPROVED'" },
+        "target_collection": { "type": "string" },
+        "target_id": { "type": "string" },
+        "prev_hash": { "type": "string", "description": "SHA-256 hash of the previous log entry, forms the chain" },
+        "entry_hash": { "type": "string", "description": "SHA-256 HMAC of this entry" },
+        "metadata": { "type": "object", "description": "Free-form event context" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actor_uid", "action", "target_collection", "target_id", "prev_hash", "entry_hash", "created_at"]
+    }
+  },
+  "firestore": {
+    "/roles/{roleId}": {
+      "schema": { "$ref": "#/entities/Role" },
+      "description": "Role-based access control definitions — the single source of permission truth"
+    },
+    "/sites/{siteId}": {
+      "schema": { "$ref": "#/entities/Site" },
+      "description": "Master facility configuration, domain whitelists, and pricing"
+    },
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles, document ID = Firebase Auth UID, references roles via role_id"
+    },
+    "/vehicles/{normalized_vehicle_number}": {
+      "schema": { "$ref": "#/entities/Vehicle" },
+      "description": "Vehicle asset profiles. Document ID IS the normalized plate — enforces uniqueness natively"
+    },
+    "/registrations/{registrationId}": {
+      "schema": { "$ref": "#/entities/Registration" },
+      "description": "Employee vehicle registration requests, auto-generated document IDs"
+    },
+    "/inventory_slots/{slotId}": {
+      "schema": { "$ref": "#/entities/InventorySlot" },
+      "description": "Real-time parking slots. Status changes require runTransaction() — see entity description"
+    },
+    "/parking_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ParkingLog" },
+      "description": "Gate ANPR camera entry and exit telemetry, linked to slots and vehicles by FK"
+    },
+    "/valet_tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/ValetTicket" },
+      "description": "Valet tickets, key tags, and guest vehicle retrieval passes"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/SiteInvoice" },
+      "description": "SaaS multi-tenancy billing invoices, money as integer paise"
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/SecurityAuditLog" },
+      "description": "Cryptographic security and compliance audit trail with SHA-256 HMAC chain"
+    }
+  },
+  "implementation_notes": {
+    "naming_convention": "snake_case for ALL field names across ALL entities, with no exceptions. Do not mix in camelCase fields like 'ticketNumber' or 'createdAt' anywhere in the implementation.",
+    "concurrency": "InventorySlot.status transitions MUST use Firestore runTransaction(), not a plain updateDoc(). This is the primary defense against double-booked slots from concurrent gate events.",
+    "money": "All monetary values are integers in minor currency units (paise for INR). Never use floating-point numbers for money fields.",
+    "document_ids": "Use Firestore auto-generated IDs for Registration, ParkingLog, ValetTicket, SiteInvoice, and SecurityAuditLog. Use the normalized_vehicle_number itself as the document ID for Vehicle. Use naturally-sharded composite strings (e.g. 'B1-P01-S01') for InventorySlot. Never use sequential IDs like 'REG-4019'.",
+    "permissions": "Permissions are defined only in Role.permissions. User.role_id is the only link to a role. Do not add a role label, permission booleans, or a singular site_id field directly on User — assigned_sites and site_scope_type are the only site-access fields."
+  }
+}

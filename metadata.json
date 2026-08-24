@@ -1,0 +1,10 @@
+{
+  "name": "ParkOrbit",
+  "description": "ParkOrbit - Centrally Managed Smart Parking & Mobility Infrastructure. Enterprise Multi-Tenancy, Spatial Intelligence, ValetX Key Management, ANPR OCR Scanning, Predictive Floor Analytics, Zero-Trust InfoSec Defense, and SHA-256 HMAC Audit Trail.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

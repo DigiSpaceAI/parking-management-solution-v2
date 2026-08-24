@@ -1,0 +1,12 @@
+{
+  "projectId": "digi-parking-pms",
+  "appId": "1:11312041060:web:b46f8c73360bfeca69e371",
+  "apiKey": "AIzaSyBvm_r03z6QeR4voZoyrd3z-TlCWQYB9B0",
+  "authDomain": "digi-parking-pms.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "digi-parking-pms.firebasestorage.app",
+  "messagingSenderId": "11312041060",
+  "measurementId": "G-MZYQEMXN8R",
+  "oAuthClientId": "11312041060-fpc5gliaqmtgci635510ag78150mi5le.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
+}

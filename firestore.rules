@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Deny all direct client access. This app's only legitimate access
+    // to Firestore is through the Express backend's Firebase Admin SDK,
+    // which is governed by IAM permissions and is NOT subject to these
+    // rules at all. There is no browser code in this app that talks to
+    // Firestore directly.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

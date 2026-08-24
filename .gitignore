@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Local runtime data store — contains real password hashes and PII.
+# Must never be committed. This was previously exposed in the repo's
+# history; the repo was recreated clean rather than trying to purge it.
+data/

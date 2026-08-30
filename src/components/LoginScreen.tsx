@@ -27,6 +27,15 @@ interface LoginScreenProps {
 const EMAIL_ALLOWLIST_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 const USERNAME_ALLOWLIST_REGEX = /^[a-zA-Z0-9._-]{3,50}$/;
 
+// Absolute API base. Relative '/api/...' paths cannot work inside the Capacitor
+// APK: the page origin is https://localhost, where no server runs. The web
+// dashboard is unaffected — it is served by the same host as the API, so this
+// resolves to the same URL it always used.
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  'https://parking-management-solution-v2-git-430896008903.asia-south1.run.app'
+).replace(/\/$/, '');
+
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   allUsers,
   onLoginSuccess,
@@ -97,8 +106,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
     try {
       // Authenticate via PBKDF2/SHA256 Auth API
-      const res = await fetch('/api/v1/auth/login', {
+      const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
         method: 'POST',
+        // Required: the server replies with the parkorbit_session cookie
+        // (HttpOnly; Secure; SameSite=None). A cross-origin fetch without this
+        // flag silently discards it, so every later API call would 401.
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           identifier: cleanIdentifier,
@@ -150,7 +163,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setIsLoading(true);
 
     try {
-      const res = await fetch(`/api/v1/employees/profile?email=${encodeURIComponent(cleanEmail)}`, {
+      const res = await fetch(`${API_BASE}/api/v1/employees/profile?email=${encodeURIComponent(cleanEmail)}`, {
+        credentials: 'include',
         headers: {
           'x-user-email': cleanEmail,
           'x-user-role': 'EMPLOYEE',
@@ -224,8 +238,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setIsLoading(true);
 
     try {
-      const res = await fetch('/api/v1/auth/set-password', {
+      const res = await fetch(`${API_BASE}/api/v1/auth/set-password`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: cleanToken,

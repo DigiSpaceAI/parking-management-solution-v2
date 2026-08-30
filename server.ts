@@ -93,6 +93,30 @@ const app = express();
 // Attach Infosec Security HTTP Headers & Payload Limits
 app.use(securityHeadersMiddleware);
 app.use(cookieParser());
+
+// CORS for the ParkFlow mobile app, which runs from a different origin
+// than this API once wrapped in Capacitor. The admin web dashboard is
+// always same-origin and is unaffected by this — CORS only applies to
+// cross-origin requests, which same-origin ones never are.
+// Origin is reflected (not wildcarded) because credentialed requests
+// (cookies) can't use Access-Control-Allow-Origin: *. The real security
+// boundary here is still the session cookie itself, not which origin
+// asked — a native app doesn't operate under the same-origin model a
+// browser tab does, so origin restriction wouldn't add real protection
+// against a native client anyway.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 app.use(express.json({ limit: '10mb' }));
 
 // Set explicit Cache-Control headers on all API responses to prevent 304 cached data
@@ -519,7 +543,7 @@ app.post('/api/v1/registrations/bulk-upload', requirePermission('REGISTRATION', 
 });
 
 // --- Slot Relocation / Changing Endpoints ---
-app.post('/api/v1/slots/change', requirePermission('INVENTORY', 'canEdit'), (req, res) => {
+app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (req, res) => {
   const { vehicleNumberOrSlot, newSlotNumber, reason, attendantName } = req.body;
   if (!vehicleNumberOrSlot || !newSlotNumber) {
     return res.status(400).json({ success: false, message: 'Vehicle number (or current slot) and newSlotNumber are required.' });
@@ -720,7 +744,7 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
 });
 
 // 4. Vehicle Entry Endpoint
-app.post('/api/v1/vehicles/entry', (req, res) => {
+app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumber, vehicleType, entryType, targetSlotNumber, remarks } = req.body;
 
   if (!vehicleNumber) {
@@ -743,7 +767,7 @@ app.post('/api/v1/vehicles/entry', (req, res) => {
 });
 
 // 5. Vehicle Exit Endpoint
-app.post('/api/v1/vehicles/exit', (req, res) => {
+app.post('/api/v1/vehicles/exit', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumberOrSlot } = req.body;
 
   if (!vehicleNumberOrSlot) {
@@ -760,7 +784,7 @@ app.post('/api/v1/vehicles/exit', (req, res) => {
 });
 
 // 6. Camera ANPR License Plate OCR Scanner (Gemini AI Vision)
-app.post('/api/v1/vehicles/scan-plate', async (req, res) => {
+app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCreate'), async (req, res) => {
   try {
     const { imageBase64 } = req.body;
     const store = getStore();
@@ -1159,9 +1183,14 @@ const handleLoginRequest = (req: express.Request, res: express.Response) => {
   const sessionToken = `parkorbit_sess_${user.id}_${sessionEntropy}_${Date.now()}`;
   createSession(sessionToken, user.id);
 
-  // Set secure cookie flags: HttpOnly, Secure, SameSite=Strict, Path=/, Max-Age=86400 (24h)
+  // Set secure cookie flags: HttpOnly, Secure, SameSite=None, Path=/, Max-Age=86400 (24h)
+  // SameSite=None (not Strict) is required so the ParkFlow mobile app —
+  // which runs from a different origin than this API once wrapped in
+  // Capacitor — can actually send this cookie back on later requests.
+  // Still fully HttpOnly + Secure; this doesn't weaken same-origin
+  // behavior for the existing web dashboard at all.
   res.setHeader('Set-Cookie', [
-    `parkorbit_session=${sessionToken}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`,
+    `parkorbit_session=${sessionToken}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=86400`,
   ]);
 
   logSecurityEvent({

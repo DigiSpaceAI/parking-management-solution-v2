@@ -22,6 +22,13 @@ const authHeaders = (user: AppUser | null): Record<string, string> => ({
 
 const api = (path: string) => `${API_BASE}${path}`;
 
+// credentials:'include' is mandatory. server.ts line 148 puts requireAuth in
+// front of every /api/v1 route that isn't in PUBLIC_API_PATHS, and the session
+// lives in the parkorbit_session cookie (SameSite=None; Secure). A cross-origin
+// fetch without this flag neither stores nor sends that cookie, so every call
+// after login would 401.
+const CREDS = { credentials: 'include' as RequestCredentials };
+
 function MobileRoot() {
   const [user, setUser] = useState<AppUser | null>(null);
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
@@ -32,13 +39,25 @@ function MobileRoot() {
     if (!user) return;
     try {
       const [slotRes, empRes] = await Promise.all([
-        fetch(api('/api/v1/slots'), { headers: authHeaders(user) }),
-        fetch(api('/api/v1/employees'), { headers: authHeaders(user) }),
+        fetch(api('/api/v1/slots'), { ...CREDS, headers: authHeaders(user) }),
+        fetch(api('/api/v1/employees'), { ...CREDS, headers: authHeaders(user) }),
       ]);
+      if (slotRes.status === 401 || empRes.status === 401) {
+        setError('Session rejected (401). Sign in again.');
+        setUser(null);
+        return;
+      }
+      if (slotRes.status === 403 || empRes.status === 403) {
+        setError('This account lacks MOBILE_APP permission. Ask an admin to grant it.');
+        return;
+      }
       const slotData = await slotRes.json();
       const empData = await empRes.json();
-      if (slotData.success) setSlots(slotData.slots || slotData.data || []);
-      if (empData.success) setEmployees(empData.employees || empData.data || []);
+      // GET /api/v1/slots returns { summary, totalReturned, slots } and
+      // GET /api/v1/employees returns { total, piiMasked, employees } — neither
+      // sends a 'success' flag, so gating on one would discard every response.
+      if (Array.isArray(slotData.slots)) setSlots(slotData.slots);
+      if (Array.isArray(empData.employees)) setEmployees(empData.employees);
       setError(null);
     } catch {
       setError(`Cannot reach ${API_BASE || '(no API base configured)'}`);
@@ -56,6 +75,7 @@ function MobileRoot() {
     targetSlotNumber?: string,
   ) => {
     await fetch(api('/api/v1/vehicles/entry'), {
+      ...CREDS,
       method: 'POST',
       headers: authHeaders(user),
       body: JSON.stringify({ vehicleNumber, vehicleType, entryType, targetSlotNumber }),
@@ -65,6 +85,7 @@ function MobileRoot() {
 
   const onVehicleExit = async (vehicleNumberOrSlot: string) => {
     await fetch(api('/api/v1/vehicles/exit'), {
+      ...CREDS,
       method: 'POST',
       headers: authHeaders(user),
       body: JSON.stringify({ vehicleNumberOrSlot }),

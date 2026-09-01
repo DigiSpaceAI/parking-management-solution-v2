@@ -246,9 +246,17 @@ app.get('/api/v1/slots', (req, res) => {
 });
 
 // 3. Employee Master Data Endpoint (with PII Privacy Masking & Audit)
+// Field-level PII exposure by role. vehicleNumber is deliberately treated
+// as less sensitive than email/mobile: gate/valet staff have a genuine
+// operational need to match a scanned or typed plate against the real
+// registry, whereas they have no legitimate need for a colleague's email
+// or phone number.
+const FULL_PII_ROLES = new Set(['Platform Master Admin', 'Site Facility Manager', 'MIS Auditor']);
+const PLATE_VISIBLE_ROLES = new Set(['Gate Security Attendant', 'ValetX Operations Lead']);
+
 app.get('/api/v1/employees', (req, res) => {
   const store = getStore();
-  const { search, department, maskPII, userRole } = req.query;
+  const { search, department } = req.query;
   let employees = store.employees;
 
   if (department && typeof department === 'string' && department !== 'ALL') {
@@ -264,15 +272,26 @@ app.get('/api/v1/employees', (req, res) => {
     );
   }
 
-  // Determine if PII should be masked (enabled by default for non-master admins or if explicitly requested)
-  const isPrivileged = userRole === 'MASTER_ADMIN' || userRole === 'SUPER_ADMIN';
-  const shouldMask = maskPII === 'true' || (!isPrivileged && maskPII !== 'false');
+  // Caller's role comes from their authenticated session (req.user, set by
+  // requireAuth), never from a client-supplied query parameter — a
+  // previous version of this route read `userRole` and `maskPII` directly
+  // from req.query, which let any authenticated caller request fully
+  // unmasked PII for every employee (email, phone, real plate) simply by
+  // adding ?userRole=MASTER_ADMIN&maskPII=false to the request, regardless
+  // of their actual role. That's a privilege-escalation bug, not a
+  // legitimate override, so it's been removed entirely.
+  const callerRole = req.user!.roleName;
+  const fullyUnmasked = FULL_PII_ROLES.has(callerRole);
+  const platesUnmasked = fullyUnmasked || PLATE_VISIBLE_ROLES.has(callerRole);
 
-  const sanitized = sanitizeEmployeeList(employees, !shouldMask);
+  const sanitized = employees.map((emp) => ({
+    ...sanitizeEmployeeList([emp], fullyUnmasked)[0],
+    vehicleNumber: platesUnmasked ? emp.vehicleNumber : sanitizeEmployeeList([emp], false)[0].vehicleNumber,
+  }));
 
   res.json({
     total: employees.length,
-    piiMasked: shouldMask,
+    piiMasked: !fullyUnmasked,
     employees: sanitized,
   });
 });

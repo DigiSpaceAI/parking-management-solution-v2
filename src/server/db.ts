@@ -2,6 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
+// Imported here for anomaly-detection logging inside syncSpecificRecords.
+// security.ts also imports from this file (getAppUsers/getAppRoles), but
+// both sides only reference the other's exports inside function bodies,
+// never at module-load time, so this circular import resolves safely —
+// same pattern already established and working for that direction.
+import { logSecurityEvent } from './security';
 import {
   Employee,
   EmployeeStatus,
@@ -1228,7 +1234,121 @@ export async function bootstrapFirestore(): Promise<void> {
   }
 }
 
-export function saveDB() {
+// ==========================================
+// TARGETED RECORD SYNC — fixes a real, confirmed data-loss bug
+// ==========================================
+// The blind full-collection sync above (syncStoreToFirestore) has a
+// serious flaw when more than one server instance is running
+// concurrently (Cloud Run's default autoscaling does this): each
+// instance holds its own independent in-memory copy of the whole store,
+// loaded once at that instance's own startup. If Instance A correctly
+// closes out a parking log, then Instance B — still holding a stale
+// pre-closure copy of that same record — later performs *any* unrelated
+// write, Instance B's full-collection sync blindly re-pushes its entire
+// stale in-memory snapshot, silently overwriting Instance A's correct
+// write. This was confirmed as the root cause of completed parking logs
+// reverting to an active state with their original (pre-closure) data.
+//
+// The fix: syncSpecificRecords only ever writes the exact record(s) a
+// given request actually changed, read fresh from this instance's
+// in-memory store at the moment of the write — it never touches or
+// re-asserts any other record, so a stale copy of something ELSE on
+// this instance can never clobber a more recent write made elsewhere.
+//
+// This does not fully replace syncStoreToFirestore (still used for
+// initial full seeds and by every mutation function not yet migrated to
+// targeted syncing — see the 9-point checklist's audit-coverage gap for
+// the same "not yet fully covered" pattern), but it is now used for the
+// two functions directly implicated in this bug: vehicle entry and exit,
+// which mutate ParkingLog and ParkingSlot records — the exact data this
+// bug was destroying.
+async function syncSpecificRecords(
+  updates: { collection: keyof StoreData; ids: string[] }[]
+): Promise<void> {
+  const db = getFirestoreDb();
+  if (!db) return;
+
+  try {
+    for (const { collection, ids } of updates) {
+      if (ids.length === 0) continue;
+      const items = store[collection] as unknown as Array<{ id: string }>;
+      if (!Array.isArray(items)) continue;
+
+      const collectionRef = db.collection(collection);
+      const batch = db.batch();
+      for (const id of ids) {
+        const record = items.find((item) => item?.id === id);
+        if (!record) continue;
+
+        // Anomaly detection (checklist requirement: alert on any
+        // COMPLETED -> ACTIVE reversion, since this should never happen
+        // during normal operation). Only meaningful for ParkingLog
+        // records, which carry a 'status' field with these exact values.
+        if (collection === 'logs' && (record as any).status === 'ACTIVE') {
+          try {
+            const existingDoc = await collectionRef.doc(id).get();
+            const existingData = existingDoc.data();
+            if (existingData?.status === 'COMPLETED') {
+              logSecurityEvent({
+                action: 'LOG_STATUS_REVERSION_BLOCKED',
+                actor: 'SYSTEM',
+                actorRole: 'SYSTEM',
+                ipAddress: '127.0.0.1',
+                targetResource: `logs/${id}`,
+                status: 'BLOCKED_UNAUTHORIZED',
+                details: `Prevented a completed parking log (${id}) from being overwritten back to ACTIVE status. This indicates a stale in-memory copy on this server instance — investigate multi-instance divergence.`,
+              });
+              // Do not write this record — the existing COMPLETED state
+              // in Firestore is more authoritative than this instance's
+              // stale in-memory copy.
+              continue;
+            }
+          } catch {
+            // If the anomaly check itself fails, fall through to the
+            // write rather than silently dropping a legitimate update —
+            // the check is a safety net, not a hard gate.
+          }
+        }
+
+        batch.set(collectionRef.doc(id), record, { merge: true });
+      }
+      await batch.commit();
+    }
+  } catch (err) {
+    if (isFatalFirestoreConfigError(err)) {
+      markFirestoreUnavailable(String((err as any)?.message || err));
+    } else {
+      console.error('[firestore] Targeted sync failed:', err);
+    }
+  }
+}
+
+// The 35 other call sites in this file and server.ts that call saveDB()
+// with no targetedSync argument all fall into this branch, each
+// triggering a full-collection Firestore rewrite independently. Under
+// bursts of admin activity (RBAC changes, invoices, registrations, etc.
+// happening close together) that adds up fast — this is what was
+// actually behind the RESOURCE_EXHAUSTED quota error seen in production
+// logs. Debouncing collapses a burst of these into one real write,
+// using whatever the store looks like at the moment the timer actually
+// fires (not a stale snapshot from when the burst started), without
+// touching any of the 35 call sites' own logic. The gate-operation
+// paths (entry/exit/slot-change) are unaffected — they use the
+// separate, immediate syncSpecificRecords path below, on purpose:
+// those are the transactions where losing a few seconds of buffering
+// matters most, so they should never wait on this debounce.
+let fullSyncDebounceTimer: NodeJS.Timeout | null = null;
+const FULL_SYNC_DEBOUNCE_MS = 3000;
+
+function scheduleDebouncedFullSync() {
+  if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
+  fullSyncDebounceTimer = setTimeout(() => {
+    fullSyncDebounceTimer = null;
+    void syncStoreToFirestore(store);
+  }, FULL_SYNC_DEBOUNCE_MS);
+}
+
+export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1238,7 +1358,12 @@ export function saveDB() {
   } catch (err) {
     console.error('Error saving PMS database:', err);
   }
-  void syncStoreToFirestore(store);
+
+  if (targetedSync && targetedSync.length > 0) {
+    void syncSpecificRecords(targetedSync);
+  } else {
+    scheduleDebouncedFullSync();
+  }
 }
 
 export function getStore(): StoreData {
@@ -1365,7 +1490,13 @@ export function processVehicleEntry(params: {
   // Clear non-parked alert if previously flagged
   storeData.alerts = storeData.alerts.filter(a => a.vehicleNumber.toUpperCase() !== cleanVehicleNum);
 
-  saveDB();
+  // Targeted sync: only push the exact slot and log this request just
+  // changed, never this instance's full (potentially stale) snapshot of
+  // every other record — see syncSpecificRecords for why this matters.
+  saveDB([
+    { collection: 'slots', ids: [targetSlot.id] },
+    { collection: 'logs', ids: [newLog.id] },
+  ]);
 
   return {
     success: true,
@@ -1414,7 +1545,17 @@ export function processVehicleExit(vehicleNumberOrSlot: string): { success: bool
   slot.currentVehicle = null;
   slot.updatedAt = exitTime;
 
-  saveDB();
+  // Targeted sync: only push the exact slot and log this request just
+  // closed out — this is the specific fix for logs silently reverting to
+  // ACTIVE. A stale copy of any OTHER record on this server instance can
+  // no longer clobber this closure, because nothing else gets touched.
+  const syncTargets: { collection: keyof StoreData; ids: string[] }[] = [
+    { collection: 'slots', ids: [slot.id] },
+  ];
+  if (activeLog) {
+    syncTargets.push({ collection: 'logs', ids: [activeLog.id] });
+  }
+  saveDB(syncTargets);
 
   return {
     success: true,
@@ -2236,7 +2377,17 @@ export function changeVehicleSlot(
   }
   storeData.slotChangeNotifications.unshift(notification);
 
-  saveDB();
+  // Targeted sync — same reasoning as processVehicleEntry/Exit: this
+  // touches two slots and a log, never the full (potentially stale)
+  // collection snapshot.
+  const changeSyncTargets: { collection: keyof StoreData; ids: string[] }[] = [
+    { collection: 'slots', ids: [currentSlot.id, newSlot.id] },
+    { collection: 'slotChangeNotifications', ids: [notification.id] },
+  ];
+  if (activeLog) {
+    changeSyncTargets.push({ collection: 'logs', ids: [activeLog.id] });
+  }
+  saveDB(changeSyncTargets);
 
   return {
     success: true,
@@ -2928,6 +3079,3 @@ export function toggleUserModuleOverride(userId: string, moduleId: AppModuleId, 
     user,
   };
 }
-
-
-

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { SecurityAuditLog, SecurityComplianceSummary, Employee, ParkingLog, AppUser, AppModuleId } from '../types';
 import { getStore } from './db';
+import { getFirestoreDb } from './firestoreClient';
 
 // Cryptographic Secret for HMAC Verification
 const AUDIT_HMAC_SECRET = process.env.AUDIT_HMAC_SECRET || 'pms-enterprise-sec-token-2026-sha256-k9x';
@@ -23,6 +24,30 @@ const rateLimitMap = new Map<string, RateLimitRecord>();
 export function generateIntegrityHash(entry: Omit<SecurityAuditLog, 'integrityHash'>): string {
   const payload = `${entry.id}|${entry.timestamp}|${entry.action}|${entry.actor}|${entry.actorRole}|${entry.targetResource}|${entry.status}|${entry.ipAddress}`;
   return crypto.createHmac('sha256', AUDIT_HMAC_SECRET).update(payload).digest('hex');
+}
+
+/**
+ * Rehydrate the in-memory audit buffer from Firestore on boot. Without
+ * this, a fresh instance (restart, redeploy, or the very first request
+ * after scaling up) would show an empty security/audit view even though
+ * real history exists in Firestore — the write-side fix above only
+ * covers entries going forward, not what happened before this instance
+ * started. Loads the most recent 1,000 by timestamp to match the
+ * in-memory cap. Best-effort: if this fails, the app still boots fine
+ * and simply starts with an empty buffer, same as before this fix.
+ */
+export async function loadAuditLogsFromFirestore(): Promise<void> {
+  const db = getFirestoreDb();
+  if (!db) return;
+  try {
+    const snapshot = await db.collection('securityAuditLogs').orderBy('timestamp', 'desc').limit(1000).get();
+    const loaded = snapshot.docs.map((d) => d.data() as SecurityAuditLog);
+    auditLogs.splice(0, auditLogs.length, ...loaded);
+    blockedIncidentsCount = auditLogs.filter((l) => l.status !== 'SUCCESS').length;
+    console.log(`[firestore] Loaded ${loaded.length} security audit log entries.`);
+  } catch (err: any) {
+    console.warn('[firestore] Failed to load security audit logs, starting with an empty buffer:', err?.message || err);
+  }
 }
 
 /**
@@ -73,6 +98,22 @@ export function logSecurityEvent(params: {
   // Keep last 1,000 logs in active memory buffer
   if (auditLogs.length > 1000) {
     auditLogs.pop();
+  }
+
+  // Previously this in-memory buffer was the ONLY copy — entirely lost
+  // on any restart, redeploy, or crash, with no Firestore or local-file
+  // backup at all. Each entry is written as its own single document
+  // (keyed by its own id), not a collection rewrite, so this is cheap
+  // per-call and doesn't contribute to the batch-write quota pressure
+  // that affected the main store's full-sync path — no debouncing
+  // needed here, and audit entries shouldn't be batched/delayed anyway
+  // given their purpose. Fire-and-forget: a Firestore hiccup here must
+  // never block or fail the actual request that triggered this log.
+  const db = getFirestoreDb();
+  if (db) {
+    void db.collection('securityAuditLogs').doc(fullEntry.id).set(fullEntry).catch((err) => {
+      console.warn('[firestore] Failed to persist security audit log entry:', err?.message || err);
+    });
   }
 
   return fullEntry;

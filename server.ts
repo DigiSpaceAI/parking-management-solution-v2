@@ -81,12 +81,14 @@ import {
   createSession,
   generatePasswordResetToken,
   consumePasswordResetToken,
-  destroySession
+  destroySession,
+  loadAuditLogsFromFirestore
 } from './src/server/security';
 import { VehicleType, EntryType } from './src/types';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
+void loadAuditLogsFromFirestore();
 
 const app = express();
 

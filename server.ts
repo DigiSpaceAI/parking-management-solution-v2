@@ -183,8 +183,8 @@ app.get('/api/v1/health', (req, res) => {
   const occupiedCount = store.slots.filter(s => s.status === 'OCCUPIED').length;
   res.json({
     status: 'ok',
-    system: 'ParkOrbit | Smart Parking Management System (PMS)',
-    app_name: 'ParkOrbit',
+    system: 'ParkFlow | Smart Parking Management System (PMS)',
+    app_name: 'ParkFlow',
     totalInventorySlots: store.slots.length,
     occupiedSlots: occupiedCount,
     vacantSlots: store.slots.length - occupiedCount,
@@ -1257,7 +1257,7 @@ const handleLoginRequest = (req: express.Request, res: express.Response) => {
 
   // 6. Regenerate Cryptographic Session Token & Set Secure Cookies
   const sessionEntropy = crypto.randomBytes(32).toString('hex');
-  const sessionToken = `parkorbit_sess_${user.id}_${sessionEntropy}_${Date.now()}`;
+  const sessionToken = `parkflow_sess_${user.id}_${sessionEntropy}_${Date.now()}`;
   createSession(sessionToken, user.id);
 
   // Set secure cookie flags: HttpOnly, Secure, SameSite=None, Path=/, Max-Age=86400 (24h)
@@ -1623,7 +1623,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ParkOrbit - Smart Parking Management System (PMS) running on http://0.0.0.0:${PORT}`);
+    console.log(`ParkFlow - Smart Parking Management System (PMS) running on http://0.0.0.0:${PORT}`);
   });
 }
 

@@ -1605,8 +1605,6 @@ app.post('/api/v1/security/simulate-attack', requirePermission('SECURITY_AUDIT',
 
 // START EXPRESS + VITE SERVER
 async function startServer() {
-  await bootstrapFirestore();
-
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1622,8 +1620,24 @@ async function startServer() {
     });
   }
 
+  // Start listening BEFORE waiting on Firestore, not after. Cloud Run's
+  // health check needs the server to actually be accepting connections —
+  // it was previously gated behind `await bootstrapFirestore()`, so any
+  // Firestore slowness (a real RESOURCE_EXHAUSTED quota error, or even
+  // just the underlying SDK's own retry/backoff before an error surfaces)
+  // meant the server never started listening at all, and the health
+  // check had no chance of passing within its 4-minute window. This is
+  // exactly what caused tonight's repeated deploy failures. Firestore
+  // bootstrap now runs in the background instead — requests that arrive
+  // before it finishes just use the existing in-memory/local-JSON
+  // fallback store, the same fallback behavior that already existed for
+  // when Firestore is unavailable, just not blocking startup on it too.
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ParkFlow - Smart Parking Management System (PMS) running on http://0.0.0.0:${PORT}`);
+  });
+
+  bootstrapFirestore().catch((err) => {
+    console.error('[firestore] Background bootstrap failed — continuing on local store:', err);
   });
 }
 

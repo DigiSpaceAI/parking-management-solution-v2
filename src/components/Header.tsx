@@ -158,7 +158,7 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-20 gap-4">
           
-          {/* LEFT: Mobile Menu Button & ParkOrbit Branding */}
+          {/* LEFT: Mobile Menu Button & ParkFlow Branding */}
           <div className="flex items-center space-x-3 shrink-0">
             {onToggleMobileSidebar && (
               <button
@@ -170,19 +170,19 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             )}
 
-            {/* ParkOrbit Logo */}
+            {/* ParkFlow Logo */}
             <div
               onClick={() => setActiveTab('HOME')}
               className="flex items-center space-x-3.5 cursor-pointer group hover:opacity-95 transition-opacity"
               title="Go to Role Home Dashboard"
             >
               <div className="w-10 h-10 bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 rounded-xl flex items-center justify-center shadow-md shadow-blue-600/20 text-white font-bold text-lg font-mono group-hover:scale-105 transition-transform shrink-0">
-                PO
+                PF
               </div>
               <div className="flex flex-col justify-center">
                 <div className="flex items-center space-x-2">
                   <span className="font-extrabold text-xl tracking-tight text-slate-900 font-sans group-hover:text-blue-600 transition-colors leading-none">
-                    ParkOrbit
+                    ParkFlow
                   </span>
                   <span
                     className="hidden sm:inline-flex items-center px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-[10px] font-mono font-bold uppercase leading-tight cursor-help"

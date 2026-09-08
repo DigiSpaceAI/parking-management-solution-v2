@@ -188,7 +188,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
     {
       id: 'MOBILE_APP',
       tabId: 'MOBILE_APP',
-      label: 'ParkOrbit Field App',
+      label: 'ParkFlow Field App',
       icon: Smartphone,
       category: 'Field Operations',
       description: 'Handheld terminal for attendants: ANPR camera scans, manual slot entry & driver alerts.',
@@ -376,7 +376,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
               </h2>
             </div>
             <p className="text-xs text-slate-500">
-              Synchronized data architecture connecting Master Site Configuration ➔ User & RBAC ➔ Inventory Upload ➔ ParkOrbit Field App ➔ Employee.
+              Synchronized data architecture connecting Master Site Configuration ➔ User & RBAC ➔ Inventory Upload ➔ ParkFlow Field App ➔ Employee.
             </p>
           </div>
           <div className="flex items-center space-x-2 shrink-0">
@@ -458,7 +458,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
             </div>
           </div>
 
-          {/* Step 4: ParkOrbit Field App */}
+          {/* Step 4: ParkFlow Field App */}
           <div
             onClick={() => isModulePermitted(currentUser, currentRole, 'MOBILE_APP') && setActiveTab('MOBILE_APP')}
             className={`p-3.5 rounded-2xl border transition-all ${
@@ -471,7 +471,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
               <span className="px-2 py-0.5 rounded-md bg-emerald-600 text-white font-mono text-[10px] font-black">4. FIELD POS</span>
               <Smartphone className="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
             </div>
-            <h3 className="font-extrabold text-xs text-slate-900">ParkOrbit Field</h3>
+            <h3 className="font-extrabold text-xs text-slate-900">ParkFlow Field</h3>
             <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
               Handheld Gate OCR • {todayLogs.length} Scans Today
             </p>

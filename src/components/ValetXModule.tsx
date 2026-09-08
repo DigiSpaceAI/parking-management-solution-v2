@@ -209,7 +209,7 @@ export const ValetXModule: React.FC = () => {
                 <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                 VALETX ENTERPRISE SUITE
               </span>
-              <span className="text-slate-400 text-xs font-mono">ParkOrbit v4.8</span>
+              <span className="text-slate-400 text-xs font-mono">ParkFlow v4.8</span>
             </div>
             <h2 className="text-2xl font-black font-sans tracking-tight flex items-center gap-2">
               ValetX <span className="text-slate-400 font-light">|</span> Intelligent Valet Dispatch & Key Locker

@@ -99,7 +99,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'MOBILE_APP',
-      label: 'ParkOrbit Field',
+      label: 'ParkFlow Field',
       icon: Smartphone,
       badge: 'App',
       badgeColor: 'bg-emerald-100 text-emerald-800 font-bold',

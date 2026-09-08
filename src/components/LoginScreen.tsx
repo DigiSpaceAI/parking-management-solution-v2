@@ -108,7 +108,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       // Authenticate via PBKDF2/SHA256 Auth API
       const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
         method: 'POST',
-        // Required: the server replies with the parkorbit_session cookie
+        // Required: the server replies with the __session cookie
         // (HttpOnly; Secure; SameSite=None). A cross-origin fetch without this
         // flag silently discards it, so every later API call would 401.
         credentials: 'include',
@@ -284,10 +284,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <div className="space-y-3">
             <div className="flex items-center justify-center lg:justify-start space-x-3">
               <div className="w-12 h-12 bg-gradient-to-tr from-indigo-600 to-blue-500 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30 font-mono font-extrabold text-2xl text-white">
-                PO
+                PF
               </div>
               <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-white font-sans">
-                ParkOrbit
+                ParkFlow
               </h1>
             </div>
             <p className="text-slate-300 text-sm sm:text-base leading-relaxed max-w-lg">
@@ -372,7 +372,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               {/* Form Header */}
               <div className="mb-5">
                 <h2 className="text-xl font-extrabold text-slate-900">
-                  {loginMode === 'ADMIN_STAFF' ? 'Sign in to ParkOrbit' : 'Employee Smart Parking Pass'}
+                  {loginMode === 'ADMIN_STAFF' ? 'Sign in to ParkFlow' : 'Employee Smart Parking Pass'}
                 </h2>
                 <p className="text-xs text-slate-500 mt-1">
                   {loginMode === 'ADMIN_STAFF'
@@ -717,7 +717,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
       {/* Footer */}
       <div className="text-center py-4 text-xs text-slate-600 border-t border-slate-900">
-        ParkOrbit Enterprise PMS v4.2 • Protected by End-to-End Encryption & OAuth SSO Gateway
+        ParkFlow Enterprise PMS v4.2 • Protected by End-to-End Encryption & OAuth SSO Gateway
       </div>
     </div>
   );

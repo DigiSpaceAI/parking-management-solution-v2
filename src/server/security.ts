@@ -4,8 +4,25 @@ import { SecurityAuditLog, SecurityComplianceSummary, Employee, ParkingLog, AppU
 import { getStore } from './db';
 import { getFirestoreDb } from './firestoreClient';
 
-// Cryptographic Secret for HMAC Verification
+// Cryptographic Secret for HMAC Verification. This MUST be set via the
+// AUDIT_HMAC_SECRET environment variable in any real deployment — the
+// fallback below exists only so local development doesn't crash, and is
+// deliberately NOT a secret at all (it's sitting in this file, in your
+// GitHub repo). Using it in production means anyone who can see this
+// source can forge audit log entries with valid-looking HMAC signatures,
+// which defeats the entire point of a tamper-evident audit trail.
 const AUDIT_HMAC_SECRET = process.env.AUDIT_HMAC_SECRET || 'pms-enterprise-sec-token-2026-sha256-k9x';
+
+if (!process.env.AUDIT_HMAC_SECRET) {
+  console.error(
+    '[SECURITY WARNING] AUDIT_HMAC_SECRET is not set — falling back to a ' +
+    'hardcoded secret that is visible in source control. The security ' +
+    'audit trail\'s tamper-evidence guarantee is NOT reliable until a ' +
+    'real secret is set via Cloud Run environment variables (generate ' +
+    'one with: openssl rand -hex 32). This warning will print on every ' +
+    'server start until fixed.'
+  );
+}
 
 // In-Memory Security Audit Trail
 const auditLogs: SecurityAuditLog[] = [];
@@ -48,6 +65,50 @@ export async function loadAuditLogsFromFirestore(): Promise<void> {
   } catch (err: any) {
     console.warn('[firestore] Failed to load security audit logs, starting with an empty buffer:', err?.message || err);
   }
+}
+
+/**
+ * Deletes security audit log entries older than a given date (or all of
+ * them, if no cutoff is given) — both from Firestore and the in-memory
+ * buffer. Used by the recurring data-cleanup admin feature. Deliberately
+ * has no concept of "active" vs "completed" the way logs/valet tickets
+ * do — an audit entry is a record of something that already happened,
+ * so there's no in-progress state to protect from deletion the way a
+ * currently-occupied slot's log needs protecting.
+ */
+export async function clearAuditLogs(olderThanISO?: string): Promise<number> {
+  const db = getFirestoreDb();
+  let deletedCount = 0;
+
+  if (db) {
+    try {
+      let query = db.collection('securityAuditLogs') as FirebaseFirestore.Query;
+      if (olderThanISO) {
+        query = query.where('timestamp', '<', olderThanISO);
+      }
+      const snapshot = await query.get();
+      const docs = snapshot.docs;
+      const CHUNK = 400;
+      for (let i = 0; i < docs.length; i += CHUNK) {
+        const chunk = docs.slice(i, i + CHUNK);
+        const batch = db.batch();
+        chunk.forEach((doc) => batch.delete(doc.ref));
+        await batch.commit();
+      }
+      deletedCount = docs.length;
+    } catch (err: any) {
+      console.error('[firestore] Failed to clear security audit logs:', err?.message || err);
+    }
+  }
+
+  const before = auditLogs.length;
+  const kept = olderThanISO ? auditLogs.filter((l) => l.timestamp >= olderThanISO) : [];
+  auditLogs.splice(0, auditLogs.length, ...kept);
+  blockedIncidentsCount = auditLogs.filter((l) => l.status !== 'SUCCESS').length;
+
+  // If Firestore isn't configured at all, fall back to the in-memory
+  // count so the caller still gets an accurate number rather than 0.
+  return db ? deletedCount : before - kept.length;
 }
 
 /**
@@ -633,6 +694,7 @@ declare global {
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const token =
+    req.cookies?.['__session'] ||
     req.cookies?.['parkorbit_session'] ||
     req.cookies?.['pms_session'] ||
     (req.headers['authorization']?.startsWith('Bearer ')

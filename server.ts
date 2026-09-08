@@ -51,7 +51,9 @@ import {
   toggleUserModuleOverride,
   verifyPassword,
   hashPassword,
-  setUserPassword
+  setUserPassword,
+  clearHistoricalRecords,
+  type ClearableCollection
 } from './src/server/db';
 import cookieParser from 'cookie-parser';
 import {
@@ -82,7 +84,8 @@ import {
   generatePasswordResetToken,
   consumePasswordResetToken,
   destroySession,
-  loadAuditLogsFromFirestore
+  loadAuditLogsFromFirestore,
+  clearAuditLogs
 } from './src/server/security';
 import { VehicleType, EntryType } from './src/types';
 
@@ -644,6 +647,59 @@ app.post('/api/v1/sites/delete', requirePermission('MASTER_CONFIG', 'canDelete')
     details: `Site ${siteId} deleted by ${req.user!.fullName}.`,
   });
   res.json(result);
+});
+
+// Recurring data-cleanup feature: clears historical records from
+// admin-selected collections (parking logs, slot-change notifications,
+// valet tickets, security audit logs), optionally only those older than
+// a chosen date. See clearHistoricalRecords()'s own comment for exactly
+// which records within each collection count as "history" versus
+// something still in progress that's never touched here.
+const CLEARABLE_COLLECTIONS: (ClearableCollection | 'securityAuditLogs')[] = [
+  'logs', 'slotChangeNotifications', 'valetTickets', 'securityAuditLogs',
+];
+
+app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canDelete'), async (req, res) => {
+  const { collections, olderThan } = req.body as { collections?: string[]; olderThan?: string };
+
+  if (!Array.isArray(collections) || collections.length === 0) {
+    return res.status(400).json({ success: false, message: 'collections must be a non-empty array.' });
+  }
+  const invalid = collections.filter((c) => !CLEARABLE_COLLECTIONS.includes(c as any));
+  if (invalid.length > 0) {
+    return res.status(400).json({ success: false, message: `Unknown collection(s): ${invalid.join(', ')}` });
+  }
+  if (olderThan && Number.isNaN(new Date(olderThan).getTime())) {
+    return res.status(400).json({ success: false, message: 'olderThan must be a valid date.' });
+  }
+  // Normalize to a full ISO timestamp so string comparison against
+  // stored ISO timestamps (entryTime, changedAt, etc.) works correctly
+  // regardless of whether the client sent a bare date or a full
+  // datetime.
+  const olderThanISO = olderThan ? new Date(olderThan).toISOString() : undefined;
+
+  const storeCollections = collections.filter((c) => c !== 'securityAuditLogs') as ClearableCollection[];
+  const result: Record<string, number> = {};
+
+  if (storeCollections.length > 0) {
+    const storeResult = await clearHistoricalRecords(storeCollections, olderThanISO);
+    Object.assign(result, storeResult);
+  }
+  if (collections.includes('securityAuditLogs')) {
+    result.securityAuditLogs = await clearAuditLogs(olderThanISO);
+  }
+
+  logSecurityEvent({
+    action: 'HISTORICAL_DATA_CLEARED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: collections.join(', '),
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} cleared ${JSON.stringify(result)}${olderThanISO ? ` (older than ${olderThanISO})` : ' (all)'}.`,
+  });
+
+  res.json({ success: true, cleared: result });
 });
 
 app.post('/api/v1/sites/pricing', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
@@ -1210,8 +1266,19 @@ const handleLoginRequest = (req: express.Request, res: express.Response) => {
   // Capacitor — can actually send this cookie back on later requests.
   // Still fully HttpOnly + Secure; this doesn't weaken same-origin
   // behavior for the existing web dashboard at all.
+  //
+  // Cookie name is __session specifically, not something more
+  // descriptive like parkorbit_session — Firebase Hosting silently
+  // strips every cookie from proxied responses EXCEPT one named exactly
+  // __session (a documented, if not obviously so, Firebase behavior,
+  // done for its own CDN caching reasons). Since admin.parkflows.in now
+  // routes through a Firebase Hosting rewrite to reach this same
+  // service, any other cookie name would make login look like it
+  // succeeded (the JSON response comes through fine) while the actual
+  // session cookie silently never reaches the browser — every
+  // subsequent request then fails auth with no visible reason why.
   res.setHeader('Set-Cookie', [
-    `parkorbit_session=${sessionToken}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=86400`,
+    `__session=${sessionToken}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=86400`,
   ]);
 
   logSecurityEvent({
@@ -1240,9 +1307,11 @@ app.post('/api/v1/auth/login', loginRateLimiterMiddleware, handleLoginRequest);
 app.post('/login', loginRateLimiterMiddleware, handleLoginRequest);
 
 app.post('/api/v1/auth/logout', (req, res) => {
-  const token = req.cookies?.['parkorbit_session'];
+  const token = req.cookies?.['__session'] || req.cookies?.['parkorbit_session'] || req.cookies?.['pms_session'];
   if (token) destroySession(token);
+  res.clearCookie('__session');
   res.clearCookie('parkorbit_session');
+  res.clearCookie('pms_session');
   res.json({ success: true });
 });
 

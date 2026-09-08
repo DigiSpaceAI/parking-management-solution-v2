@@ -1189,7 +1189,7 @@ async function syncStoreToFirestore(snapshot: StoreData) {
   }
 }
 
-async function loadStoreFromFirestore(): Promise<StoreData | null> {
+async function loadStoreFromFirestore(): Promise<{ data: StoreData | null; failed: boolean }> {
   const db = getFirestoreDb();
   if (!db) return null;
 
@@ -1206,17 +1206,29 @@ async function loadStoreFromFirestore(): Promise<StoreData | null> {
       totalDocs += docs.length;
     });
 
-    if (totalDocs === 0) return null;
+    if (totalDocs === 0) return { data: null, failed: false };
 
     loaded.lastUpdated = new Date().toISOString();
-    return loaded as StoreData;
+    return { data: loaded as StoreData, failed: false };
   } catch (err) {
     if (isFatalFirestoreConfigError(err)) {
       markFirestoreUnavailable(String((err as any)?.message || err));
     } else {
       console.error('[firestore] Load failed, falling back to local JSON store:', err);
     }
-    return null;
+    // failed: true is the whole point of this change — a transient
+    // error (quota exhaustion, a timeout, a network blip) must never
+    // be treated the same as "this collection is genuinely empty."
+    // The bug this fixes: both cases used to return null here, so
+    // bootstrapFirestore() below couldn't tell them apart and would
+    // reseed Firestore in response to a QUOTA error — and since
+    // seeding is itself a write, that reseed could exhaust the quota
+    // further, creating a retry loop that never resolves. That's
+    // exactly what happened in production: RESOURCE_EXHAUSTED on
+    // startup, misread as "empty," triggering a reseed attempt that
+    // hit RESOURCE_EXHAUSTED again, on repeat, until Cloud Run's
+    // health check timed out and the deploy failed.
+    return { data: null, failed: true };
   }
 }
 
@@ -1224,10 +1236,17 @@ export async function bootstrapFirestore(): Promise<void> {
   const db = getFirestoreDb();
   if (!db) return;
 
-  const remote = await loadStoreFromFirestore();
+  const { data: remote, failed } = await loadStoreFromFirestore();
   if (remote) {
     store = remote;
     console.log('[firestore] Loaded existing data from Firestore.');
+  } else if (failed) {
+    // Loading genuinely failed (quota, timeout, network) — do NOT
+    // reseed. Keep running on whatever's already in the in-memory
+    // local store and let the next natural write cycle sync normally,
+    // rather than hammering an already-struggling Firestore with a
+    // full reseed write right now.
+    console.warn('[firestore] Load failed (see error above) — continuing with local store in memory, NOT reseeding, to avoid making quota pressure worse.');
   } else {
     console.log('[firestore] No existing data found — seeding Firestore from local store.');
     await syncStoreToFirestore(store);

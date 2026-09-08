@@ -1366,6 +1366,94 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
   }
 }
 
+export type ClearableCollection = 'logs' | 'slotChangeNotifications' | 'valetTickets';
+
+export interface ClearHistoryResult {
+  logs?: number;
+  slotChangeNotifications?: number;
+  valetTickets?: number;
+}
+
+/**
+ * Recurring data-cleanup feature: deletes historical records from the
+ * selected collections, optionally only those older than a given date.
+ * Deliberately conservative about what counts as "history" versus
+ * something still in progress:
+ *
+ * - Parking logs: only status === 'COMPLETED' rows are ever touched,
+ *   filtered by exitTime. A currently-occupied slot's log is ACTIVE and
+ *   is never included, regardless of how old its entryTime is — an
+ *   ongoing session isn't "history" just because it started long ago.
+ *   This also means slot occupancy state never needs touching here,
+ *   unlike the one-off cleanup this replaced: nothing this function
+ *   deletes was ever backing a slot's current VACANT/OCCUPIED status.
+ * - Valet tickets: only RETRIEVED_DELIVERED or CANCELLED (the two
+ *   terminal states) are touched, filtered by receivedAt. RECEIVED,
+ *   PARKED, and RETRIEVAL_REQUESTED are always left alone.
+ * - Slot change notifications: these are already inherently a record of
+ *   something that already happened (a change either occurred or it
+ *   didn't), so all of them are eligible, filtered by changedAt.
+ *
+ * Firestore and the in-memory store are updated together; the local
+ * JSON backup is refreshed via the normal saveDB() path.
+ */
+export async function clearHistoricalRecords(
+  collections: ClearableCollection[],
+  olderThanISO?: string
+): Promise<ClearHistoryResult> {
+  const storeData = getStore();
+  const result: ClearHistoryResult = {};
+  const db = getFirestoreDb();
+
+  const deleteFromFirestore = async (collectionName: string, ids: string[]) => {
+    if (!db || ids.length === 0) return;
+    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
+      const chunk = ids.slice(i, i + FIRESTORE_BATCH_CHUNK);
+      const batch = db.batch();
+      chunk.forEach((id) => batch.delete(db.collection(collectionName).doc(id)));
+      await batch.commit();
+    }
+  };
+
+  try {
+    if (collections.includes('logs')) {
+      const toRemove = storeData.logs.filter(
+        (l) => l.status === 'COMPLETED' && (!olderThanISO || (l.exitTime && l.exitTime < olderThanISO))
+      );
+      const removeIds = new Set(toRemove.map((l) => l.id));
+      storeData.logs = storeData.logs.filter((l) => !removeIds.has(l.id));
+      await deleteFromFirestore('logs', [...removeIds]);
+      result.logs = removeIds.size;
+    }
+
+    if (collections.includes('slotChangeNotifications')) {
+      const toRemove = storeData.slotChangeNotifications.filter(
+        (n) => !olderThanISO || n.changedAt < olderThanISO
+      );
+      const removeIds = new Set(toRemove.map((n) => n.id));
+      storeData.slotChangeNotifications = storeData.slotChangeNotifications.filter((n) => !removeIds.has(n.id));
+      await deleteFromFirestore('slotChangeNotifications', [...removeIds]);
+      result.slotChangeNotifications = removeIds.size;
+    }
+
+    if (collections.includes('valetTickets')) {
+      const terminal = new Set(['RETRIEVED_DELIVERED', 'CANCELLED']);
+      const toRemove = storeData.valetTickets.filter(
+        (t) => terminal.has(t.status) && (!olderThanISO || t.receivedAt < olderThanISO)
+      );
+      const removeIds = new Set(toRemove.map((t) => t.id));
+      storeData.valetTickets = storeData.valetTickets.filter((t) => !removeIds.has(t.id));
+      await deleteFromFirestore('valetTickets', [...removeIds]);
+      result.valetTickets = removeIds.size;
+    }
+  } catch (err: any) {
+    console.error('[firestore] clearHistoricalRecords failed partway through:', err?.message || err);
+  }
+
+  saveDB();
+  return result;
+}
+
 export function getStore(): StoreData {
   if (store.slots.length === 0) {
     initDB();
@@ -1696,7 +1784,7 @@ export function runNonParkedRosterScan(): { scanTime: string; totalActiveEmploye
 }
 
 // Single Employee Save/Update
-export function saveOrUpdateEmployee(empData: Partial<Employee>): Employee {
+export function saveOrUpdateEmployee(empData: Partial<Employee>, deferSync: boolean = false): Employee {
   const storeData = getStore();
   const now = new Date().toISOString();
   let existingIndex = -1;
@@ -1730,7 +1818,7 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>): Employee {
       updatedAt: now,
     };
     storeData.employees[existingIndex] = updated;
-    saveDB();
+    if (!deferSync) saveDB([{ collection: 'employees', ids: [updated.id] }]);
     return updated;
   } else {
     const newEmp: Employee = {
@@ -1751,7 +1839,7 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>): Employee {
       updatedAt: now,
     };
     storeData.employees.unshift(newEmp);
-    saveDB();
+    if (!deferSync) saveDB([{ collection: 'employees', ids: [newEmp.id] }]);
     return newEmp;
   }
 }
@@ -1760,6 +1848,7 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>): Employee {
 export function bulkUploadEmployees(list: Array<Partial<Employee>>): { added: number; updated: number; total: number } {
   let added = 0;
   let updated = 0;
+  const changedIds: string[] = [];
 
   for (const item of list) {
     if (!item.vehicleNumber && !item.employeeId) continue;
@@ -1776,10 +1865,15 @@ export function bulkUploadEmployees(list: Array<Partial<Employee>>): { added: nu
     } else {
       added++;
     }
-    saveOrUpdateEmployee({
+    const saved = saveOrUpdateEmployee({
       ...item,
       registrationType: item.registrationType || 'PARKING_ADMIN',
-    });
+    }, true);
+    changedIds.push(saved.id);
+  }
+
+  if (changedIds.length > 0) {
+    saveDB([{ collection: 'employees', ids: changedIds }]);
   }
 
   return { added, updated, total: getStore().employees.length };
@@ -1850,6 +1944,9 @@ export function updateEmployeeVehicle(params: {
     emp.updatedAt = now;
 
     // Sync any active registration requests for this user
+    const targetedSync: { collection: keyof StoreData; ids: string[] }[] = [
+      { collection: 'employees', ids: [emp.id] },
+    ];
     if (storeData.registrationRequests) {
       const activeReq = storeData.registrationRequests.find(
         r => r.email.toLowerCase() === emp!.email.toLowerCase() || r.employeeId === emp!.employeeId
@@ -1860,10 +1957,11 @@ export function updateEmployeeVehicle(params: {
         if (params.vehicleBrand) activeReq.vehicleBrand = params.vehicleBrand;
         activeReq.status = 'APPROVED';
         activeReq.updatedAt = now;
+        targetedSync.push({ collection: 'registrationRequests', ids: [activeReq.id] });
       }
     }
 
-    saveDB();
+    saveDB(targetedSync);
 
     return {
       success: true,
@@ -1877,7 +1975,7 @@ export function updateEmployeeVehicle(params: {
 
 // Single Slot Save/Update
 
-export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>): ParkingSlot {
+export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: boolean = false): ParkingSlot {
   const storeData = getStore();
   const now = new Date().toISOString();
   let existingIndex = -1;
@@ -1904,7 +2002,11 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>): ParkingSlot {
       currentVehicle: slotData.status === 'VACANT' ? undefined : (slotData.currentVehicle ?? existing.currentVehicle),
     };
     storeData.slots[existingIndex] = updated;
-    saveDB();
+    // deferSync lets a caller doing many updates in a loop (bulkUploadSlots)
+    // batch them into one sync at the end, instead of each iteration
+    // triggering its own immediate targeted write — see bulkUploadSlots
+    // below for why that distinction matters.
+    if (!deferSync) saveDB([{ collection: 'slots', ids: [updated.id] }]);
     return updated;
   } else {
     const newSlot: ParkingSlot = {
@@ -1920,7 +2022,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>): ParkingSlot {
       currentVehicle: slotData.currentVehicle,
     };
     storeData.slots.unshift(newSlot);
-    saveDB();
+    if (!deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
     return newSlot;
   }
 }
@@ -1929,6 +2031,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>): ParkingSlot {
 export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number } {
   let added = 0;
   let updated = 0;
+  const changedIds: string[] = [];
 
   for (const item of list) {
     if (!item.slotNumber) continue;
@@ -1944,7 +2047,16 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
     } else {
       added++;
     }
-    saveOrUpdateSlot(item);
+    // deferSync=true: each row updates in-memory and the local JSON
+    // backup, but doesn't trigger its own Firestore write — a bulk
+    // upload of hundreds of rows would otherwise mean hundreds of
+    // individual immediate writes instead of one real batch.
+    const saved = saveOrUpdateSlot(item, true);
+    changedIds.push(saved.id);
+  }
+
+  if (changedIds.length > 0) {
+    saveDB([{ collection: 'slots', ids: changedIds }]);
   }
 
   return { added, updated, total: getStore().slots.length };
@@ -2735,7 +2847,7 @@ export function createValetTicket(data: {
   };
 
   storeData.valetTickets.unshift(newTicket);
-  saveDB();
+  saveDB([{ collection: 'valetTickets', ids: [newTicket.id] }]);
 
   return {
     success: true,
@@ -2775,7 +2887,7 @@ export function updateValetStatus(data: {
     ticket.deliveredAt = new Date().toISOString();
   }
 
-  saveDB();
+  saveDB([{ collection: 'valetTickets', ids: [ticket.id] }]);
 
   return {
     success: true,
@@ -2803,7 +2915,7 @@ export function requestValetRetrieval(query: string): { success: boolean; messag
 
   ticket.status = 'RETRIEVAL_REQUESTED';
   ticket.retrievalRequestedAt = new Date().toISOString();
-  saveDB();
+  saveDB([{ collection: 'valetTickets', ids: [ticket.id] }]);
 
   return {
     success: true,

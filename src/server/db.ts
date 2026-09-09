@@ -1847,9 +1847,14 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>, deferSync: bool
     // employeeId alone isn't safe to match on once two sites can exist,
     // since two different sites could plausibly reuse the same ID
     // convention.
+    // targetSiteId resolves BOTH sides the same way missing siteId is
+    // resolved on read (server.ts's GET endpoints) — existing records
+    // from before site-scoping have siteId as literally undefined, not
+    // the string DEFAULT_SITE_ID, so a strict === here would never
+    // match them and would create duplicates instead of updating them.
     const targetSiteId = empData.siteId || DEFAULT_SITE_ID;
     existingIndex = storeData.employees.findIndex(
-      e => e.employeeId.toUpperCase() === empData.employeeId!.toUpperCase() && e.siteId === targetSiteId
+      e => e.employeeId.toUpperCase() === empData.employeeId!.toUpperCase() && (e.siteId || DEFAULT_SITE_ID) === targetSiteId
     );
   }
 
@@ -1915,8 +1920,15 @@ export function bulkUploadEmployees(list: Array<Partial<Employee>>): { added: nu
     const cleanPlate = (item.vehicleNumber || '').trim().toUpperCase();
     const cleanEmpId = (item.employeeId || '').trim().toUpperCase();
 
+    // Same siteId resolution as saveOrUpdateEmployee's own matching
+    // logic — this separate check exists only to report accurate
+    // added/updated counts, so it needs the same site-aware matching
+    // or it could report "updated" for what's actually a new employee
+    // at a different site reusing the same ID/plate.
+    const targetSiteId = item.siteId || DEFAULT_SITE_ID;
     const existing = storeData.employees.find(
-      e => (cleanEmpId && e.employeeId.toUpperCase() === cleanEmpId) || (cleanPlate && e.vehicleNumber.toUpperCase() === cleanPlate)
+      e => ((cleanEmpId && e.employeeId.toUpperCase() === cleanEmpId) || (cleanPlate && e.vehicleNumber.toUpperCase() === cleanPlate))
+        && (e.siteId || DEFAULT_SITE_ID) === targetSiteId
     );
 
     if (existing) {
@@ -2046,9 +2058,12 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
     // different sites can legitimately have the same slot number (e.g.
     // both using "B1-P01-S01"), and matching by number only would treat
     // them as the same slot and silently overwrite one with the other.
+    // Same fix, same reasoning as the identical change in
+    // saveOrUpdateEmployee above — resolve missing siteId on both
+    // sides, don't strictly compare against literally undefined.
     const targetSiteId = slotData.siteId || DEFAULT_SITE_ID;
     existingIndex = storeData.slots.findIndex(
-      s => s.slotNumber.toUpperCase() === slotData.slotNumber!.toUpperCase() && s.siteId === targetSiteId
+      s => s.slotNumber.toUpperCase() === slotData.slotNumber!.toUpperCase() && (s.siteId || DEFAULT_SITE_ID) === targetSiteId
     );
   }
 
@@ -2105,8 +2120,10 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
     const storeData = getStore();
     const cleanSlotNum = item.slotNumber.trim().toUpperCase();
 
+    // Same reasoning as the identical fix in bulkUploadEmployees above.
+    const targetSiteId = item.siteId || DEFAULT_SITE_ID;
     const existing = storeData.slots.find(
-      s => s.slotNumber.toUpperCase() === cleanSlotNum
+      s => s.slotNumber.toUpperCase() === cleanSlotNum && (s.siteId || DEFAULT_SITE_ID) === targetSiteId
     );
 
     if (existing) {

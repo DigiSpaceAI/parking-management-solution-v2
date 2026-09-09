@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { storeSessionToken } from '../sessionTokenFallback';
 import {
   ShieldCheck,
   Lock,
@@ -127,6 +128,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
 
       if (data.success && data.user) {
+        if (data.token) storeSessionToken(data.token);
         onLoginSuccess(data.user);
       } else {
         // OWASP Generic Error Message to prevent account enumeration

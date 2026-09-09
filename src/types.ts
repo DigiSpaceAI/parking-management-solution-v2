@@ -14,6 +14,7 @@ export type ValetTicketType = 'STANDARD' | 'VIP_EXECUTIVE' | 'HOTEL_GUEST' | 'MA
 
 export interface ValetTicket {
   id: string;
+  siteId: string;
   ticketNumber: string; // e.g. "VX-8092"
   keyTagNumber: string; // e.g. "TAG-104"
   vehicleNumber: string;
@@ -82,6 +83,7 @@ export interface SiteInvoice {
 
 export interface SlotChangeNotification {
   id: string;
+  siteId: string;
   vehicleNumber: string;
   oldSlotNumber: string;
   newSlotNumber: string;
@@ -97,6 +99,7 @@ export type RegistrationType = 'EMPLOYEE_SELF' | 'PARKING_ADMIN';
 
 export interface RegistrationRequest {
   id: string;
+  siteId: string;
   employeeId: string;
   name: string;
   department: string;
@@ -124,6 +127,7 @@ export interface WhitelistedDomain {
 
 export interface Employee {
   id: string;
+  siteId: string;
   employeeId: string;
   name: string;
   department: string;
@@ -142,6 +146,7 @@ export interface Employee {
 
 export interface ParkingSlot {
   id: string;
+  siteId: string;
   slotNumber: string; // e.g., B1-P01-S1
   basement: 'B1' | 'B2' | 'B3' | 'Ground' | 'Driveway';
   floorLocation: string; // e.g., "Basement 1, EV Charging area"
@@ -158,6 +163,7 @@ export interface ParkingSlot {
 
 export interface ParkingLog {
   id: string;
+  siteId: string;
   vehicleNumber: string;
   employeeId?: string | null;
   employeeName?: string | null;
@@ -205,6 +211,7 @@ export interface PredictiveAnalyticsReport {
 
 export interface NonParkedAlert {
   id: string;
+  siteId: string;
   employeeId: string;
   employeeName: string;
   department: string;
@@ -315,5 +322,3 @@ export interface SecurityComplianceSummary {
   lastTamperCheckStatus: 'VERIFIED_INTACT' | 'ALERT';
   activeSecurityHeaders: string[];
 }
-
-

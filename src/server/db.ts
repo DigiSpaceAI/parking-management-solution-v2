@@ -2,6 +2,18 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
+
+// The site ID for all pre-existing operational data (slots, employees,
+// logs, etc.) that predates site-scoping — every seed/demo record below,
+// and every existing production record already in Firestore before this
+// change, implicitly belongs here. New sites created via onboardSite()
+// get their own real IDs and are fully separate from this one. Existing
+// unmigrated records are treated as belonging here at read time too
+// (see the siteId fallback in the relevant GET endpoints in server.ts) —
+// so nothing in your current real data needs an active migration write,
+// it's just implicitly assigned to this ID going forward.
+export const DEFAULT_SITE_ID = 'site-default';
+
 // Imported here for anomaly-detection logging inside syncSpecificRecords.
 // security.ts also imports from this file (getAppUsers/getAppRoles), but
 // both sides only reference the other's exports inside function bodies,
@@ -434,6 +446,7 @@ function generate1080Inventory(): StoreData {
 
     employees.push({
       id: `emp-${i}`,
+      siteId: DEFAULT_SITE_ID,
       employeeId: empId,
       name: `Employee ${i} (${dept.split(' ')[0]})`,
       department: dept,
@@ -464,6 +477,7 @@ function generate1080Inventory(): StoreData {
       const isSuv = s > 7;
       slots.push({
         id: `slot-${totalCreated}`,
+        siteId: DEFAULT_SITE_ID,
         slotNumber: slotNum,
         basement: 'B1',
         floorLocation: `Basement 1, Stacker Grid ${puzzleId}`,
@@ -485,6 +499,7 @@ function generate1080Inventory(): StoreData {
     const slotNum = `B1-EV-${ev < 10 ? '0' + ev : ev}`;
     slots.push({
       id: `slot-${totalCreated}`,
+      siteId: DEFAULT_SITE_ID,
       slotNumber: slotNum,
       basement: 'B1',
       floorLocation: 'Basement 1, Rapid EV Charging Bay',
@@ -504,6 +519,7 @@ function generate1080Inventory(): StoreData {
     const slotNum = `B1-VIP-${suv < 10 ? '0' + suv : suv}`;
     slots.push({
       id: `slot-${totalCreated}`,
+      siteId: DEFAULT_SITE_ID,
       slotNumber: slotNum,
       basement: 'B1',
       floorLocation: suv <= 20 ? 'Basement 1, VIP Reserve Zone' : 'Basement 1, SUV High Bay',
@@ -525,6 +541,7 @@ function generate1080Inventory(): StoreData {
       const slotNum = `${puzzleId}-S${s < 10 ? '0' + s : s}`;
       slots.push({
         id: `slot-${totalCreated}`,
+        siteId: DEFAULT_SITE_ID,
         slotNumber: slotNum,
         basement: 'B2',
         floorLocation: `Basement 2, Stacker Grid ${puzzleId}`,
@@ -547,6 +564,7 @@ function generate1080Inventory(): StoreData {
     const slotNum = isTw ? `B2-2W-${tw < 10 ? '0' + tw : tw}` : `B2-SD-${tw < 10 ? '0' + tw : tw}`;
     slots.push({
       id: `slot-${totalCreated}`,
+      siteId: DEFAULT_SITE_ID,
       slotNumber: slotNum,
       basement: 'B2',
       floorLocation: isTw ? 'Basement 2, Two-Wheeler Bay' : 'Basement 2, General Sedan Aisle',
@@ -568,6 +586,7 @@ function generate1080Inventory(): StoreData {
       const slotNum = `${puzzleId}-S${s < 10 ? '0' + s : s}`;
       slots.push({
         id: `slot-${totalCreated}`,
+        siteId: DEFAULT_SITE_ID,
         slotNumber: slotNum,
         basement: 'B3',
         floorLocation: `Basement 3, Stacker Grid ${puzzleId}`,
@@ -589,6 +608,7 @@ function generate1080Inventory(): StoreData {
     const slotNum = `B3-TR-${tr < 10 ? '0' + tr : tr}`;
     slots.push({
       id: `slot-${totalCreated}`,
+      siteId: DEFAULT_SITE_ID,
       slotNumber: slotNum,
       basement: 'B3',
       floorLocation: tr <= 40 ? 'Basement 3, Corporate Shuttle Bay' : 'Basement 3, Employee Overflow',
@@ -610,6 +630,7 @@ function generate1080Inventory(): StoreData {
     const isHandicap = g > 50 && g <= 60;
     slots.push({
       id: `slot-${totalCreated}`,
+      siteId: DEFAULT_SITE_ID,
       slotNumber: slotNum,
       basement: g <= 40 ? 'Ground' : 'Driveway',
       floorLocation: g <= 40 ? 'Ground Floor Main Lobby Drive' : 'North Perimeter Driveway',
@@ -641,6 +662,7 @@ function generate1080Inventory(): StoreData {
 
       logs.push({
         id: `log-${logIdCounter++}`,
+        siteId: DEFAULT_SITE_ID,
         vehicleNumber: vehicleNum,
         employeeId: emp ? emp.id : null,
         employeeName: emp ? emp.name : 'Visitor / Guest',
@@ -666,6 +688,7 @@ function generate1080Inventory(): StoreData {
     const exitTime = new Date(Date.now() - 60 * 60000).toISOString();
     logs.push({
       id: `log-${logIdCounter++}`,
+      siteId: DEFAULT_SITE_ID,
       vehicleNumber: emp.vehicleNumber,
       employeeId: emp.id,
       employeeName: emp.name,
@@ -689,6 +712,7 @@ function generate1080Inventory(): StoreData {
   nonParkedEmployees.slice(0, 8).forEach((emp, index) => {
     alerts.push({
       id: `alert-${index + 1}`,
+      siteId: DEFAULT_SITE_ID,
       employeeId: emp.employeeId,
       employeeName: emp.name,
       department: emp.department,
@@ -705,6 +729,7 @@ function generate1080Inventory(): StoreData {
   const registrationRequests: RegistrationRequest[] = [
     {
       id: 'req-1',
+      siteId: DEFAULT_SITE_ID,
       employeeId: 'EMP-3001',
       name: 'John Doe',
       department: 'Engineering',
@@ -719,6 +744,7 @@ function generate1080Inventory(): StoreData {
     },
     {
       id: 'req-2',
+      siteId: DEFAULT_SITE_ID,
       employeeId: 'EMP-3002',
       name: 'Samantha Smith',
       department: 'Finance & Legal',
@@ -733,6 +759,7 @@ function generate1080Inventory(): StoreData {
     },
     {
       id: 'req-3',
+      siteId: DEFAULT_SITE_ID,
       employeeId: 'EMP-3003',
       name: 'Amit Patel',
       department: 'Operations',
@@ -758,6 +785,7 @@ function generate1080Inventory(): StoreData {
   const valetTickets: ValetTicket[] = [
     {
       id: 'valet-1',
+      siteId: DEFAULT_SITE_ID,
       ticketNumber: 'VX-1001',
       keyTagNumber: 'K-101',
       vehicleNumber: 'KA-01-MJ-8821',
@@ -779,6 +807,7 @@ function generate1080Inventory(): StoreData {
     },
     {
       id: 'valet-2',
+      siteId: DEFAULT_SITE_ID,
       ticketNumber: 'VX-1002',
       keyTagNumber: 'K-104',
       vehicleNumber: 'KA-03-NV-5041',
@@ -799,6 +828,7 @@ function generate1080Inventory(): StoreData {
     },
     {
       id: 'valet-3',
+      siteId: DEFAULT_SITE_ID,
       ticketNumber: 'VX-1003',
       keyTagNumber: 'K-108',
       vehicleNumber: 'KA-05-MM-1209',
@@ -1577,6 +1607,7 @@ export function processVehicleEntry(params: {
   // Create ParkingLog
   const newLog: ParkingLog = {
     id: `log-${Date.now()}`,
+    siteId: targetSlot.siteId,
     vehicleNumber: cleanVehicleNum,
     employeeId: employee ? employee.id : null,
     employeeName: employee ? employee.name : 'Guest Visitor',
@@ -1774,6 +1805,7 @@ export function runNonParkedRosterScan(): { scanTime: string; totalActiveEmploye
       } else {
         const createdAlert: NonParkedAlert = {
           id: `alert-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+          siteId: emp.siteId,
           employeeId: emp.employeeId,
           employeeName: emp.name,
           department: emp.department,
@@ -1811,7 +1843,14 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>, deferSync: bool
   if (empData.id) {
     existingIndex = storeData.employees.findIndex(e => e.id === empData.id);
   } else if (empData.employeeId) {
-    existingIndex = storeData.employees.findIndex(e => e.employeeId.toUpperCase() === empData.employeeId!.toUpperCase());
+    // Same reasoning as the identical fix in saveOrUpdateSlot above —
+    // employeeId alone isn't safe to match on once two sites can exist,
+    // since two different sites could plausibly reuse the same ID
+    // convention.
+    const targetSiteId = empData.siteId || DEFAULT_SITE_ID;
+    existingIndex = storeData.employees.findIndex(
+      e => e.employeeId.toUpperCase() === empData.employeeId!.toUpperCase() && e.siteId === targetSiteId
+    );
   }
 
   const status: EmployeeStatus = empData.status || (empData.isActive ? 'ACTIVE' : 'INACTIVE');
@@ -1842,6 +1881,7 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>, deferSync: bool
   } else {
     const newEmp: Employee = {
       id: empData.id || `emp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      siteId: empData.siteId || DEFAULT_SITE_ID,
       employeeId: empData.employeeId || `EMP-${1000 + storeData.employees.length + 1}`,
       name: empData.name || 'New Whitelist Employee',
       department: empData.department || 'Operations',
@@ -2002,7 +2042,14 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
   if (slotData.id) {
     existingIndex = storeData.slots.findIndex(s => s.id === slotData.id);
   } else if (slotData.slotNumber) {
-    existingIndex = storeData.slots.findIndex(s => s.slotNumber.toUpperCase() === slotData.slotNumber!.toUpperCase());
+    // Match on siteId + slotNumber together, not slotNumber alone — two
+    // different sites can legitimately have the same slot number (e.g.
+    // both using "B1-P01-S01"), and matching by number only would treat
+    // them as the same slot and silently overwrite one with the other.
+    const targetSiteId = slotData.siteId || DEFAULT_SITE_ID;
+    existingIndex = storeData.slots.findIndex(
+      s => s.slotNumber.toUpperCase() === slotData.slotNumber!.toUpperCase() && s.siteId === targetSiteId
+    );
   }
 
   if (existingIndex >= 0) {
@@ -2030,6 +2077,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
   } else {
     const newSlot: ParkingSlot = {
       id: slotData.id || `slot-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      siteId: slotData.siteId || DEFAULT_SITE_ID,
       slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
       basement: slotData.basement || 'B1',
       floorLocation: slotData.floorLocation || 'Level 1 Stacker',
@@ -2197,6 +2245,7 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
 
   const newRequest: RegistrationRequest = {
     id: `req-${Date.now()}`,
+    siteId: data.siteId || DEFAULT_SITE_ID,
     employeeId: data.employeeId || `EMP-${2000 + Math.floor(Math.random() * 8000)}`,
     name: data.name,
     department: data.department || 'General Staff',
@@ -2346,6 +2395,7 @@ export function bulkUploadRegistrations(
         existing.reviewedAt = now;
         saveOrUpdateEmployee({
           employeeId: existing.employeeId,
+          siteId: existing.siteId,
           name: existing.name,
           department: existing.department,
           designation: existing.designation,
@@ -2363,6 +2413,7 @@ export function bulkUploadRegistrations(
     } else {
       const newReq: RegistrationRequest = {
         id: `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        siteId: item.siteId || DEFAULT_SITE_ID,
         employeeId: item.employeeId || `EMP-${2000 + Math.floor(Math.random() * 8000)}`,
         name: name,
         department: item.department || 'General Staff',
@@ -2488,10 +2539,11 @@ export function changeVehicleSlot(
 
   // 5. Check if vehicle belongs to a registered employee for mobile SMS dispatch
   const emp = storeData.employees.find((e) => e.vehicleNumber.toUpperCase() === vehicleNum);
-  const smsText = `PARKOS DRIVER ALERT: Vehicle ${vehicleNum} slot updated from ${oldSlotNumber} to ${newSlot.slotNumber} (${newSlot.basement}, ${newSlot.parkingType} Level, ${newSlot.height}). Reason: ${reason}. Attendant: ${attendantName}.`;
+  const smsText = `PARKFLOW DRIVER ALERT: Vehicle ${vehicleNum} slot updated from ${oldSlotNumber} to ${newSlot.slotNumber} (${newSlot.basement}, ${newSlot.parkingType} Level, ${newSlot.height}). Reason: ${reason}. Attendant: ${attendantName}.`;
 
   const notification: SlotChangeNotification = {
     id: `notif-${Date.now()}`,
+    siteId: newSlot.siteId,
     vehicleNumber: vehicleNum,
     oldSlotNumber,
     newSlotNumber: newSlot.slotNumber,
@@ -2829,6 +2881,7 @@ export function createValetTicket(data: {
   assignedSlotNumber?: string;
   parkingNotes?: string;
   feeAmount?: number;
+  siteId?: string;
 }): { success: boolean; message: string; ticket?: ValetTicket } {
   const storeData = getStore();
   if (!storeData.valetTickets) storeData.valetTickets = [];
@@ -2839,13 +2892,21 @@ export function createValetTicket(data: {
 
   // Auto assign slot if not provided
   let slotNumber = data.assignedSlotNumber;
+  let derivedSiteId: string | undefined;
   if (!slotNumber) {
-    const vacantSlot = storeData.slots.find((s) => s.status === 'VACANT');
+    // Scoped to the requesting site when known, not a global search —
+    // otherwise a valet ticket for one site could get handed a vacant
+    // slot that actually belongs to a different site.
+    const vacantSlot = storeData.slots.find(
+      (s) => s.status === 'VACANT' && (!data.siteId || s.siteId === data.siteId)
+    );
     slotNumber = vacantSlot ? vacantSlot.slotNumber : 'B1-VIP-VALET';
+    derivedSiteId = vacantSlot?.siteId;
   }
 
   const newTicket: ValetTicket = {
     id: `valet-${Date.now()}`,
+    siteId: data.siteId || derivedSiteId || DEFAULT_SITE_ID,
     ticketNumber,
     keyTagNumber: keyTag,
     vehicleNumber: data.vehicleNumber.toUpperCase().trim(),

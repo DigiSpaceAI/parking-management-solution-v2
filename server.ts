@@ -8,6 +8,7 @@ import {
   getStore,
   saveDB,
   bootstrapFirestore,
+  DEFAULT_SITE_ID,
   processVehicleEntry,
   processVehicleExit,
   generate24HourPredictiveForecast,
@@ -196,9 +197,18 @@ app.get('/api/v1/health', (req, res) => {
 // 2. Parking Slots Inventory & Filter Endpoint
 app.get('/api/v1/slots', (req, res) => {
   const store = getStore();
-  let slots = store.slots;
+  const { basement, status, allocation, slotType, search, siteId } = req.query;
 
-  const { basement, status, allocation, slotType, search } = req.query;
+  // Records written before site-scoping existed have no siteId at all —
+  // treated as DEFAULT_SITE_ID here too, matching the same fallback
+  // used when creating them in db.ts, so existing data keeps working
+  // without needing an active migration write.
+  const resolveSiteId = (s: { siteId?: string }) => s.siteId || DEFAULT_SITE_ID;
+  const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
+    ? store.slots.filter(s => resolveSiteId(s) === siteId)
+    : store.slots;
+
+  let slots = siteScoped;
 
   if (basement && typeof basement === 'string' && basement !== 'ALL') {
     slots = slots.filter(s => s.basement === basement);
@@ -222,24 +232,26 @@ app.get('/api/v1/slots', (req, res) => {
     );
   }
 
-  // Summary counts per floor
+  // Summary counts per floor — scoped to the same site as the list
+  // above (siteScoped), not the whole platform, so these numbers stay
+  // consistent with what's actually being shown.
   const summary = {
-    total: store.slots.length,
+    total: siteScoped.length,
     b1: {
-      total: store.slots.filter(s => s.basement === 'B1').length,
-      free: store.slots.filter(s => s.basement === 'B1' && s.status === 'VACANT').length,
+      total: siteScoped.filter(s => s.basement === 'B1').length,
+      free: siteScoped.filter(s => s.basement === 'B1' && s.status === 'VACANT').length,
     },
     b2: {
-      total: store.slots.filter(s => s.basement === 'B2').length,
-      free: store.slots.filter(s => s.basement === 'B2' && s.status === 'VACANT').length,
+      total: siteScoped.filter(s => s.basement === 'B2').length,
+      free: siteScoped.filter(s => s.basement === 'B2' && s.status === 'VACANT').length,
     },
     b3: {
-      total: store.slots.filter(s => s.basement === 'B3').length,
-      free: store.slots.filter(s => s.basement === 'B3' && s.status === 'VACANT').length,
+      total: siteScoped.filter(s => s.basement === 'B3').length,
+      free: siteScoped.filter(s => s.basement === 'B3' && s.status === 'VACANT').length,
     },
     ground: {
-      total: store.slots.filter(s => s.basement === 'Ground' || s.basement === 'Driveway').length,
-      free: store.slots.filter(s => (s.basement === 'Ground' || s.basement === 'Driveway') && s.status === 'VACANT').length,
+      total: siteScoped.filter(s => s.basement === 'Ground' || s.basement === 'Driveway').length,
+      free: siteScoped.filter(s => (s.basement === 'Ground' || s.basement === 'Driveway') && s.status === 'VACANT').length,
     },
   };
 
@@ -261,8 +273,12 @@ const PLATE_VISIBLE_ROLES = new Set(['Gate Security Attendant', 'ValetX Operatio
 
 app.get('/api/v1/employees', (req, res) => {
   const store = getStore();
-  const { search, department } = req.query;
-  let employees = store.employees;
+  const { search, department, siteId } = req.query;
+
+  const resolveSiteId = (e: { siteId?: string }) => e.siteId || DEFAULT_SITE_ID;
+  let employees = siteId && typeof siteId === 'string' && siteId !== 'ALL'
+    ? store.employees.filter(e => resolveSiteId(e) === siteId)
+    : store.employees;
 
   if (department && typeof department === 'string' && department !== 'ALL') {
     employees = employees.filter(e => e.department === department);
@@ -516,7 +532,11 @@ app.post('/api/v1/domains/remove', requirePermission('REGISTRATION', 'canEdit'),
 
 // --- Employee Self-Registration & Admin Approval Endpoints ---
 app.get('/api/v1/registrations', (req, res) => {
-  const requests = getRegistrationRequests();
+  const { siteId } = req.query;
+  const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
+  const requests = siteId && typeof siteId === 'string' && siteId !== 'ALL'
+    ? getRegistrationRequests().filter(r => resolveSiteId(r) === siteId)
+    : getRegistrationRequests();
   const pendingCount = requests.filter(r => r.status === 'PENDING').length;
   res.json({ requests, pendingCount });
 });
@@ -955,9 +975,14 @@ Respond strictly in JSON format with:
 // 7. Parking Logs Endpoint (with PII Privacy Masking & Pagination)
 app.get('/api/v1/logs', (req, res) => {
   const store = getStore();
-  const { status, basement, search, limit = '100', maskPII, userRole } = req.query;
+  const { status, basement, search, limit = '100', maskPII, userRole, siteId } = req.query;
 
-  let logs = store.logs;
+  const resolveSiteId = (l: { siteId?: string }) => l.siteId || DEFAULT_SITE_ID;
+  const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
+    ? store.logs.filter(l => resolveSiteId(l) === siteId)
+    : store.logs;
+
+  let logs = siteScoped;
 
   if (status && typeof status === 'string' && status !== 'ALL') {
     logs = logs.filter(l => l.status === status);
@@ -983,8 +1008,8 @@ app.get('/api/v1/logs', (req, res) => {
 
   res.json({
     total: logs.length,
-    activeCount: store.logs.filter(l => l.status === 'ACTIVE').length,
-    completedCount: store.logs.filter(l => l.status === 'COMPLETED').length,
+    activeCount: siteScoped.filter(l => l.status === 'ACTIVE').length,
+    completedCount: siteScoped.filter(l => l.status === 'COMPLETED').length,
     piiMasked: shouldMask,
     logs: sanitizedLogs,
   });
@@ -999,10 +1024,15 @@ app.get('/api/v1/analytics/prediction', (req, res) => {
 // 9. Non-Parked Employee Alerts Endpoint
 app.get('/api/v1/alerts/non-parked', (req, res) => {
   const store = getStore();
+  const { siteId } = req.query;
+  const resolveSiteId = (a: { siteId?: string }) => a.siteId || DEFAULT_SITE_ID;
+  const alerts = siteId && typeof siteId === 'string' && siteId !== 'ALL'
+    ? store.alerts.filter(a => resolveSiteId(a) === siteId)
+    : store.alerts;
   res.json({
     cutoffTime: '10:30 AM',
-    totalAlerts: store.alerts.length,
-    alerts: store.alerts,
+    totalAlerts: alerts.length,
+    alerts,
   });
 });
 
@@ -1132,7 +1162,11 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
 
 // 14. VALETX SERVICE API ENDPOINTS
 app.get('/api/v1/valet/tickets', (req, res) => {
-  const tickets = getValetTickets();
+  const { siteId } = req.query;
+  const resolveSiteId = (t: { siteId?: string }) => t.siteId || DEFAULT_SITE_ID;
+  const tickets = siteId && typeof siteId === 'string' && siteId !== 'ALL'
+    ? getValetTickets().filter(t => resolveSiteId(t) === siteId)
+    : getValetTickets();
   res.json({ success: true, count: tickets.length, tickets });
 });
 

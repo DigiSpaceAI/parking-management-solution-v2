@@ -1191,7 +1191,7 @@ async function syncStoreToFirestore(snapshot: StoreData) {
 
 async function loadStoreFromFirestore(): Promise<{ data: StoreData | null; failed: boolean }> {
   const db = getFirestoreDb();
-  if (!db) return null;
+  if (!db) return { data: null, failed: false };
 
   try {
     const results = await Promise.all(

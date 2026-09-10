@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { ParkingSlot, Employee, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig } from './types';
 import { clearSessionToken } from './sessionTokenFallback';
 import { Header, ActiveTabType } from './components/Header';
@@ -14,8 +14,19 @@ import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
 import { ParkingLogs } from './components/ParkingLogs';
 import { NonParkedAlerts } from './components/NonParkedAlerts';
-import { AttendantMobileApp } from './components/AttendantMobileApp';
-import { EmployeeMobileApp } from './components/EmployeeMobileApp';
+// Lazy-loaded rather than bundled upfront — these two files alone are
+// nearly 4,000 lines (the stale, pre-ML-Kit mobile source, kept here
+// only as an in-admin preview feature), and bundling them into every
+// page load was the direct cause of the "chunks larger than 500 kB"
+// warning on every single build. Now only loaded the first time someone
+// actually clicks into the Mobile App or Employee Mobile App preview
+// tabs, not before.
+const AttendantMobileApp = lazy(() =>
+  import('./components/AttendantMobileApp').then((m) => ({ default: m.AttendantMobileApp }))
+);
+const EmployeeMobileApp = lazy(() =>
+  import('./components/EmployeeMobileApp').then((m) => ({ default: m.EmployeeMobileApp }))
+);
 import { EmployeeRegistration } from './components/EmployeeRegistration';
 import { MasterConfigModule } from './components/MasterConfigModule';
 import { ValetXModule } from './components/ValetXModule';
@@ -389,20 +400,24 @@ export default function App() {
             {activeTab === 'ALERTS' && <NonParkedAlerts onRefresh={refreshAll} />}
 
             {activeTab === 'MOBILE_APP' && (
-              <AttendantMobileApp
-                slots={slots}
-                employees={employees}
-                onVehicleEntry={handleVehicleEntry}
-                onVehicleExit={handleVehicleExit}
-                onRefresh={refreshAll}
-              />
+              <Suspense fallback={<div className="p-8 text-center text-slate-500 text-sm">Loading mobile app preview…</div>}>
+                <AttendantMobileApp
+                  slots={slots}
+                  employees={employees}
+                  onVehicleEntry={handleVehicleEntry}
+                  onVehicleExit={handleVehicleExit}
+                  onRefresh={refreshAll}
+                />
+              </Suspense>
             )}
 
             {activeTab === 'EMPLOYEE_MOBILE_APP' && (
-              <EmployeeMobileApp
-                slots={slots}
-                onRefreshAll={refreshAll}
-              />
+              <Suspense fallback={<div className="p-8 text-center text-slate-500 text-sm">Loading employee app preview…</div>}>
+                <EmployeeMobileApp
+                  slots={slots}
+                  onRefreshAll={refreshAll}
+                />
+              </Suspense>
             )}
 
             {activeTab === 'REGISTRATION' && (

@@ -130,7 +130,7 @@ export const MasterAdminUsers: React.FC = () => {
         setNewEmail('');
         setNewAssignedSiteIds([]);
         setNewSiteScopeType('SPECIFIC_SITES');
-        setResetMessage(data.message);
+        setResetMessage(data.resetToken ? `${data.message} Token: ${data.resetToken}` : data.message);
         load();
       } else {
         setProvisionError(data.message || (editingUserId ? 'Failed to update user.' : 'Failed to create user.'));

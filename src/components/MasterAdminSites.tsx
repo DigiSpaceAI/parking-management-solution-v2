@@ -122,6 +122,47 @@ export const MasterAdminSites: React.FC = () => {
     }
   };
 
+  const [onboardOpen, setOnboardOpen] = useState(false);
+  const [onboardBusy, setOnboardBusy] = useState(false);
+  const [onboardError, setOnboardError] = useState('');
+  const [newSiteName, setNewSiteName] = useState('');
+  const [newSiteCity, setNewSiteCity] = useState('');
+  const [newSiteCode, setNewSiteCode] = useState('');
+
+  const submitOnboard = async () => {
+    if (!newSiteName.trim() || !newSiteCity.trim()) {
+      setOnboardError('Site name and city are both required.');
+      return;
+    }
+    setOnboardBusy(true);
+    setOnboardError('');
+    try {
+      const res = await fetch('/api/v1/sites/onboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          siteName: newSiteName.trim(),
+          city: newSiteCity.trim(),
+          siteCode: newSiteCode.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setOnboardOpen(false);
+        setNewSiteName('');
+        setNewSiteCity('');
+        setNewSiteCode('');
+        loadSites();
+      } else {
+        setOnboardError(data.message || 'Failed to onboard site.');
+      }
+    } catch {
+      setOnboardError('Could not reach the server.');
+    } finally {
+      setOnboardBusy(false);
+    }
+  };
+
   return (
     <div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 18 }}>
@@ -137,10 +178,67 @@ export const MasterAdminSites: React.FC = () => {
         <button style={{ padding: '9px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#eef1f6', color: '#334155', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
           Import CSV
         </button>
-        <button style={{ padding: '9px 16px', border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+        <button
+          onClick={() => setOnboardOpen(true)}
+          style={{ padding: '9px 16px', border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+        >
           Onboard site
         </button>
       </div>
+
+      {onboardOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 420, width: '90%' }}>
+            <h4 style={{ margin: 0, fontSize: 16 }}>Onboard a new site</h4>
+            <p style={{ fontSize: 12, color: '#64748b', margin: '6px 0 16px' }}>
+              Starts with zero slots — bulk-upload inventory from the site's own admin once it's created.
+            </p>
+
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Site name *</label>
+            <input
+              value={newSiteName}
+              onChange={(e) => setNewSiteName(e.target.value)}
+              placeholder="e.g. Prestige Tech Park"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', border: '1px solid #cbd3e0', borderRadius: 8, fontSize: 13, marginBottom: 12 }}
+            />
+
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>City *</label>
+            <input
+              value={newSiteCity}
+              onChange={(e) => setNewSiteCity(e.target.value)}
+              placeholder="e.g. Bengaluru"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', border: '1px solid #cbd3e0', borderRadius: 8, fontSize: 13, marginBottom: 12 }}
+            />
+
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Site code (optional — auto-generated if left blank)</label>
+            <input
+              value={newSiteCode}
+              onChange={(e) => setNewSiteCode(e.target.value)}
+              placeholder="e.g. PTP-01"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', border: '1px solid #cbd3e0', borderRadius: 8, fontSize: 13, marginBottom: 12 }}
+            />
+
+            {onboardError && (
+              <div style={{ padding: '8px 12px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12, marginBottom: 12 }}>
+                {onboardError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+              <button onClick={() => setOnboardOpen(false)} disabled={onboardBusy} style={{ padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={submitOnboard}
+                disabled={onboardBusy}
+                style={{ padding: '8px 16px', border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer', opacity: onboardBusy ? 0.6 : 1 }}
+              >
+                {onboardBusy ? 'Creating…' : 'Create site'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ border: '1px solid #e2e6ee', borderRadius: 8, overflow: 'hidden', marginBottom: 20 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>

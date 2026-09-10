@@ -147,8 +147,14 @@ const PUBLIC_API_PATHS = new Set([
   '/api/v1/auth/set-password',
   '/api/v1/registrations/submit',
   '/api/v1/domains',
-  '/api/v1/employees/profile',
-  '/api/v1/employees/update-vehicle',
+  // employees/profile and employees/update-vehicle were REMOVED from this
+  // list as a critical security fix — they used to be reachable with no
+  // real authentication at all, protected only by a "BOLA guard" that
+  // trusted client-supplied x-user-email/x-employee-id headers with zero
+  // verification, and even that check was skippable entirely just by
+  // omitting those headers. Both endpoints now require the same real,
+  // server-verified session as every other authenticated endpoint (see
+  // the identity check rewritten inside bolaIdentityGuard in security.ts).
 ]);
 
 app.use((req, res, next) => {

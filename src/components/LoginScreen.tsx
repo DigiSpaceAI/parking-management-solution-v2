@@ -49,7 +49,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [employeeEmail, setEmployeeEmail] = useState<string>('');
-  const [rememberMe, setRememberMe] = useState<boolean>(true);
 
   // Set / Reset Password inputs
   const [resetIdentifier, setResetIdentifier] = useState<string>('');
@@ -460,17 +459,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between py-1">
-                    <label className="flex items-center space-x-2 text-xs text-slate-600 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={rememberMe}
-                        onChange={(e) => setRememberMe(e.target.checked)}
-                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>Keep session active (30 Days)</span>
-                    </label>
-                  </div>
 
                   <button
                     type="submit"

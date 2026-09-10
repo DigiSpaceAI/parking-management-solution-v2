@@ -19,7 +19,7 @@ export const DEFAULT_SITE_ID = 'site-default';
 // both sides only reference the other's exports inside function bodies,
 // never at module-load time, so this circular import resolves safely —
 // same pattern already established and working for that direction.
-import { logSecurityEvent } from './security';
+import { logSecurityEvent, generatePasswordResetToken } from './security';
 import {
   Employee,
   EmployeeStatus,
@@ -290,11 +290,20 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
 
   const roles = [masterAdminRole, siteManagerRole, valetSupervisorRole, misAuditorRole, gateAttendantRole];
 
-  const adminCreds = hashPassword('Admin@1234', 'salt_admin_101');
-  const siteCreds = hashPassword('Site@1234', 'salt_site_102');
-  const valetCreds = hashPassword('Valet@1234', 'salt_valet_103');
-  const auditCreds = hashPassword('Audit@1234', 'salt_audit_104');
-  const gateCreds = hashPassword('Gate@1234', 'salt_gate_105');
+  // SECURITY FIX: these previously passed a hardcoded, predictable salt
+  // ('salt_admin_101' etc.) instead of letting hashPassword generate a
+  // real random one — a fixed, guessable salt undermines the whole point
+  // of salting, since it can just be read directly from this source file.
+  // Now uses hashPassword's own secure random default. The password text
+  // itself (Admin@1234, etc.) is a known, documented seed value meant to
+  // be rotated immediately on any fresh deployment — already the case
+  // for this project's live environment — but the salt should never have
+  // been predictable regardless.
+  const adminCreds = hashPassword('Admin@1234');
+  const siteCreds = hashPassword('Site@1234');
+  const valetCreds = hashPassword('Valet@1234');
+  const auditCreds = hashPassword('Audit@1234');
+  const gateCreds = hashPassword('Gate@1234');
 
   const users: AppUser[] = [
     {
@@ -976,7 +985,11 @@ export function initDB(): StoreData {
             u.passwordHash = matchDefault.passwordHash;
             u.passwordSalt = matchDefault.passwordSalt;
           } else {
-            const fallbackCreds = hashPassword('Admin@1234');
+            // Same fix as saveAppUser's new-user path — a random,
+            // never-displayed password rather than a predictable
+            // hardcoded one, for this defensive "repair a corrupted
+            // record" fallback too.
+            const fallbackCreds = hashPassword(crypto.randomBytes(32).toString('hex'));
             u.passwordHash = fallbackCreds.hash;
             u.passwordSalt = fallbackCreds.salt;
           }
@@ -3148,7 +3161,7 @@ export function getAppUsers(): AppUser[] {
   return storeData.appUsers;
 }
 
-export function saveAppUser(userData: Partial<AppUser>): { success: boolean; message: string; user?: AppUser } {
+export function saveAppUser(userData: Partial<AppUser>): { success: boolean; message: string; user?: AppUser; resetToken?: string } {
   const storeData = getStore();
   if (!storeData.appUsers) storeData.appUsers = [];
 
@@ -3194,21 +3207,33 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
     }
   }
 
-  // New user password
-  const initialPassword = (userData as any).plainPassword || 'Matrix@2026';
+  // SECURITY FIX: previously defaulted to the hardcoded, publicly-visible
+  // password 'Matrix@2026' for every newly-provisioned user unless an
+  // explicit password was supplied. That string being sitting in source
+  // control meant literally every account created through the Provision
+  // User feature was accessible to anyone who'd seen this file, until an
+  // admin remembered to manually reset it. Now: a new user's actual
+  // password hash is set to a random value that's never displayed to
+  // anyone and never usable as-is (nobody knows it, including this
+  // function) — the account can only actually be logged into once a real
+  // password is set via a genuine reset token, generated below and
+  // returned so the admin can share it with the new user directly,
+  // exactly the same pattern already used for the existing Reset pw
+  // feature.
+  const initialPassword = (userData as any).plainPassword || crypto.randomBytes(32).toString('hex');
   const initialHash = hashPassword(initialPassword);
 
   const newUser: AppUser = {
     id: `usr-${Date.now()}`,
     username: userData.username || `user.${Math.floor(100 + Math.random() * 899)}`,
     fullName: userData.fullName || 'New Facility Operator',
-    email: userData.email || 'operator@parkos.ai',
+    email: userData.email || 'operator@parkflow.ai',
     phone: userData.phone || '+91 98000 00000',
     designation: userData.designation || 'Parking Operator',
     roleId: userData.roleId || 'role-site-manager',
     roleName,
     siteScopeType: userData.siteScopeType || 'SPECIFIC_SITES',
-    assignedSiteIds: userData.assignedSiteIds || ['site-1'],
+    assignedSiteIds: userData.assignedSiteIds || [DEFAULT_SITE_ID],
     assignedSiteNames: siteNames,
     status: userData.status || 'ACTIVE',
     customModuleOverrides: userData.customModuleOverrides || {},
@@ -3221,7 +3246,13 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
   storeData.appUsers.unshift(newUser);
   saveDB();
 
-  return { success: true, message: `User '${newUser.fullName}' created and credentials generated successfully.`, user: newUser };
+  const resetToken = generatePasswordResetToken(newUser.id);
+  return {
+    success: true,
+    message: `User '${newUser.fullName}' created. Share this one-time setup link/token with them directly — it expires in 1 hour and lets them set their own password.`,
+    user: newUser,
+    resetToken,
+  };
 }
 
 export function setUserPassword(userIdOrEmail: string, newPlainPassword: string): { success: boolean; message: string; user?: AppUser } {

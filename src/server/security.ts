@@ -529,37 +529,54 @@ export function rateLimiterMiddleware(maxRequests: number = 3000, windowMs: numb
 
 export function bolaIdentityGuard(options?: { allowAdminOverride?: boolean; actionName?: string }) {
   return (req: Request, res: Response, next: NextFunction) => {
+    // SECURITY FIX: this guard used to trust client-supplied headers
+    // (x-user-email, x-user-role, etc.) as "proof" of identity, with no
+    // real verification at all — and even that weak check was skippable
+    // entirely just by omitting those headers, since the block-and-403
+    // logic only fired when they were present. Combined with these two
+    // endpoints previously being in PUBLIC_API_PATHS (no requireAuth at
+    // all), this meant anyone could view or modify any employee's
+    // profile and vehicle data with zero authentication. Both endpoints
+    // now require a real requireAuth session first (removed from
+    // PUBLIC_API_PATHS in server.ts), so req.user here is guaranteed to
+    // be a genuine, server-verified account — that's what this check
+    // now actually relies on, not anything the client claims about
+    // itself.
     const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
-    const callerEmail = (req.headers['x-user-email'] as string) || (req.body?.authEmail as string);
-    const callerEmployeeId = (req.headers['x-employee-id'] as string) || (req.body?.authEmployeeId as string);
-    const callerRole = (req.headers['x-user-role'] as string) || 'USER';
+    const caller = req.user;
+
+    if (!caller) {
+      // Shouldn't be reachable given requireAuth already ran, but fail
+      // closed rather than assume.
+      return res.status(401).json({ success: false, message: 'Not signed in.' });
+    }
 
     const targetEmail = req.body?.email || (req.query?.email as string);
     const targetEmployeeId = req.body?.employeeId || (req.query?.employeeId as string);
 
     const isAdmin =
-      callerRole === 'MASTER_ADMIN' ||
-      callerRole === 'SITE_MANAGER' ||
-      callerRole === 'SUPER_ADMIN';
+      caller.roleId === 'role-master-admin' ||
+      caller.roleId === 'role-site-manager' ||
+      caller.roleName === 'Platform Master Admin' ||
+      caller.roleName === 'Site Facility Manager';
 
     if (options?.allowAdminOverride && isAdmin) {
       return next();
     }
 
     if (targetEmail || targetEmployeeId) {
-      const emailMatches = callerEmail && targetEmail && callerEmail.toLowerCase() === targetEmail.toLowerCase();
-      const empIdMatches = callerEmployeeId && targetEmployeeId && callerEmployeeId.toUpperCase() === targetEmployeeId.toUpperCase();
+      const emailMatches = targetEmail && caller.email.toLowerCase() === String(targetEmail).toLowerCase();
 
-      if (!emailMatches && !empIdMatches && !isAdmin && (callerEmail || callerEmployeeId)) {
+      if (!emailMatches && !isAdmin) {
         logSecurityEvent({
           action: options?.actionName || 'BOLA_UNAUTHORIZED_RESOURCE_ACCESS_ATTEMPT',
-          actor: callerEmail || callerEmployeeId || ip,
-          actorRole: callerRole,
+          actor: caller.email,
+          actorRole: caller.roleName,
           ipAddress: ip,
           userAgent: req.headers['user-agent'] as string,
           targetResource: `targetEmail: ${targetEmail || 'N/A'}, targetEmpId: ${targetEmployeeId || 'N/A'}`,
           status: 'BLOCKED_UNAUTHORIZED',
-          details: `Caller ${callerEmail || callerEmployeeId} attempted to access/mutate unauthorized resource belonging to ${targetEmail || targetEmployeeId}. Request blocked by BOLA Guard.`,
+          details: `Caller ${caller.email} attempted to access/mutate unauthorized resource belonging to ${targetEmail || targetEmployeeId}. Request blocked by BOLA Guard.`,
         });
 
         return res.status(403).json({
@@ -707,20 +724,24 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   const store = getStore();
-  let userId = resolveSessionUserId(token);
+  const userId = resolveSessionUserId(token);
 
-  // Fallback pattern matching for parkorbit_sess_<userId>_<entropy>_<ts> if server restarted
-  if (!userId && typeof token === 'string' && token.startsWith('parkorbit_sess_')) {
-    const parts = token.split('_');
-    if (parts.length >= 3) {
-      const candidateId = parts[2];
-      const found = store.appUsers.find((u) => u.id === candidateId);
-      if (found) {
-        userId = found.id;
-        createSession(token, userId);
-      }
-    }
-  }
+  // SECURITY FIX: a fallback used to sit here that, when the in-memory
+  // session store was empty (e.g. after a server restart), fell back to
+  // parsing the userId directly out of the token string itself
+  // (`parkflow_sess_<userId>_...`.split('_')[2]) and trusting it if that
+  // ID matched a real user — with zero cryptographic verification. Any
+  // attacker who knew or guessed a valid user ID could forge a token in
+  // that exact shape and be granted a fully authenticated session for
+  // that account, no password required. This was a complete
+  // authentication bypass. Removed entirely — the only accepted path
+  // now is a token that's actually present in the real, server-issued
+  // session store. The tradeoff this reintroduces: an in-memory-only
+  // session store means a server restart does log everyone out, which
+  // is a real UX cost, but a vastly smaller one than a full auth
+  // bypass. The correct long-term fix is persisting sessions in
+  // Firestore instead of only in memory — worth doing as a genuine
+  // follow-up, not a reason to keep this fallback in the meantime.
 
   if (!userId) {
     return res.status(401).json({ success: false, message: 'Session expired or invalid. Please sign in again.' });

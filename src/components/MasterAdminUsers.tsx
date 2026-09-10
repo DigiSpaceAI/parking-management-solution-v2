@@ -15,8 +15,11 @@ interface AppUserRow {
   id: string;
   fullName: string;
   email: string;
+  roleId?: string;
   roleName: string;
   siteScope?: string;
+  siteScopeType?: 'ALL_SITES' | 'SPECIFIC_SITES';
+  assignedSiteIds?: string[];
   lastLoginAt?: string;
   status: string;
   moduleOverrideCount?: number;
@@ -55,11 +58,23 @@ export const MasterAdminUsers: React.FC = () => {
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [provisionBusy, setProvisionBusy] = useState(false);
   const [provisionError, setProvisionError] = useState('');
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [newFullName, setNewFullName] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newRoleId, setNewRoleId] = useState('');
   const [newSiteScopeType, setNewSiteScopeType] = useState<'ALL_SITES' | 'SPECIFIC_SITES'>('SPECIFIC_SITES');
   const [newAssignedSiteIds, setNewAssignedSiteIds] = useState<string[]>([]);
+
+  const openEditModal = (u: AppUserRow) => {
+    setEditingUserId(u.id);
+    setNewFullName(u.fullName);
+    setNewEmail(u.email);
+    setNewRoleId(u.roleId || '');
+    setNewSiteScopeType(u.siteScopeType || 'SPECIFIC_SITES');
+    setNewAssignedSiteIds(u.assignedSiteIds || []);
+    setProvisionError('');
+    setProvisionOpen(true);
+  };
 
   const loadRolesAndSites = useCallback(async () => {
     try {
@@ -99,6 +114,7 @@ export const MasterAdminUsers: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: editingUserId || undefined,
           fullName: newFullName.trim(),
           email: newEmail.trim(),
           roleId: newRoleId,
@@ -109,6 +125,7 @@ export const MasterAdminUsers: React.FC = () => {
       const data = await res.json();
       if (data.success) {
         setProvisionOpen(false);
+        setEditingUserId(null);
         setNewFullName('');
         setNewEmail('');
         setNewAssignedSiteIds([]);
@@ -116,7 +133,7 @@ export const MasterAdminUsers: React.FC = () => {
         setResetMessage(data.message);
         load();
       } else {
-        setProvisionError(data.message || 'Failed to create user.');
+        setProvisionError(data.message || (editingUserId ? 'Failed to update user.' : 'Failed to create user.'));
       }
     } catch {
       setProvisionError('Could not reach the server.');
@@ -197,7 +214,16 @@ export const MasterAdminUsers: React.FC = () => {
           </select>
         </div>
         <button
-          onClick={() => setProvisionOpen(true)}
+          onClick={() => {
+            setEditingUserId(null);
+            setNewFullName('');
+            setNewEmail('');
+            setNewRoleId(roleOptions[0]?.id || '');
+            setNewSiteScopeType('SPECIFIC_SITES');
+            setNewAssignedSiteIds([]);
+            setProvisionError('');
+            setProvisionOpen(true);
+          }}
           style={{ padding: '9px 16px', border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
         >
           Provision user
@@ -207,9 +233,9 @@ export const MasterAdminUsers: React.FC = () => {
       {provisionOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
           <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 460, width: '90%', maxHeight: '85vh', overflowY: 'auto' }}>
-            <h4 style={{ margin: 0, fontSize: 16 }}>Provision a new user</h4>
+            <h4 style={{ margin: 0, fontSize: 16 }}>{editingUserId ? 'Edit user' : 'Provision a new user'}</h4>
             <p style={{ fontSize: 12, color: '#64748b', margin: '6px 0 16px' }}>
-              An initial password is generated automatically — use Reset pw afterward to issue a real one.
+              {editingUserId ? "Changes apply immediately — the user's existing password is unaffected." : 'An initial password is generated automatically — use Reset pw afterward to issue a real one.'}
             </p>
 
             <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Full name *</label>
@@ -276,7 +302,7 @@ export const MasterAdminUsers: React.FC = () => {
             )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
-              <button onClick={() => setProvisionOpen(false)} disabled={provisionBusy} style={{ padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+              <button onClick={() => { setProvisionOpen(false); setEditingUserId(null); }} disabled={provisionBusy} style={{ padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>
                 Cancel
               </button>
               <button
@@ -284,7 +310,7 @@ export const MasterAdminUsers: React.FC = () => {
                 disabled={provisionBusy}
                 style={{ padding: '8px 16px', border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer', opacity: provisionBusy ? 0.6 : 1 }}
               >
-                {provisionBusy ? 'Creating…' : 'Create user'}
+                {provisionBusy ? (editingUserId ? 'Saving…' : 'Creating…') : (editingUserId ? 'Save changes' : 'Create user')}
               </button>
             </div>
           </div>
@@ -332,7 +358,7 @@ export const MasterAdminUsers: React.FC = () => {
                       {u.moduleOverrideCount ? `${u.moduleOverrideCount} module${u.moduleOverrideCount === 1 ? '' : 's'}` : '—'}
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #cbd3e0', borderRadius: 6, background: '#fff', cursor: 'pointer', marginRight: 6 }}>Edit</button>
+                      <button onClick={() => openEditModal(u)} style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #cbd3e0', borderRadius: 6, background: '#fff', cursor: 'pointer', marginRight: 6 }}>Edit</button>
                       <button
                         onClick={() => resetPassword(u.id)}
                         disabled={resettingId === u.id}

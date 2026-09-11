@@ -1,21 +1,13 @@
 import React, { useState } from 'react';
 import { storeSessionToken } from '../sessionTokenFallback';
 import {
-  ShieldCheck,
-  Lock,
-  Mail,
-  KeyRound,
   ArrowRight,
-  Building2,
-  Car,
-  UserCheck,
   AlertCircle,
   CheckCircle2,
   Eye,
   EyeOff,
-  UserPlus,
-  RefreshCw,
-  Info,
+  KeyRound,
+  Lock,
 } from 'lucide-react';
 import { AppUser } from '../types';
 
@@ -49,6 +41,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [employeeEmail, setEmployeeEmail] = useState<string>('');
+  const [rememberMe, setRememberMe] = useState<boolean>(true);
 
   // Set / Reset Password inputs
   const [resetIdentifier, setResetIdentifier] = useState<string>('');
@@ -268,74 +261,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col justify-center relative overflow-hidden selection:bg-indigo-500 selection:text-white font-sans">
-      {/* Ambient background glows */}
-      <div className="absolute -top-40 -left-40 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none"></div>
-      <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-blue-600/20 rounded-full blur-3xl pointer-events-none"></div>
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-3xl pointer-events-none"></div>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 34, padding: '48px 24px', background: 'var(--color-bg, #f2f2f3)', fontFamily: "'Barlow', system-ui, sans-serif", color: 'var(--color-text, #1d1f20)', boxSizing: 'border-box' }}>
 
-      <div className="relative z-10 w-full max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col lg:flex-row items-center justify-between gap-12">
-        {/* Left Branding & Highlights Column */}
-        <div className="w-full lg:w-1/2 text-white space-y-6 text-center lg:text-left">
-          <div className="inline-flex items-center space-x-2.5 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-mono font-semibold">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>Enterprise Gateway • Cryptographic Auth</span>
-          </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--color-accent, #5980a6)', color: 'var(--color-bg, #f2f2f3)', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 15, letterSpacing: '0.04em' }}>PF</div>
+        <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 30, lineHeight: 1, letterSpacing: '0.01em' }}>ParkFlow</div>
+      </div>
 
-          <div className="space-y-3">
-            <div className="flex items-center justify-center lg:justify-start space-x-3">
-              <div className="w-12 h-12 bg-gradient-to-tr from-indigo-600 to-blue-500 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30 font-mono font-extrabold text-2xl text-white">
-                PF
-              </div>
-              <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-white font-sans">
-                ParkFlow
-              </h1>
-            </div>
-            <p className="text-slate-300 text-sm sm:text-base leading-relaxed max-w-lg">
-              Centrally Managed Smart Parking & Mobility Infrastructure for Corporate Campuses, Valet Fleets, and Multi-Basement Facilities.
-            </p>
-          </div>
-
-          {/* Core Feature Badges */}
-          <div className="grid grid-cols-2 gap-3 pt-2">
-            <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800 flex items-start space-x-3">
-              <div className="p-2 bg-indigo-500/20 text-indigo-400 rounded-lg shrink-0">
-                <Building2 className="w-4 h-4" />
-              </div>
-              <div className="text-left">
-                <h4 className="text-xs font-bold text-white">1,080 Multi-Basement</h4>
-                <p className="text-[11px] text-slate-400">Live B1, B2 & B3 real-time state</p>
-              </div>
-            </div>
-
-            <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800 flex items-start space-x-3">
-              <div className="p-2 bg-blue-500/20 text-blue-400 rounded-lg shrink-0">
-                <Car className="w-4 h-4" />
-              </div>
-              <div className="text-left">
-                <h4 className="text-xs font-bold text-white">ANPR OCR & ValetX</h4>
-                <p className="text-[11px] text-slate-400">Vision gate & key pegboard</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-4 bg-slate-900/50 rounded-2xl border border-slate-800/80 text-left">
-            <div className="flex items-center space-x-2 text-xs font-bold text-indigo-300 mb-1">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>PBKDF2 Salted Hashes & BOLA Protection</span>
-            </div>
-            <p className="text-[11px] text-slate-400">
-              Zero-Trust password authentication, HMAC tamper-evident audit logs, and rate limiters protect all endpoints against brute force attacks.
-            </p>
-          </div>
-        </div>
-
-        {/* Right Form Card */}
-        <div className="w-full lg:w-[460px] bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-200/80 relative">
+      <div style={{ width: '100%', maxWidth: 400, padding: '34px 32px', background: 'transparent', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', boxSizing: 'border-box' }}>
           {viewState === 'SIGN_IN' ? (
             <>
               {/* Top Tabs: Admin / Operator vs Employee Pass */}
-              <div className="flex rounded-xl bg-slate-100 p-1 mb-6">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid var(--color-divider, rgba(29,31,32,.16))' }}>
                 <button
                   type="button"
                   onClick={() => {
@@ -343,14 +280,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setErrorMessage(null);
                     setSuccessMessage(null);
                   }}
-                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
-                    loginMode === 'ADMIN_STAFF'
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-900'
-                  }`}
+                  style={{
+                    all: 'unset', boxSizing: 'border-box', textAlign: 'center', cursor: 'pointer', padding: '9px 0', fontSize: 13,
+                    fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600,
+                    background: loginMode === 'ADMIN_STAFF' ? 'var(--color-accent, #5980a6)' : 'transparent',
+                    color: loginMode === 'ADMIN_STAFF' ? 'var(--color-bg, #f2f2f3)' : 'var(--color-neutral-700, #5d5d60)',
+                  }}
                 >
-                  <UserCheck className="w-3.5 h-3.5" />
-                  <span>Operator & Admin</span>
+                  Operator &amp; Admin
                 </button>
                 <button
                   type="button"
@@ -359,40 +296,40 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setErrorMessage(null);
                     setSuccessMessage(null);
                   }}
-                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
-                    loginMode === 'EMPLOYEE_PASS'
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-900'
-                  }`}
+                  style={{
+                    all: 'unset', boxSizing: 'border-box', textAlign: 'center', cursor: 'pointer', padding: '9px 0', fontSize: 13,
+                    fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, borderLeft: '1px solid var(--color-divider, rgba(29,31,32,.16))',
+                    background: loginMode === 'EMPLOYEE_PASS' ? 'var(--color-accent, #5980a6)' : 'transparent',
+                    color: loginMode === 'EMPLOYEE_PASS' ? 'var(--color-bg, #f2f2f3)' : 'var(--color-neutral-700, #5d5d60)',
+                  }}
                 >
-                  <Car className="w-3.5 h-3.5" />
-                  <span>Employee Smart Pass</span>
+                  Employee Smart Pass
                 </button>
               </div>
 
               {/* Form Header */}
-              <div className="mb-5">
-                <h2 className="text-xl font-extrabold text-slate-900">
-                  {loginMode === 'ADMIN_STAFF' ? 'Sign in to ParkFlow' : 'Employee Smart Parking Pass'}
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
+              <div style={{ marginTop: 22 }}>
+                <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.15, fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600 }}>
+                  {loginMode === 'ADMIN_STAFF' ? 'Sign in' : 'Employee Smart Parking Pass'}
+                </h1>
+                <p style={{ margin: '6px 0 0', fontSize: 14, lineHeight: 1.5, color: 'var(--color-neutral-700, #5d5d60)' }}>
                   {loginMode === 'ADMIN_STAFF'
-                    ? 'Enter your corporate email and password to access your role-specific dashboard.'
+                    ? 'Use your corporate credentials to reach your role dashboard.'
                     : 'Enter your registered corporate email to view your digital parking badge & live bay status.'}
                 </p>
               </div>
 
               {/* Success Banner */}
               {successMessage && (
-                <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-start space-x-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                <div style={{ marginTop: 16, padding: '10px 12px', background: 'var(--color-accent-100, #eef6ff)', border: '1px solid var(--color-accent-400, #94bce3)', color: 'var(--color-accent-800, #2c455d)', fontSize: 12.5, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>{successMessage}</span>
                 </div>
               )}
 
               {/* Error Banner */}
               {errorMessage && (
-                <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-start space-x-2">
+                <div style={{ marginTop: 16, padding: '10px 12px', background: '#fdeaee', border: '1px solid #f7b6c2', color: '#be123c', fontSize: 12.5, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>{errorMessage}</span>
                 </div>
@@ -400,29 +337,28 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
               {/* Mode 1: Admin / Operator Login Form */}
               {loginMode === 'ADMIN_STAFF' ? (
-                <form onSubmit={handleAdminLogin} className="space-y-4">
+                <form onSubmit={handleAdminLogin} style={{ marginTop: 22 }}>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      Corporate Email or Username
+                    <label htmlFor="pf-user" style={{ display: 'block', fontSize: 12, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-neutral-700, #5d5d60)' }}>
+                      Email or username
                     </label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                      <input
-                        type="text"
-                        required
-                        maxLength={254}
-                        value={identifier}
-                        onChange={(e) => setIdentifier(e.target.value)}
-                        placeholder="e.g. v.roy@parkos.ai"
-                        className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:bg-white transition"
-                      />
-                    </div>
+                    <input
+                      id="pf-user"
+                      type="text"
+                      required
+                      maxLength={254}
+                      autoComplete="username"
+                      value={identifier}
+                      onChange={(e) => setIdentifier(e.target.value)}
+                      placeholder="name@company.com"
+                      style={{ width: '100%', minHeight: 42, padding: '6px 10px', fontSize: 14, color: 'var(--color-text, #1d1f20)', background: 'var(--color-surface, #e9e9ea)', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', boxSizing: 'border-box' }}
+                    />
                   </div>
 
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                        Security Password (8-64 chars)
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                      <label htmlFor="pf-pass" style={{ display: 'block', fontSize: 12, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-neutral-700, #5d5d60)' }}>
+                        Password
                       </label>
                       <button
                         type="button"
@@ -432,44 +368,57 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                           setSuccessMessage(null);
                           setViewState('SET_PASSWORD');
                         }}
-                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
+                        style={{ all: 'unset', cursor: 'pointer', fontSize: 12, color: 'var(--color-accent-700, #416180)' }}
                       >
-                        Create / Reset Password
+                        Create / reset password
                       </button>
                     </div>
-                    <div className="relative">
-                      <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                    <div style={{ position: 'relative', display: 'flex' }}>
                       <input
+                        id="pf-pass"
                         type={showPassword ? 'text' : 'password'}
                         required
                         minLength={8}
                         maxLength={64}
+                        autoComplete="current-password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Enter your security password"
-                        className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:bg-white transition"
+                        placeholder="••••••••"
+                        style={{ width: '100%', minHeight: 42, padding: '6px 62px 6px 10px', fontSize: 14, color: 'var(--color-text, #1d1f20)', background: 'var(--color-surface, #e9e9ea)', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', boxSizing: 'border-box' }}
                       />
                       <button
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-3 text-slate-400 hover:text-slate-600"
+                        style={{ all: 'unset', boxSizing: 'border-box', position: 'absolute', right: 1, top: 1, bottom: 1, padding: '0 12px', cursor: 'pointer', fontSize: 12, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--color-accent-700, #416180)', display: 'flex', alignItems: 'center' }}
                       >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        {showPassword ? 'Hide' : 'Show'}
                       </button>
                     </div>
                   </div>
 
+                  <label style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+                    />
+                    <span style={{ width: 15, height: 15, flex: 'none', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', display: 'flex', alignItems: 'center', justifyContent: 'center', background: rememberMe ? 'var(--color-accent, #5980a6)' : 'transparent' }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--color-bg, #f2f2f3)" strokeWidth={3} strokeLinecap="square" style={{ opacity: rememberMe ? 1 : 0 }}><path d="M20 6 9 17l-5-5"></path></svg>
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--color-neutral-700, #5d5d60)' }}>Keep me signed in for 30 days</span>
+                  </label>
 
                   <button
                     type="submit"
                     disabled={isLoading}
-                    className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2 transition active:scale-[0.99] disabled:opacity-50"
+                    style={{ all: 'unset', boxSizing: 'border-box', marginTop: 22, width: '100%', minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: isLoading ? 'not-allowed' : 'pointer', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 15, letterSpacing: '0.03em', background: 'var(--color-accent, #5980a6)', color: 'var(--color-bg, #f2f2f3)', opacity: isLoading ? 0.6 : 1 }}
                   >
                     {isLoading ? (
-                      <span>Verifying Credentials...</span>
+                      <span>Verifying credentials…</span>
                     ) : (
                       <>
-                        <span>Sign In to Dashboard</span>
+                        <span>Sign in</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}
@@ -477,34 +426,32 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 </form>
               ) : (
                 /* Mode 2: Employee Smart Pass Form */
-                <form onSubmit={handleEmployeePassLogin} className="space-y-4">
+                <form onSubmit={handleEmployeePassLogin} style={{ marginTop: 22 }}>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      Registered Corporate Email
+                    <label style={{ display: 'block', fontSize: 12, marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-neutral-700, #5d5d60)' }}>
+                      Registered corporate email
                     </label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                      <input
-                        type="email"
-                        required
-                        value={employeeEmail}
-                        onChange={(e) => setEmployeeEmail(e.target.value)}
-                        placeholder="e.g. priya.sharma@techcorp.com"
-                        className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:bg-white transition"
-                      />
-                    </div>
-                    <p className="text-[11px] text-slate-500 mt-1.5">
-                      Pre-whitelisted domains: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-indigo-600">@techcorp.com</code>, <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-indigo-600">@prestige.com</code>
+                    <input
+                      type="email"
+                      required
+                      autoComplete="email"
+                      value={employeeEmail}
+                      onChange={(e) => setEmployeeEmail(e.target.value)}
+                      placeholder="name@company.com"
+                      style={{ width: '100%', minHeight: 42, padding: '6px 10px', fontSize: 14, color: 'var(--color-text, #1d1f20)', background: 'var(--color-surface, #e9e9ea)', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', boxSizing: 'border-box' }}
+                    />
+                    <p style={{ fontSize: 11.5, color: 'var(--color-neutral-600, #7a7a7d)', marginTop: 8 }}>
+                      Pre-whitelisted domains: <code style={{ background: 'var(--color-neutral-200, #e7e7ea)', padding: '1px 5px', color: 'var(--color-accent-700, #416180)' }}>@techcorp.com</code>, <code style={{ background: 'var(--color-neutral-200, #e7e7ea)', padding: '1px 5px', color: 'var(--color-accent-700, #416180)' }}>@prestige.com</code>
                     </p>
                   </div>
 
                   <button
                     type="submit"
                     disabled={isLoading}
-                    className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2 transition active:scale-[0.99] disabled:opacity-50"
+                    style={{ all: 'unset', boxSizing: 'border-box', marginTop: 22, width: '100%', minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: isLoading ? 'not-allowed' : 'pointer', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 15, letterSpacing: '0.03em', background: 'var(--color-accent, #5980a6)', color: 'var(--color-bg, #f2f2f3)', opacity: isLoading ? 0.6 : 1 }}
                   >
                     {isLoading ? (
-                      <span>Verifying Pass...</span>
+                      <span>Verifying pass…</span>
                     ) : (
                       <>
                         <span>Open My Smart Pass</span>
@@ -580,7 +527,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               )}
 
               {/* Password setup prompt banner */}
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+              <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--color-divider, rgba(29,31,32,.16))', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, color: 'var(--color-neutral-700, #5d5d60)' }}>
                 <span>First time or need a password?</span>
                 <button
                   type="button"
@@ -590,9 +537,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setSuccessMessage(null);
                     setViewState('SET_PASSWORD');
                   }}
-                  className="font-bold text-indigo-600 hover:text-indigo-800"
+                  style={{ all: 'unset', cursor: 'pointer', color: 'var(--color-accent-700, #416180)', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600 }}
                 >
-                  Set Up Password ➔
+                  Set up password →
                 </button>
               </div>
             </>
@@ -702,12 +649,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </form>
             </div>
           )}
-        </div>
       </div>
 
-      {/* Footer */}
-      <div className="text-center py-4 text-xs text-slate-600 border-t border-slate-900">
-        ParkFlow Enterprise PMS v4.2 • Protected by End-to-End Encryption & OAuth SSO Gateway
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center', maxWidth: 460 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 18, fontSize: 12, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--color-neutral-600, #7a7a7d)' }}>
+          <a href="#" style={{ color: 'inherit', textDecoration: 'none' }}>Terms of Service</a>
+          <a href="#" style={{ color: 'inherit', textDecoration: 'none' }}>Privacy Policy</a>
+          <a href="#" style={{ color: 'inherit', textDecoration: 'none' }}>Acceptable Use</a>
+          <a href="#" style={{ color: 'inherit', textDecoration: 'none' }}>Support</a>
+        </div>
+        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--color-neutral-600, #7a7a7d)' }}>
+          ParkFlow Enterprise PMS v4.2 — Protected by End-to-End Encryption &amp; OAuth SSO Gateway. Access to this system is restricted to authorised users. Activity is monitored and logged; unauthorised use may result in disciplinary action or prosecution.
+        </p>
       </div>
     </div>
   );

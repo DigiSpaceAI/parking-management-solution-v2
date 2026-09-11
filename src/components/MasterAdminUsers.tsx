@@ -17,9 +17,9 @@ interface AppUserRow {
   email: string;
   roleId?: string;
   roleName: string;
-  siteScope?: string;
   siteScopeType?: 'ALL_SITES' | 'SPECIFIC_SITES';
   assignedSiteIds?: string[];
+  assignedSiteNames?: string[];
   lastLoginAt?: string;
   status: string;
   moduleOverrideCount?: number;
@@ -347,7 +347,9 @@ export const MasterAdminUsers: React.FC = () => {
                       <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, color: '#64748b' }}>{u.email}</div>
                     </td>
                     <td style={{ padding: '10px 14px' }}>{u.roleName}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }}>{u.siteScope || 'ALL_SITES'}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }}>
+                      {u.siteScopeType === 'ALL_SITES' ? 'ALL_SITES' : (u.assignedSiteNames?.join(', ') || 'No site assigned')}
+                    </td>
                     <td style={{ padding: '10px 14px', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }}>{u.lastLoginAt || '—'}</td>
                     <td style={{ padding: '10px 14px' }}>
                       <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 10.5, padding: '3px 9px', background: st.bg, color: st.fg, border: `1px solid ${st.bd}` }}>

@@ -633,7 +633,18 @@ app.get('/api/v1/slots/change-notifications', (req, res) => {
 });
 
 // --- Platform Master Site Configuration Endpoints ---
-app.get('/api/v1/sites', requirePermission('MASTER_CONFIG', 'view'), (req, res) => {
+// SECURITY-CONSCIOUS FIX: this used to require MASTER_CONFIG permission,
+// which only Master Admin has — meaning a Site Admin couldn't fetch even
+// the basic sites list at all. That silently broke their site-switcher,
+// their own site initialization, and by extension Reports and the
+// Site Admin Home/Live Slots pages, all of which depend on this call
+// succeeding to know which site(s) they're even looking at. Viewing
+// which sites exist and their names isn't sensitive the way editing
+// them is — the global requireAuth middleware (any authenticated
+// account) is the right bar here, not MASTER_CONFIG specifically. Every
+// write operation below (onboard, status, delete, pricing) correctly
+// stays gated to MASTER_CONFIG — only this read was ever the problem.
+app.get('/api/v1/sites', (req, res) => {
   const sites = getSites();
   res.json({ success: true, count: sites.length, sites });
 });

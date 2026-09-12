@@ -12,6 +12,7 @@ import { RoleHomePage } from './components/RoleHomePage';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
 import { SiteAdminOverview } from './components/SiteAdminOverview';
 import { SiteAdminLiveSlots } from './components/SiteAdminLiveSlots';
+import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
 import { ParkingLogs } from './components/ParkingLogs';
@@ -418,6 +419,16 @@ export default function App() {
             )}
 
             {activeTab === 'ANALYTICS' && <AnalyticsPredictive />}
+
+            {activeTab === 'REPORTS' && (
+              currentSiteId !== 'ALL' ? (
+                <SiteAdminReports siteId={currentSiteId} />
+              ) : (
+                <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+                  Select a specific site (top right) to view its reports.
+                </div>
+              )
+            )}
 
             {activeTab === 'INVENTORY' && (
               <InventoryMaster

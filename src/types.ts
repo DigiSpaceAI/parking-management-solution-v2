@@ -209,6 +209,22 @@ export interface PredictiveAnalyticsReport {
   }[];
 }
 
+export type OvernightRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface OvernightRequest {
+  id: string;
+  siteId: string;
+  vehicleNumber: string;
+  requestedBy: string; // name/email of whoever submitted it
+  nights: number; // how many nights the exemption covers, starting tonight
+  reason: string;
+  status: OvernightRequestStatus;
+  createdAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectionReason?: string;
+}
+
 export interface NonParkedAlert {
   id: string;
   siteId: string;
@@ -240,6 +256,7 @@ export type AppModuleId =
   | 'VALET_SERVICE'
   | 'LOGS'
   | 'ANALYTICS'
+  | 'REPORTS'
   | 'INVENTORY'
   | 'MOBILE_APP'
   | 'EMPLOYEE_MOBILE_APP'
@@ -322,3 +339,5 @@ export interface SecurityComplianceSummary {
   lastTamperCheckStatus: 'VERIFIED_INTACT' | 'ALERT';
   activeSecurityHeaders: string[];
 }
+
+

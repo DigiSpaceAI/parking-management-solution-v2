@@ -10,6 +10,8 @@ import { Header, ActiveTabType } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { RoleHomePage } from './components/RoleHomePage';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
+import { SiteAdminOverview } from './components/SiteAdminOverview';
+import { SiteAdminLiveSlots } from './components/SiteAdminLiveSlots';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
 import { ParkingLogs } from './components/ParkingLogs';
@@ -33,7 +35,7 @@ import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
 import { SecurityAuditModule } from './components/SecurityAuditModule';
 import { LoginScreen } from './components/LoginScreen';
-import { isModulePermitted } from './utils/rbac';
+import { isModulePermitted, getUserPermittedSites, getUserPrimarySite } from './utils/rbac';
 import { CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
 
 const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
@@ -217,9 +219,29 @@ export default function App() {
     fetchSites();
   };
 
+  // Same role check used in the bolaIdentityGuard security fix, kept
+  // consistent — a real Site Admin, matched by roleId first (stable)
+  // with roleName as a fallback (matches the display name shown
+  // throughout the UI).
+  const isSiteAdmin =
+    currentUser?.roleId === 'role-site-manager' || currentUser?.roleName === 'Site Facility Manager';
+
   useEffect(() => {
     refreshAll();
   }, []);
+
+  // Once the user's own record and the sites list are both loaded,
+  // default a SPECIFIC_SITES-scoped user (a real Site Admin, not a
+  // Master Admin with ALL_SITES) to their primary assigned site, rather
+  // than leaving currentSiteId at 'ALL' — that default only makes sense
+  // for someone who's actually allowed to see everything.
+  useEffect(() => {
+    if (!currentUser || sites.length === 0) return;
+    if (currentUser.siteScopeType === 'SPECIFIC_SITES' && currentSiteId === 'ALL') {
+      const primary = getUserPrimarySite(currentUser, sites);
+      if (primary) setCurrentSiteId(primary.id);
+    }
+  }, [currentUser, sites]);
 
   const handleVehicleEntry = async (
     vehicleNumber: string,
@@ -353,27 +375,46 @@ export default function App() {
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-slate-50 h-full">
           <div className="max-w-7xl mx-auto">
             {activeTab === 'HOME' && (
-              <RoleHomePage
-                currentUser={currentUser}
-                roles={roles}
-                slots={slots}
-                employees={employees}
-                logs={logs}
-                alertCount={alertCount}
-                pendingReqCount={pendingReqCount}
-                setActiveTab={setActiveTab}
-                onRefreshAll={refreshAll}
-              />
+              isSiteAdmin && currentSiteId !== 'ALL' ? (
+                <SiteAdminOverview
+                  siteId={currentSiteId}
+                  onNavigate={(screen) => {
+                    const map: Record<string, ActiveTabType> = {
+                      alerts: 'ALERTS',
+                      slots: 'FLOOR_PLAN',
+                      staff: 'INVENTORY',
+                      employees: 'INVENTORY',
+                    };
+                    setActiveTab(map[screen] || 'HOME');
+                  }}
+                />
+              ) : (
+                <RoleHomePage
+                  currentUser={currentUser}
+                  roles={roles}
+                  slots={slots}
+                  employees={employees}
+                  logs={logs}
+                  alertCount={alertCount}
+                  pendingReqCount={pendingReqCount}
+                  setActiveTab={setActiveTab}
+                  onRefreshAll={refreshAll}
+                />
+              )
             )}
 
             {activeTab === 'FLOOR_PLAN' && (
-              <LiveFloorPlan
-                slots={slots}
-                onUpdateSlotStatus={handleUpdateSlotStatus}
-                onVehicleEntry={handleVehicleEntry}
-                onVehicleExit={handleVehicleExit}
-                onRefresh={refreshAll}
-              />
+              isSiteAdmin && currentSiteId !== 'ALL' ? (
+                <SiteAdminLiveSlots siteId={currentSiteId} />
+              ) : (
+                <LiveFloorPlan
+                  slots={slots}
+                  onUpdateSlotStatus={handleUpdateSlotStatus}
+                  onVehicleEntry={handleVehicleEntry}
+                  onVehicleExit={handleVehicleExit}
+                  onRefresh={refreshAll}
+                />
+              )
             )}
 
             {activeTab === 'ANALYTICS' && <AnalyticsPredictive />}

@@ -29,6 +29,7 @@ export type ActiveTabType =
   | 'HOME'
   | 'FLOOR_PLAN'
   | 'ANALYTICS'
+  | 'REPORTS'
   | 'INVENTORY'
   | 'LOGS'
   | 'ALERTS'

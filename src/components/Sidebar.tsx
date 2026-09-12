@@ -76,6 +76,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       description: 'Real-time slot grid & sensors',
     },
     {
+      id: 'REPORTS',
+      label: 'Reports',
+      icon: FileSpreadsheet,
+      badge: null,
+      description: 'Downloads, violations, overnight requests & utilisation',
+    },
+    {
       id: 'MASTER_CONFIG',
       label: 'Master Site Config',
       icon: Building2,
@@ -192,22 +199,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Sidebar Container */}
       <aside
-        className={`fixed lg:static top-0 bottom-0 left-0 z-50 bg-slate-900 text-slate-300 border-r border-slate-800 flex flex-col shrink-0 h-full transition-all duration-300 ease-in-out ${
+        style={{ background: '#0f172a', color: '#cbd5e1', fontFamily: "'Barlow', system-ui, sans-serif" }}
+        className={`fixed lg:static top-0 bottom-0 left-0 z-50 border-r border-white/10 flex flex-col shrink-0 h-full transition-all duration-300 ease-in-out ${
           collapsed ? 'lg:w-20' : 'lg:w-64'
         } ${mobileOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'}`}
       >
-        {/* Sidebar Header Toggle */}
-        <div className="h-14 px-4 flex items-center justify-between border-b border-slate-800/80 shrink-0">
+        {/* Sidebar Header / Brand */}
+        <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)' }} className="shrink-0 flex items-center justify-between">
           {(!collapsed || mobileOpen) && (
-            <span className="text-xs font-extrabold font-mono uppercase tracking-widest text-slate-400">
-              Navigation
-            </span>
+            <div>
+              <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#60a5fa', fontWeight: 700 }}>ParkFlow</div>
+              <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.15, marginTop: 2, color: '#ffffff' }}>Navigation</div>
+            </div>
           )}
 
           {/* Desktop Collapse Toggle */}
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className="hidden lg:flex p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-colors ml-auto"
+            className="hidden lg:flex p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 transition-colors ml-auto"
             title={collapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
           >
             {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
@@ -216,7 +225,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Navigation Category Label */}
         {(!collapsed || mobileOpen) && (
-          <div className="px-4 pt-4 pb-1 text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500">
+          <div style={{ padding: '14px 14px 4px', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: '#64748b', fontWeight: 700 }}>
             Navigation Modules
           </div>
         )}
@@ -232,10 +241,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 key={item.id}
                 onClick={() => handleSelect(item.id)}
                 title={collapsed && !mobileOpen ? `${item.label} - ${item.description}` : undefined}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all duration-150 group relative ${
-                  isActive
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/25 border border-blue-500 font-bold'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800/80 border border-transparent'
+                style={{
+                  background: isActive ? 'var(--color-accent, #5980a6)' : 'transparent',
+                  border: isActive ? '1px solid var(--color-accent-400, #94bce3)' : '1px solid transparent',
+                  fontFamily: "'Barlow', system-ui, sans-serif",
+                }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold transition-all duration-150 group relative ${
+                  isActive ? 'text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
                 }`}
               >
                 <div className="flex items-center space-x-3 truncate">
@@ -252,10 +264,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {/* Badges */}
                 {item.badge !== null && (
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono shrink-0 ml-2 ${
+                    style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif" }}
+                    className={`px-1.5 py-0.5 rounded text-[10px] shrink-0 ml-2 ${
                       collapsed && !mobileOpen
                         ? 'absolute top-1 right-1 px-1 py-0 text-[8px]'
-                        : item.badgeColor || 'bg-slate-800 text-slate-300'
+                        : item.badgeColor || 'bg-white/10 text-slate-300'
                     }`}
                   >
                     {item.badge}
@@ -268,19 +281,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Bottom System Status Widget in Sidebar */}
         {(!collapsed || mobileOpen) && (
-          <div className="p-3 m-2 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-xs">
+          <div style={{ margin: '8px', padding: '12px', background: 'rgba(2,6,23,0.6)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, fontSize: 11 }}>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-mono uppercase font-bold text-slate-400 flex items-center space-x-1">
+              <span style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif" }} className="text-[10px] uppercase font-bold text-emerald-400 flex items-center space-x-1">
                 <Activity className="w-3 h-3 text-emerald-400 animate-pulse" />
-                <span>System Status</span>
-              </span>
-              <span className="text-[9px] font-mono font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800 px-1.5 py-0.5 rounded">
-                HEALTHY
+                <span>System healthy</span>
               </span>
             </div>
-            <p className="text-[10px] text-slate-400 leading-tight">
-              100% ANPR & Sensor Uptime. All gate controllers synced.
+            <p className="text-slate-400 leading-tight">
+              100% ANPR &amp; sensor uptime. All gate controllers synced.
             </p>
+            {/* Current user footer — genuinely new addition, the design's
+                sidebar showed who's signed in and their scope; the
+                previous version never displayed this at all. */}
+            {currentUser && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#ffffff' }}>{currentUser.fullName}</div>
+                <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontSize: 10, color: '#94a3b8' }}>
+                  {currentUser.roleName?.toUpperCase()} · {currentUser.siteScopeType === 'ALL_SITES' ? 'ALL_SITES' : (currentUser.assignedSiteNames?.join(', ') || 'NO SITE')}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </aside>

@@ -17,6 +17,7 @@ const MODULES: [string, string][] = [
   ['USER_MANAGEMENT', 'User & RBAC'], ['INVENTORY', 'Inventory Master'], ['MOBILE_APP', 'ParkFlow Field'],
   ['VALET_SERVICE', 'ValetX Suite'], ['EMPLOYEE_MOBILE_APP', 'Employee Smart Pass'], ['REGISTRATION', 'Employee Registration'],
   ['APPROVALS', 'Vehicle Approval Queue'], ['LOGS', 'Entry / Exit Logs'], ['ANALYTICS', 'Predictive Analytics'],
+  ['REPORTS', 'Site Reports'],
   ['ALERTS', 'Non-Parked Alerts'], ['SECURITY_AUDIT', 'InfoSec & Privacy Defense'],
 ];
 const RIGHTS: [string, string][] = [['enabled', 'Enabled'], ['canCreate', 'Create'], ['canEdit', 'Edit'], ['canDelete', 'Delete'], ['canExport', 'Export']];

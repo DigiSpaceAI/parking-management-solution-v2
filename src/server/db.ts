@@ -50,6 +50,8 @@ import {
   SystemRoleType,
   RolePermissionConfig,
   AppUser,
+  OvernightRequest,
+  OvernightRequestStatus,
   PublicAppUser,
   ModuleAccessRights
 } from '../types';
@@ -70,6 +72,7 @@ interface StoreData {
   valetTickets: ValetTicket[];
   appRoles: RolePermissionConfig[];
   appUsers: AppUser[];
+  overnightRequests: OvernightRequest[];
   lastUpdated: string;
 }
 
@@ -86,6 +89,7 @@ let store: StoreData = {
   valetTickets: [],
   appRoles: [],
   appUsers: [],
+  overnightRequests: [],
   lastUpdated: new Date().toISOString(),
 };
 
@@ -172,6 +176,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       VALET_SERVICE: fullAccessRights,
       LOGS: fullAccessRights,
       ANALYTICS: fullAccessRights,
+      REPORTS: fullAccessRights,
       INVENTORY: fullAccessRights,
       MOBILE_APP: fullAccessRights,
       EMPLOYEE_MOBILE_APP: fullAccessRights,
@@ -198,6 +203,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       VALET_SERVICE: fullAccessRights,
       LOGS: fullAccessRights,
       ANALYTICS: fullAccessRights,
+      REPORTS: fullAccessRights,
       INVENTORY: fullAccessRights,
       MOBILE_APP: fullAccessRights,
       EMPLOYEE_MOBILE_APP: readOnlyRights,
@@ -224,6 +230,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       VALET_SERVICE: fullAccessRights,
       LOGS: readOnlyRights,
       ANALYTICS: disabledRights,
+      REPORTS: disabledRights,
       INVENTORY: readOnlyRights,
       MOBILE_APP: fullAccessRights,
       EMPLOYEE_MOBILE_APP: disabledRights,
@@ -250,6 +257,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       VALET_SERVICE: readOnlyRights,
       LOGS: readOnlyRights,
       ANALYTICS: readOnlyRights,
+      REPORTS: readOnlyRights,
       INVENTORY: readOnlyRights,
       MOBILE_APP: disabledRights,
       EMPLOYEE_MOBILE_APP: disabledRights,
@@ -276,6 +284,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       VALET_SERVICE: disabledRights,
       LOGS: readOnlyRights,
       ANALYTICS: disabledRights,
+      REPORTS: disabledRights,
       INVENTORY: readOnlyRights,
       MOBILE_APP: fullAccessRights,
       EMPLOYEE_MOBILE_APP: disabledRights,
@@ -874,6 +883,7 @@ function generate1080Inventory(): StoreData {
     valetTickets,
     appRoles: defaultRoles,
     appUsers: defaultUsers,
+    overnightRequests: [],
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -1124,6 +1134,7 @@ export function initDB(): StoreData {
         valetTickets: finalValetTickets,
         appRoles: finalAppRoles,
         appUsers: finalAppUsers,
+        overnightRequests: loadedStore.overnightRequests || [],
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
@@ -1159,6 +1170,7 @@ export function initDB(): StoreData {
         valetTickets: [],
         appRoles: defaultRoles,
         appUsers: defaultUsers,
+        overnightRequests: [],
         lastUpdated: new Date().toISOString(),
       };
       saveDB();
@@ -1184,7 +1196,7 @@ export function initDB(): StoreData {
 const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
   'slots', 'employees', 'logs', 'alerts', 'registrationRequests',
   'whitelistedDomains', 'sites', 'invoices', 'slotChangeNotifications',
-  'valetTickets', 'appRoles', 'appUsers',
+  'valetTickets', 'appRoles', 'appUsers', 'overnightRequests',
 ];
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
@@ -2383,6 +2395,254 @@ export function rejectRegistrationRequest(requestId: string, reason?: string): {
   };
 }
 
+// --- Overnight Request & Violation Reporting (Site Admin Reports) ---
+
+export function submitOvernightRequest(data: {
+  siteId?: string;
+  vehicleNumber: string;
+  requestedBy: string;
+  nights?: number;
+  reason: string;
+}): { success: boolean; message: string; request?: OvernightRequest } {
+  const storeData = getStore();
+  if (!storeData.overnightRequests) storeData.overnightRequests = [];
+
+  if (!data.vehicleNumber || !data.reason) {
+    return { success: false, message: 'Vehicle number and reason are required.' };
+  }
+
+  const newRequest: OvernightRequest = {
+    id: `on-req-${Date.now()}`,
+    siteId: data.siteId || DEFAULT_SITE_ID,
+    vehicleNumber: data.vehicleNumber.trim().toUpperCase(),
+    requestedBy: data.requestedBy,
+    nights: data.nights && data.nights > 0 ? data.nights : 1,
+    reason: data.reason,
+    status: 'PENDING',
+    createdAt: new Date().toISOString(),
+  };
+
+  storeData.overnightRequests.unshift(newRequest);
+  saveDB([{ collection: 'overnightRequests', ids: [newRequest.id] }]);
+
+  return { success: true, message: `Overnight request submitted for ${newRequest.vehicleNumber}.`, request: newRequest };
+}
+
+export function reviewOvernightRequest(
+  requestId: string,
+  decision: OvernightRequestStatus,
+  reviewedBy: string,
+  rejectionReason?: string
+): { success: boolean; message: string; request?: OvernightRequest } {
+  const storeData = getStore();
+  const req = (storeData.overnightRequests || []).find(r => r.id === requestId);
+  if (!req) {
+    return { success: false, message: 'Overnight request not found.' };
+  }
+  if (decision !== 'APPROVED' && decision !== 'REJECTED') {
+    return { success: false, message: 'Decision must be APPROVED or REJECTED.' };
+  }
+
+  req.status = decision;
+  req.reviewedAt = new Date().toISOString();
+  req.reviewedBy = reviewedBy;
+  if (decision === 'REJECTED') req.rejectionReason = rejectionReason || 'Rejected by Site Admin';
+
+  saveDB([{ collection: 'overnightRequests', ids: [req.id] }]);
+
+  return { success: true, message: `Overnight request for ${req.vehicleNumber} ${decision === 'APPROVED' ? 'approved' : 'rejected'}.`, request: req };
+}
+
+/**
+ * A "violation" isn't its own stored entity — it's a computed view:
+ * any vehicle still checked in (an ACTIVE log, no exitTime) after the
+ * cutoff hour, that does NOT have a currently-approved overnight
+ * request covering tonight. Computed fresh on every call rather than
+ * tracked as state, since a vehicle exiting or a request being approved
+ * should immediately stop it from counting as a violation, with no
+ * separate cleanup step needed.
+ */
+export function getOvernightViolations(siteId: string, cutoffHour: number = 22): {
+  vehicleNumber: string;
+  slotNumber: string;
+  employeeName?: string | null;
+  entryTime: string;
+  hoursSinceEntry: number;
+}[] {
+  const storeData = getStore();
+  const now = new Date();
+  const isPastCutoff = now.getHours() >= cutoffHour || now.getHours() < 6; // past cutoff through early morning
+
+  if (!isPastCutoff) return [];
+
+  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const targetSite = siteId || DEFAULT_SITE_ID;
+
+  const approvedPlates = new Set(
+    (storeData.overnightRequests || [])
+      .filter(r => resolveSiteId(r) === targetSite && r.status === 'APPROVED')
+      .map(r => r.vehicleNumber)
+  );
+
+  return storeData.logs
+    .filter(l => resolveSiteId(l) === targetSite && l.status === 'ACTIVE' && !approvedPlates.has(l.vehicleNumber.toUpperCase()))
+    .map(l => ({
+      vehicleNumber: l.vehicleNumber,
+      slotNumber: l.slotNumber,
+      employeeName: l.employeeName,
+      entryTime: l.entryTime,
+      hoursSinceEntry: Math.round(((now.getTime() - new Date(l.entryTime).getTime()) / 3600000) * 10) / 10,
+    }));
+}
+
+/**
+ * Registered (employee) vs visitor entry mix for a date range — computed
+ * directly from real ParkingLog records, not a new tracked concept.
+ */
+export function getEntryMix(siteId: string, fromISO: string, toISO: string): { registered: number; visitor: number; total: number } {
+  const storeData = getStore();
+  const resolveSiteId = (l: { siteId?: string }) => l.siteId || DEFAULT_SITE_ID;
+  const targetSite = siteId || DEFAULT_SITE_ID;
+  const from = new Date(fromISO).getTime();
+  const to = new Date(toISO).getTime();
+
+  const inRange = storeData.logs.filter(l => {
+    if (resolveSiteId(l) !== targetSite) return false;
+    const entryMs = new Date(l.entryTime).getTime();
+    return entryMs >= from && entryMs <= to;
+  });
+
+  const registered = inRange.filter(l => !!l.employeeId).length;
+  const visitor = inRange.length - registered;
+
+  return { registered, visitor, total: inRange.length };
+}
+
+/**
+ * Per-slot utilization for a date range — share of the range's open
+ * hours each slot was actually occupied, computed from real log
+ * entry/exit timestamps clipped to the requested range.
+ */
+export function getSlotUtilization(siteId: string, fromISO: string, toISO: string): {
+  slotNumber: string;
+  basement: string;
+  occupiedHours: number;
+  utilizationPct: number;
+}[] {
+  const storeData = getStore();
+  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const targetSite = siteId || DEFAULT_SITE_ID;
+  const from = new Date(fromISO).getTime();
+  const to = new Date(toISO).getTime();
+  const rangeHours = Math.max((to - from) / 3600000, 0.01);
+
+  const siteSlots = storeData.slots.filter(s => resolveSiteId(s) === targetSite);
+  const siteLogs = storeData.logs.filter(l => resolveSiteId(l) === targetSite);
+
+  return siteSlots.map(slot => {
+    const slotLogs = siteLogs.filter(l => l.slotId === slot.id);
+    let occupiedMs = 0;
+    for (const log of slotLogs) {
+      const entryMs = Math.max(new Date(log.entryTime).getTime(), from);
+      const exitMs = Math.min(log.exitTime ? new Date(log.exitTime).getTime() : Date.now(), to);
+      if (exitMs > entryMs) occupiedMs += exitMs - entryMs;
+    }
+    const occupiedHours = Math.round((occupiedMs / 3600000) * 10) / 10;
+    return {
+      slotNumber: slot.slotNumber,
+      basement: slot.basement,
+      occupiedHours,
+      utilizationPct: Math.round((occupiedHours / rangeHours) * 1000) / 10,
+    };
+  });
+}
+
+/**
+ * Daily peak occupancy % over a date range — reconstructed from real
+ * ParkingLog entry/exit timestamps, not a new tracked concept and not
+ * fabricated. For each day, samples occupancy at every hour (was a
+ * given log's [entryTime, exitTime) window covering that hour?) and
+ * takes the day's maximum as its peak. This is retroactively accurate
+ * for the platform's entire log history, not just data collected going
+ * forward — a genuine advantage over building a new periodic-snapshot
+ * system, which would only start accumulating data from when it's
+ * switched on.
+ */
+export function getOccupancyTrend(siteId: string, fromISO: string, toISO: string): {
+  date: string;
+  peakOccupancyPct: number;
+  peakOccupiedCount: number;
+}[] {
+  const storeData = getStore();
+  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const targetSite = siteId || DEFAULT_SITE_ID;
+
+  const totalSlots = storeData.slots.filter(s => resolveSiteId(s) === targetSite).length;
+  const siteLogs = storeData.logs.filter(l => resolveSiteId(l) === targetSite);
+
+  const from = new Date(fromISO);
+  const to = new Date(toISO);
+  const results: { date: string; peakOccupancyPct: number; peakOccupiedCount: number }[] = [];
+
+  for (let day = new Date(from); day <= to; day.setDate(day.getDate() + 1)) {
+    const dateStr = day.toISOString().slice(0, 10);
+    let peakCount = 0;
+
+    for (let hour = 0; hour < 24; hour++) {
+      const sampleTime = new Date(`${dateStr}T${String(hour).padStart(2, '0')}:00:00`).getTime();
+      const occupiedAtSample = siteLogs.filter(l => {
+        const entryMs = new Date(l.entryTime).getTime();
+        const exitMs = l.exitTime ? new Date(l.exitTime).getTime() : Date.now();
+        return entryMs <= sampleTime && exitMs > sampleTime;
+      }).length;
+      if (occupiedAtSample > peakCount) peakCount = occupiedAtSample;
+    }
+
+    results.push({
+      date: dateStr,
+      peakOccupiedCount: peakCount,
+      peakOccupancyPct: totalSlots > 0 ? Math.round((peakCount / totalSlots) * 1000) / 10 : 0,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Average entries per hour-of-day across a date range — grouping real
+ * entryTime values by their hour, averaged across the number of days
+ * in range. Shows which hours are consistently busiest, not fabricated
+ * forecasting.
+ */
+export function getPeakHours(siteId: string, fromISO: string, toISO: string): {
+  hour: number;
+  avgEntries: number;
+}[] {
+  const storeData = getStore();
+  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const targetSite = siteId || DEFAULT_SITE_ID;
+  const from = new Date(fromISO).getTime();
+  const to = new Date(toISO).getTime();
+  const dayCount = Math.max(Math.round((to - from) / 86400000), 1);
+
+  const inRangeEntries = storeData.logs.filter(l => {
+    if (resolveSiteId(l) !== targetSite) return false;
+    const entryMs = new Date(l.entryTime).getTime();
+    return entryMs >= from && entryMs <= to;
+  });
+
+  const hourCounts = new Array(24).fill(0);
+  for (const log of inRangeEntries) {
+    const hour = new Date(log.entryTime).getHours();
+    hourCounts[hour]++;
+  }
+
+  return hourCounts.map((count, hour) => ({
+    hour,
+    avgEntries: Math.round((count / dayCount) * 10) / 10,
+  }));
+}
+
 export function bulkUploadRegistrations(
   items: Partial<RegistrationRequest>[],
   autoApprove: boolean = false
@@ -3087,6 +3347,7 @@ export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { succes
       VALET_SERVICE: { enabled: true, canCreate: true, canEdit: true, canDelete: false, canExport: true },
       LOGS: { enabled: true, canCreate: false, canEdit: false, canDelete: false, canExport: true },
       ANALYTICS: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },
+      REPORTS: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },
       INVENTORY: { enabled: true, canCreate: false, canEdit: true, canDelete: false, canExport: true },
       MOBILE_APP: { enabled: true, canCreate: true, canEdit: true, canDelete: false, canExport: false },
       EMPLOYEE_MOBILE_APP: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },

@@ -1524,9 +1524,13 @@ export function getStore(): StoreData {
 }
 
 // Rules Engine: Find best vacant slot based on vehicle height, slotType, allocation, basement
-export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2.0m', allocationPreference: Allocation = 'EMPLOYEE'): ParkingSlot | null {
+export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2.0m', allocationPreference: Allocation = 'EMPLOYEE', siteId?: string): ParkingSlot | null {
   const storeData = getStore();
-  const vacantSlots = storeData.slots.filter(s => s.status === 'VACANT');
+  // Scoped to the requesting site when known — otherwise an attendant
+  // at one site could get auto-assigned a vacant slot that actually
+  // belongs to a different site entirely. Same reasoning as the
+  // identical fix already applied to the valet auto-assignment path.
+  const vacantSlots = storeData.slots.filter(s => s.status === 'VACANT' && (!siteId || s.siteId === siteId));
 
   if (vacantSlots.length === 0) return null;
 
@@ -1570,9 +1574,11 @@ export function processVehicleEntry(params: {
   preferredBasement?: string;
   targetSlotNumber?: string;
   remarks?: string;
+  siteId?: string;
 }): { success: boolean; message: string; slot?: ParkingSlot; log?: ParkingLog } {
   const storeData = getStore();
   const cleanVehicleNum = params.vehicleNumber.trim().toUpperCase();
+  const requestSiteId = params.siteId || DEFAULT_SITE_ID;
 
   // Check if already parked
   const alreadyParked = storeData.slots.find(s => s.currentVehicle === cleanVehicleNum && s.status === 'OCCUPIED');
@@ -1590,10 +1596,12 @@ export function processVehicleEntry(params: {
 
   let targetSlot: ParkingSlot | null = null;
 
-  // Check if attendant specified a custom target slot
+  // Check if attendant specified a custom target slot — scoped to the
+  // requesting site + slot number together, not slot number alone, same
+  // reasoning as every other site-scoped match this session.
   if (params.targetSlotNumber) {
     const customSlot = storeData.slots.find(
-      s => s.slotNumber.toUpperCase() === params.targetSlotNumber?.toUpperCase()
+      s => s.slotNumber.toUpperCase() === params.targetSlotNumber?.toUpperCase() && (s.siteId || DEFAULT_SITE_ID) === requestSiteId
     );
     if (customSlot && customSlot.status === 'VACANT') {
       targetSlot = customSlot;
@@ -1602,7 +1610,7 @@ export function processVehicleEntry(params: {
 
   // Allocate slot using Rules Engine if custom slot not provided or unavailable
   if (!targetSlot) {
-    targetSlot = findBestSlot(detectedType, detectedType === 'SUV' ? '2.5m' : '2.0m', employee ? 'EMPLOYEE' : 'VISITOR');
+    targetSlot = findBestSlot(detectedType, detectedType === 'SUV' ? '2.5m' : '2.0m', employee ? 'EMPLOYEE' : 'VISITOR', requestSiteId);
   }
 
   if (!targetSlot) {
@@ -1658,13 +1666,18 @@ export function processVehicleEntry(params: {
 }
 
 // Vehicle Exit Workflow
-export function processVehicleExit(vehicleNumberOrSlot: string): { success: boolean; message: string; log?: ParkingLog; slot?: ParkingSlot; durationMinutes?: number } {
+export function processVehicleExit(vehicleNumberOrSlot: string, siteId?: string): { success: boolean; message: string; log?: ParkingLog; slot?: ParkingSlot; durationMinutes?: number } {
   const storeData = getStore();
   const searchKey = vehicleNumberOrSlot.trim().toUpperCase();
+  const requestSiteId = siteId || DEFAULT_SITE_ID;
 
-  // Find slot or active log
+  // Vehicle number is safe to match globally (genuinely unique regardless
+  // of site), but slotNumber alone isn't — scoped to the requesting site
+  // for that part of the match, same reasoning as everywhere else this
+  // session.
   const slot = storeData.slots.find(
-    s => (s.currentVehicle && s.currentVehicle.toUpperCase() === searchKey) || s.slotNumber.toUpperCase() === searchKey
+    s => (s.currentVehicle && s.currentVehicle.toUpperCase() === searchKey) ||
+      (s.slotNumber.toUpperCase() === searchKey && (s.siteId || DEFAULT_SITE_ID) === requestSiteId)
   );
 
   if (!slot || slot.status !== 'OCCUPIED' || !slot.currentVehicle) {

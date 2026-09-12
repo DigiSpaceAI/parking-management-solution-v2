@@ -164,6 +164,19 @@ app.use((req, res, next) => {
 });
 
 
+// Resolves the requesting site from either a ?siteId= query param (used
+// by the admin web app, since a query param is the natural fit there)
+// or an x-site-id header (used by the mobile apps via their centralized
+// apiFetch helper, which sets this once after login rather than every
+// individual call site needing to remember to pass it). Query param
+// wins if somehow both are present.
+function getRequestedSiteId(req: express.Request): string | undefined {
+  const fromQuery = req.query?.siteId;
+  if (fromQuery && typeof fromQuery === 'string') return fromQuery;
+  const fromHeader = req.headers['x-site-id'];
+  return typeof fromHeader === 'string' ? fromHeader : undefined;
+}
+
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 // Shared Gemini AI Client (Server-side only)
@@ -203,7 +216,8 @@ app.get('/api/v1/health', (req, res) => {
 // 2. Parking Slots Inventory & Filter Endpoint
 app.get('/api/v1/slots', (req, res) => {
   const store = getStore();
-  const { basement, status, allocation, slotType, search, siteId } = req.query;
+  const { basement, status, allocation, slotType, search } = req.query;
+  const siteId = getRequestedSiteId(req);
 
   // Records written before site-scoping existed have no siteId at all —
   // treated as DEFAULT_SITE_ID here too, matching the same fallback
@@ -279,7 +293,8 @@ const PLATE_VISIBLE_ROLES = new Set(['Gate Security Attendant', 'ValetX Operatio
 
 app.get('/api/v1/employees', (req, res) => {
   const store = getStore();
-  const { search, department, siteId } = req.query;
+  const { search, department } = req.query;
+  const siteId = getRequestedSiteId(req);
 
   const resolveSiteId = (e: { siteId?: string }) => e.siteId || DEFAULT_SITE_ID;
   let employees = siteId && typeof siteId === 'string' && siteId !== 'ALL'
@@ -538,7 +553,7 @@ app.post('/api/v1/domains/remove', requirePermission('REGISTRATION', 'canEdit'),
 
 // --- Employee Self-Registration & Admin Approval Endpoints ---
 app.get('/api/v1/registrations', (req, res) => {
-  const { siteId } = req.query;
+  const siteId = getRequestedSiteId(req);
   const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
   const requests = siteId && typeof siteId === 'string' && siteId !== 'ALL'
     ? getRegistrationRequests().filter(r => resolveSiteId(r) === siteId)
@@ -849,6 +864,7 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
 // 4. Vehicle Entry Endpoint
 app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumber, vehicleType, entryType, targetSlotNumber, remarks } = req.body;
+  const siteId = getRequestedSiteId(req);
 
   if (!vehicleNumber) {
     return res.status(400).json({ success: false, message: 'vehicleNumber is required' });
@@ -860,6 +876,7 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
     entryType: (entryType || 'MANUAL') as EntryType,
     targetSlotNumber,
     remarks,
+    siteId,
   });
 
   if (!result.success) {
@@ -872,12 +889,13 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
 // 5. Vehicle Exit Endpoint
 app.post('/api/v1/vehicles/exit', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumberOrSlot } = req.body;
+  const siteId = getRequestedSiteId(req);
 
   if (!vehicleNumberOrSlot) {
     return res.status(400).json({ success: false, message: 'vehicleNumberOrSlot is required' });
   }
 
-  const result = processVehicleExit(vehicleNumberOrSlot);
+  const result = processVehicleExit(vehicleNumberOrSlot, siteId);
 
   if (!result.success) {
     return res.status(404).json(result);
@@ -981,7 +999,8 @@ Respond strictly in JSON format with:
 // 7. Parking Logs Endpoint (with PII Privacy Masking & Pagination)
 app.get('/api/v1/logs', (req, res) => {
   const store = getStore();
-  const { status, basement, search, limit = '100', maskPII, userRole, siteId } = req.query;
+  const { status, basement, search, limit = '100', maskPII, userRole } = req.query;
+  const siteId = getRequestedSiteId(req);
 
   const resolveSiteId = (l: { siteId?: string }) => l.siteId || DEFAULT_SITE_ID;
   const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
@@ -1030,7 +1049,7 @@ app.get('/api/v1/analytics/prediction', (req, res) => {
 // 9. Non-Parked Employee Alerts Endpoint
 app.get('/api/v1/alerts/non-parked', (req, res) => {
   const store = getStore();
-  const { siteId } = req.query;
+  const siteId = getRequestedSiteId(req);
   const resolveSiteId = (a: { siteId?: string }) => a.siteId || DEFAULT_SITE_ID;
   const alerts = siteId && typeof siteId === 'string' && siteId !== 'ALL'
     ? store.alerts.filter(a => resolveSiteId(a) === siteId)
@@ -1168,7 +1187,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
 
 // 14. VALETX SERVICE API ENDPOINTS
 app.get('/api/v1/valet/tickets', (req, res) => {
-  const { siteId } = req.query;
+  const siteId = getRequestedSiteId(req);
   const resolveSiteId = (t: { siteId?: string }) => t.siteId || DEFAULT_SITE_ID;
   const tickets = siteId && typeof siteId === 'string' && siteId !== 'ALL'
     ? getValetTickets().filter(t => resolveSiteId(t) === siteId)

@@ -24,6 +24,13 @@ import {
   removeWhitelistedDomain,
   getRegistrationRequests,
   submitRegistrationRequest,
+  submitOvernightRequest,
+  reviewOvernightRequest,
+  getOvernightViolations,
+  getEntryMix,
+  getSlotUtilization,
+  getOccupancyTrend,
+  getPeakHours,
   approveRegistrationRequest,
   rejectRegistrationRequest,
   bulkUploadRegistrations,
@@ -1155,11 +1162,15 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
 app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (req, res) => {
   const store = getStore();
   const { type = 'logs' } = req.query;
+  const siteId = getRequestedSiteId(req);
+  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const siteFilter = <T extends { siteId?: string }>(items: T[]) =>
+    siteId && siteId !== 'ALL' ? items.filter(x => resolveSiteId(x) === siteId) : items;
 
   logSecurityEvent({
     action: 'DATA_EXPORT_CSV',
-    actor: req.headers['x-user-email'] as string || 'Auditor',
-    actorRole: req.headers['x-user-role'] as string || 'MIS_AUDITOR',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
     ipAddress: req.ip,
     targetResource: `export/${type}`,
     status: 'SUCCESS',
@@ -1168,7 +1179,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
 
   if (type === 'slots') {
     let csv = 'SlotNumber,Basement,FloorLocation,PuzzleNumber,SlotType,ParkingType,Height,Allocation,Status,CurrentVehicle\n';
-    store.slots.forEach(s => {
+    siteFilter(store.slots).forEach(s => {
       csv += `"${s.slotNumber}","${s.basement}","${s.floorLocation}","${s.puzzleNumber || ''}","${s.slotType}","${s.parkingType}","${s.height}","${s.allocation}","${s.status}","${s.currentVehicle || ''}"\n`;
     });
     res.setHeader('Content-Type', 'text/csv');
@@ -1177,7 +1188,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
   }
 
   let csv = 'LogID,VehicleNumber,EmployeeName,Department,SlotNumber,Basement,EntryTime,ExitTime,DurationMinutes,EntryType,Status,Remarks\n';
-  store.logs.forEach(l => {
+  siteFilter(store.logs).forEach(l => {
     csv += `"${l.id}","${l.vehicleNumber}","${l.employeeName || ''}","${l.department || ''}","${l.slotNumber}","${l.basement}","${l.entryTime}","${l.exitTime || ''}","${l.durationMinutes || ''}","${l.entryType}","${l.status}","${l.remarks || ''}"\n`;
   });
   res.setHeader('Content-Type', 'text/csv');
@@ -1211,6 +1222,86 @@ app.post('/api/v1/valet/request-retrieval', requirePermission('VALET_SERVICE', '
     return res.status(400).json({ success: false, message: 'Please provide ticket number, key tag, or phone number.' });
   }
   const result = requestValetRetrieval(query);
+  res.json(result);
+});
+
+// 14b. SITE ADMIN REPORTS — computed from real slot/log/overnight-request
+// data, no separate "reports" collection of its own. Gated under
+// ANALYTICS (closest existing module — there's no dedicated REPORTS
+// module in the permission matrix, and adding one would mean updating
+// every role's permission set) for reads, APPROVALS for the
+// overnight-request review action (matches the existing
+// registration-request approval pattern).
+app.get('/api/v1/reports/mix', requirePermission('REPORTS', 'view'), (req, res) => {
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const to = (req.query.to as string) || new Date().toISOString();
+  res.json(getEntryMix(siteId, from, to));
+});
+
+app.get('/api/v1/reports/violations', requirePermission('REPORTS', 'view'), (req, res) => {
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const cutoffHour = req.query.cutoffHour ? Number(req.query.cutoffHour) : 22;
+  res.json({ violations: getOvernightViolations(siteId, cutoffHour) });
+});
+
+app.get('/api/v1/reports/utilization', requirePermission('REPORTS', 'view'), (req, res) => {
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const to = (req.query.to as string) || new Date().toISOString();
+  res.json({ slots: getSlotUtilization(siteId, from, to) });
+});
+
+app.get('/api/v1/reports/occupancy-trend', requirePermission('REPORTS', 'view'), (req, res) => {
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const to = (req.query.to as string) || new Date().toISOString();
+  res.json({ days: getOccupancyTrend(siteId, from, to) });
+});
+
+app.get('/api/v1/reports/peak-hours', requirePermission('REPORTS', 'view'), (req, res) => {
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const to = (req.query.to as string) || new Date().toISOString();
+  res.json({ hours: getPeakHours(siteId, from, to) });
+});
+
+app.get('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'view'), (req, res) => {
+  const store = getStore();
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const status = req.query.status as string | undefined;
+  const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
+  let requests = (store.overnightRequests || []).filter(r => resolveSiteId(r) === siteId);
+  if (status && status !== 'ALL') requests = requests.filter(r => r.status === status);
+  res.json({ requests });
+});
+
+app.post('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'canCreate'), (req, res) => {
+  const { vehicleNumber, requestedBy, nights, reason } = req.body;
+  const siteId = getRequestedSiteId(req);
+  const result = submitOvernightRequest({ siteId, vehicleNumber, requestedBy, nights, reason });
+  if (!result.success) return res.status(400).json(result);
+  res.json(result);
+});
+
+app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVALS', 'canEdit'), (req, res) => {
+  const { requestId, decision, rejectionReason } = req.body;
+  if (!requestId || !decision) {
+    return res.status(400).json({ success: false, message: 'requestId and decision are required.' });
+  }
+  const result = reviewOvernightRequest(requestId, decision, req.user!.fullName, rejectionReason);
+  if (!result.success) return res.status(400).json(result);
+
+  logSecurityEvent({
+    action: 'OVERNIGHT_REQUEST_REVIEWED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `overnightRequest/${requestId}`,
+    status: 'SUCCESS',
+    details: result.message,
+  });
+
   res.json(result);
 });
 

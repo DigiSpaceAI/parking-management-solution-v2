@@ -56,7 +56,11 @@ function zoneKeyFor(slot: Slot): string {
   return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : slot.slotNumber;
 }
 
-export const SiteAdminLiveSlots: React.FC = () => {
+interface SiteAdminLiveSlotsProps {
+  siteId: string;
+}
+
+export const SiteAdminLiveSlots: React.FC<SiteAdminLiveSlotsProps> = ({ siteId }) => {
   const [allSlots, setAllSlots] = useState<Slot[]>([]);
   const [level, setLevel] = useState('B1');
   const [search, setSearch] = useState('');
@@ -67,14 +71,14 @@ export const SiteAdminLiveSlots: React.FC = () => {
 
   const loadSlots = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/slots');
+      const res = await fetch(`/api/v1/slots?siteId=${encodeURIComponent(siteId)}`);
       if (!res.ok) return;
       const data = await res.json();
       setAllSlots(Array.isArray(data?.slots) ? data.slots : []);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [siteId]);
 
   useEffect(() => {
     loadSlots();

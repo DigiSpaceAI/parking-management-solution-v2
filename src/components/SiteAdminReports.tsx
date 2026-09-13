@@ -180,6 +180,7 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
   const [levelFilter, setLevelFilter] = useState('All levels');
   const [sortBy, setSortBy] = useState<'low' | 'high' | 'slot'>('low');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const [reqOpen, setReqOpen] = useState(false);
   const [reqVehicle, setReqVehicle] = useState('');
@@ -211,6 +212,7 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError('');
     const qs = `siteId=${encodeURIComponent(siteId)}&from=${encodeURIComponent(effectiveFrom)}&to=${encodeURIComponent(effectiveTo)}`;
     try {
       const [mixRes, violRes, reqRes, utilRes, trendRes, peakRes] = await Promise.all([
@@ -221,12 +223,20 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
         fetch(`/api/v1/reports/occupancy-trend?${qs}`),
         fetch(`/api/v1/reports/peak-hours?${qs}`),
       ]);
+      const allResponses = [mixRes, violRes, reqRes, utilRes, trendRes, peakRes];
+      const anyFailed = allResponses.some((r) => !r.ok);
+      if (anyFailed) {
+        const anyRateLimited = allResponses.some((r) => r.status === 429);
+        setLoadError(anyRateLimited ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Some report data could not be loaded. Try refreshing the page.');
+      }
       if (mixRes.ok) setMix(await mixRes.json());
       if (violRes.ok) setViolations((await violRes.json()).violations || []);
       if (reqRes.ok) setRequests((await reqRes.json()).requests || []);
       if (utilRes.ok) setUtilization((await utilRes.json()).slots || []);
       if (trendRes.ok) setOccupancyTrend((await trendRes.json()).days || []);
       if (peakRes.ok) setPeakHours((await peakRes.json()).hours || []);
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -295,6 +305,12 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
 
   return (
     <div style={{ fontFamily: "'Barlow', system-ui, sans-serif" }}>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={load} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, marginBottom: 20, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.14em', color: 'var(--color-neutral-600, #7a7a7d)', fontFamily: "'Barlow Condensed', system-ui, sans-serif" }}>Reports</div>

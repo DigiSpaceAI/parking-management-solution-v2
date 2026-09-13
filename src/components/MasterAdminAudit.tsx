@@ -38,13 +38,20 @@ export const MasterAdminAudit: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ verified: boolean; totalChecked: number; tamperedCount: number; details: string } | null>(null);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
     try {
       const res = await fetch('/api/v1/security/audit-logs?limit=200');
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLoadError(res.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load audit logs. Try refreshing the page.');
+        return;
+      }
       const data = await res.json();
       setLogs(Array.isArray(data?.logs) ? data.logs : []);
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -91,6 +98,12 @@ export const MasterAdminAudit: React.FC = () => {
 
   return (
     <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={load} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 18 }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Filter</label>

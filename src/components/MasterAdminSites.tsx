@@ -64,13 +64,20 @@ export const MasterAdminSites: React.FC = () => {
   const [newDomain, setNewDomain] = useState('');
   const [loading, setLoading] = useState(true);
   const [domainBusy, setDomainBusy] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const loadSites = useCallback(async () => {
+    setLoadError('');
     try {
       const res = await fetch('/api/v1/sites');
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLoadError(res.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load sites. Try refreshing the page.');
+        return;
+      }
       const data = await res.json();
       setSites(Array.isArray(data?.sites) ? data.sites : []);
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -165,6 +172,12 @@ export const MasterAdminSites: React.FC = () => {
 
   return (
     <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={loadSites} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 18 }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Search facilities</label>

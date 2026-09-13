@@ -27,13 +27,20 @@ export const MasterAdminRoleSimulator: React.FC<MasterAdminRoleSimulatorProps> =
   const [users, setUsers] = useState<AppUserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [switchedMessage, setSwitchedMessage] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
     try {
       const res = await fetch('/api/v1/rbac/users');
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLoadError(res.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load users. Try refreshing the page.');
+        return;
+      }
       const data = await res.json();
       setUsers(Array.isArray(data?.users) ? data.users : []);
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -52,6 +59,12 @@ export const MasterAdminRoleSimulator: React.FC<MasterAdminRoleSimulatorProps> =
 
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 12, padding: 24, color: '#fff' }}>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid rgba(247,182,194,.4)', background: 'rgba(190,18,58,.15)', color: '#fca5a5', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={load} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#fca5a5', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ textAlign: 'center', marginBottom: 20 }}>
         <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 10, fontWeight: 700, padding: '2px 10px', borderRadius: 999, background: 'rgba(168,85,247,.15)', color: '#d8b4fe', border: '1px solid rgba(168,85,247,.3)' }}>
           SIMULATION CONSOLE

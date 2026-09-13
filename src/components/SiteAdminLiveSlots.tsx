@@ -68,13 +68,20 @@ export const SiteAdminLiveSlots: React.FC<SiteAdminLiveSlotsProps> = ({ siteId }
   const [allocationFilter, setAllocationFilter] = useState('All allocations');
   const [selected, setSelected] = useState<Slot | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const loadSlots = useCallback(async () => {
+    setLoadError('');
     try {
       const res = await fetch(`/api/v1/slots?siteId=${encodeURIComponent(siteId)}`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLoadError(res.status === 429 ? "Too many requests right now — this will refresh automatically." : 'Could not load slots. Retrying automatically every 8 seconds.');
+        return;
+      }
       const data = await res.json();
       setAllSlots(Array.isArray(data?.slots) ? data.slots : []);
+    } catch {
+      setLoadError('Could not reach the server. Retrying automatically every 8 seconds.');
     } finally {
       setLoading(false);
     }
@@ -119,6 +126,11 @@ export const SiteAdminLiveSlots: React.FC<SiteAdminLiveSlotsProps> = ({ siteId }
 
   return (
     <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16 }}>
+          {loadError}
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, marginBottom: 18 }}>
         <div>
           <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#64748b', fontFamily: "'Space Grotesk', sans-serif" }}>

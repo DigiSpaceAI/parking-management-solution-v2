@@ -52,15 +52,22 @@ export const MasterAdminRoles: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
     try {
       const res = await fetch('/api/v1/rbac/roles');
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLoadError(res.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load roles. Try refreshing the page.');
+        return;
+      }
       const data = await res.json();
       const list: AppRole[] = Array.isArray(data?.roles) ? data.roles : [];
       setRoles(list);
       if (list.length > 0 && !activeRoleId) setActiveRoleId(list[0].id);
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -133,6 +140,12 @@ export const MasterAdminRoles: React.FC = () => {
 
   return (
     <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={load} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 18 }}>
         {roles.map((r) => {
           const active = r.id === activeRoleId;

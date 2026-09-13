@@ -39,11 +39,13 @@ export const MasterAdminData: React.FC = () => {
   const [confirming, setConfirming] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<Record<string, number> | null>(null);
+  const [runError, setRunError] = useState('');
 
   const toggle = (key: string) => setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
 
   const run = async () => {
     setRunning(true);
+    setRunError('');
     try {
       const res = await fetch('/api/v1/admin/clear-history', {
         method: 'POST',
@@ -55,7 +57,11 @@ export const MasterAdminData: React.FC = () => {
         setResult(data.cleared);
         setConfirming(false);
         setSelected([]);
+      } else {
+        setRunError(data.message || 'Cleanup failed. Nothing was deleted.');
       }
+    } catch {
+      setRunError('Could not reach the server. Nothing was deleted — safe to retry.');
     } finally {
       setRunning(false);
     }
@@ -141,6 +147,11 @@ export const MasterAdminData: React.FC = () => {
         {result && (
           <div style={{ padding: '12px 16px', border: '1px solid #a7e3c8', background: '#e7f8f0', borderRadius: 8, fontSize: 12.5, color: '#065f46' }}>
             {Object.entries(result).map(([k, v]) => `${CLEANUP_COLLECTIONS.find((c) => c.key === k)?.label || k}: ${v} cleared`).join(' · ')}
+          </div>
+        )}
+        {runError && (
+          <div style={{ padding: '12px 16px', border: '1px solid #f7b6c2', background: '#fdeaee', borderRadius: 8, fontSize: 12.5, color: '#be123c' }}>
+            {runError}
           </div>
         )}
       </section>

@@ -29,13 +29,20 @@ interface SlotChangeNotification {
 export const MasterAdminRelocationLogs: React.FC = () => {
   const [notifications, setNotifications] = useState<SlotChangeNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
     try {
       const res = await fetch('/api/v1/slots/change-notifications');
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLoadError(res.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load relocation logs. Try refreshing the page.');
+        return;
+      }
       const data = await res.json();
       setNotifications(Array.isArray(data?.notifications) ? data.notifications : []);
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -49,6 +56,12 @@ export const MasterAdminRelocationLogs: React.FC = () => {
 
   return (
     <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={load} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ marginBottom: 18 }}>
         <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 22, margin: 0 }}>
           Attendant Vehicle Slot Relocation Audit Trail

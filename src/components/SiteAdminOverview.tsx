@@ -151,14 +151,21 @@ export const SiteAdminOverview: React.FC<SiteAdminOverviewProps> = ({ siteId, on
   ]);
   const [onShift] = useState<ShiftEntry[]>([]); // TODO: needs a real "on shift" backend concept
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setLoadError('');
       try {
         // Confirmed real: slot counts.
         const slotsRes = await fetch(`/api/v1/slots?siteId=${encodeURIComponent(siteId)}`);
+        if (!slotsRes.ok) {
+          if (!cancelled) setLoadError(slotsRes.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load this site\'s overview. Try refreshing the page.');
+          return;
+        }
         const slotsData = await slotsRes.json();
         const list = Array.isArray(slotsData?.slots) ? slotsData.slots : [];
         const total = list.length;
@@ -194,6 +201,7 @@ export const SiteAdminOverview: React.FC<SiteAdminOverviewProps> = ({ siteId, on
         }
       } catch (err) {
         console.error('Failed to load Overview data:', err);
+        if (!cancelled) setLoadError('Could not reach the server. Check your connection and try again.');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -201,7 +209,7 @@ export const SiteAdminOverview: React.FC<SiteAdminOverviewProps> = ({ siteId, on
     return () => {
       cancelled = true;
     };
-  }, [siteId]);
+  }, [siteId, retryKey]);
 
   const openAlerts = useMemo(() => alerts.filter((a) => a.state === 'NEEDS ACTION'), [alerts]);
   const actionCount = openAlerts.length + pendingApprovalsCount;
@@ -217,6 +225,12 @@ export const SiteAdminOverview: React.FC<SiteAdminOverviewProps> = ({ siteId, on
 
   return (
     <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={() => setRetryKey((k) => k + 1)} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, marginBottom: 22 }}>
         <div>
           <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--color-neutral-600)', fontFamily: 'var(--font-heading)' }}>

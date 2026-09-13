@@ -30,10 +30,16 @@ export const MasterAdminSiteAllocation: React.FC = () => {
   const [sites, setSites] = useState<Site[]>([]);
   const [users, setUsers] = useState<AppUserRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
     try {
       const [sitesRes, usersRes] = await Promise.all([fetch('/api/v1/sites'), fetch('/api/v1/rbac/users')]);
+      if (!sitesRes.ok || !usersRes.ok) {
+        const anyRateLimited = sitesRes.status === 429 || usersRes.status === 429;
+        setLoadError(anyRateLimited ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load site allocation data. Try refreshing the page.');
+      }
       if (sitesRes.ok) {
         const d = await sitesRes.json();
         setSites(Array.isArray(d?.sites) ? d.sites : []);
@@ -42,6 +48,8 @@ export const MasterAdminSiteAllocation: React.FC = () => {
         const d = await usersRes.json();
         setUsers(Array.isArray(d?.users) ? d.users : []);
       }
+    } catch {
+      setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -54,10 +62,17 @@ export const MasterAdminSiteAllocation: React.FC = () => {
   if (loading) return <div style={{ padding: 20, color: '#64748b' }}>Loading…</div>;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-      {sites.map((site) => {
-        const siteUsers = users.filter((u) => u.siteScopeType === 'ALL_SITES' || (u.assignedSiteIds || []).includes(site.id));
-        return (
+    <div>
+      {loadError && (
+        <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', color: '#be123c', borderRadius: 8, fontSize: 12.5, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{loadError}</span>
+          <button onClick={load} style={{ all: 'unset', cursor: 'pointer', fontWeight: 600, fontSize: 12, color: '#be123c', textDecoration: 'underline', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+        {sites.map((site) => {
+          const siteUsers = users.filter((u) => u.siteScopeType === 'ALL_SITES' || (u.assignedSiteIds || []).includes(site.id));
+          return (
           <section key={site.id} style={{ border: '1px solid #e2e6ee', borderRadius: 8, padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', paddingBottom: 12, borderBottom: '1px solid #f1f5f9', marginBottom: 12 }}>
               <div>
@@ -88,8 +103,9 @@ export const MasterAdminSiteAllocation: React.FC = () => {
               )}
             </div>
           </section>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 };

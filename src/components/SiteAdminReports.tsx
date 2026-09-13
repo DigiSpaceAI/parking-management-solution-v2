@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 /**
  * Site Admin — Reports page
@@ -189,8 +189,25 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
   const [reqBusy, setReqBusy] = useState(false);
   const [reqError, setReqError] = useState('');
 
-  const effectiveFrom = range === 'custom' ? new Date(fromDate).toISOString() : new Date(Date.now() - rangeDays[range] * 86400000).toISOString();
-  const effectiveTo = range === 'custom' ? new Date(toDate).toISOString() : new Date().toISOString();
+  // CRITICAL FIX: these previously called `new Date()` directly in the
+  // render body, which produces a genuinely new value every single
+  // render. Since load()'s useCallback depended on them, that made
+  // load() a new function reference every render — which retriggered
+  // the useEffect below, which called load() again, which updated
+  // state, which caused another render, another new load() reference,
+  // another effect trigger. A real infinite re-fetch loop, firing all 6
+  // report endpoints repeatedly from the moment this component mounted
+  // — this is what was actually exhausting the rate limit, not repeated
+  // manual page reloads. useMemo here means these only ever recompute
+  // when the range selection itself actually changes.
+  const effectiveFrom = useMemo(
+    () => (range === 'custom' ? new Date(fromDate).toISOString() : new Date(Date.now() - rangeDays[range] * 86400000).toISOString()),
+    [range, fromDate]
+  );
+  const effectiveTo = useMemo(
+    () => (range === 'custom' ? new Date(toDate).toISOString() : new Date().toISOString()),
+    [range, toDate]
+  );
 
   const load = useCallback(async () => {
     setLoading(true);

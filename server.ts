@@ -1576,7 +1576,16 @@ app.post('/api/v1/auth/set-password', (req, res) => {
   res.json(result.user ? { ...result, user: toPublicUser(result.user) } : result);
 });
 
-app.get('/api/v1/rbac/roles', requirePermission('USER_MANAGEMENT', 'view'), (req, res) => {
+// SAME FIX, SAME REASONING as the /api/v1/sites permission fix above:
+// this was gated to USER_MANAGEMENT (Master Admin only), but is called
+// globally on every app load for every role via App.tsx's fetchRoles()
+// — meaning every non-Master-Admin user has been silently hitting a 403
+// on this since USER_MANAGEMENT existed, not just Site Admins testing
+// Reports today. Viewing role names/structure isn't sensitive the way
+// editing them is; every write operation for roles remains properly
+// gated to USER_MANAGEMENT elsewhere in this file — only this read was
+// ever the problem.
+app.get('/api/v1/rbac/roles', (req, res) => {
   const roles = getAppRoles();
   res.json({ success: true, count: roles.length, roles });
 });

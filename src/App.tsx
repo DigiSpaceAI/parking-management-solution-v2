@@ -437,6 +437,7 @@ export default function App() {
                 onUpdateSlotStatus={handleUpdateSlotStatus}
                 onVehicleExit={handleVehicleExit}
                 onRefresh={refreshAll}
+                currentSiteId={currentSiteId}
               />
             )}
 
@@ -473,11 +474,11 @@ export default function App() {
             )}
 
             {activeTab === 'REGISTRATION' && (
-              <EmployeeRegistration mode="REGISTRATION" onRefreshAll={refreshAll} />
+              <EmployeeRegistration mode="REGISTRATION" onRefreshAll={refreshAll} currentSiteId={currentSiteId} />
             )}
 
             {activeTab === 'APPROVALS' && (
-              <EmployeeRegistration mode="APPROVALS" onRefreshAll={refreshAll} />
+              <EmployeeRegistration mode="APPROVALS" onRefreshAll={refreshAll} currentSiteId={currentSiteId} />
             )}
 
             {activeTab === 'MASTER_CONFIG' && <MasterConfigModule onRefresh={refreshAll} />}

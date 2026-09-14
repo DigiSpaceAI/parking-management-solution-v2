@@ -30,6 +30,7 @@ interface InventoryMasterProps {
   onUpdateSlotStatus: (slotId: string, newStatus: SlotStatus) => void;
   onVehicleExit?: (vehicleNumberOrSlot: string) => void;
   onRefresh: () => void;
+  currentSiteId: string;
 }
 
 export const InventoryMaster: React.FC<InventoryMasterProps> = ({
@@ -38,6 +39,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   onUpdateSlotStatus,
   onVehicleExit,
   onRefresh,
+  currentSiteId,
 }) => {
   const [activeTab, setActiveTab] = useState<'SLOTS' | 'EMPLOYEES'>('SLOTS');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -200,7 +202,10 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
       const res = await fetch('/api/v1/employees/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingEmployee),
+        body: JSON.stringify({
+          ...editingEmployee,
+          siteId: editingEmployee.siteId || (currentSiteId !== 'ALL' ? currentSiteId : undefined),
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -312,12 +317,16 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
 
   const handleConfirmBulkUpload = async () => {
     if (parsedBulkEmployees.length === 0) return;
+    if (currentSiteId === 'ALL') {
+      setBulkSuccessMsg('Select a specific site (top right) before bulk-uploading — "All Sites" is ambiguous for new employees.');
+      return;
+    }
     try {
       setBulkUploading(true);
       const res = await fetch('/api/v1/employees/bulk-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ employees: parsedBulkEmployees }),
+        body: JSON.stringify({ employees: parsedBulkEmployees.map((e) => ({ ...e, siteId: currentSiteId })) }),
       });
       const data = await res.json();
       if (data.success) {
@@ -390,6 +399,7 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
         body: JSON.stringify({
           slot: slotPayload,
           ...slotPayload,
+          siteId: editingSlot.siteId || (currentSiteId !== 'ALL' ? currentSiteId : undefined),
         }),
       });
 
@@ -493,6 +503,10 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
 
   const handleConfirmSlotBulkUpload = async () => {
     if (parsedBulkSlots.length === 0) return;
+    if (currentSiteId === 'ALL') {
+      setSlotBulkSuccessMsg('Select a specific site (top right) before bulk-uploading — "All Sites" is ambiguous for new inventory.');
+      return;
+    }
     try {
       setSlotBulkUploading(true);
       setSlotBulkSuccessMsg(`Uploading & processing ${parsedBulkSlots.length} inventory slots...`);
@@ -500,7 +514,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
       const res = await fetch('/api/v1/slots/bulk-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slots: parsedBulkSlots }),
+        body: JSON.stringify({ slots: parsedBulkSlots.map((s) => ({ ...s, siteId: currentSiteId })) }),
       });
       const data = await res.json();
 

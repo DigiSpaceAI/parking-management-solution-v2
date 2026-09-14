@@ -36,9 +36,10 @@ import {
 interface EmployeeRegistrationProps {
   onRefreshAll?: () => void;
   mode?: 'REGISTRATION' | 'APPROVALS';
+  currentSiteId?: string;
 }
 
-export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRefreshAll, mode = 'REGISTRATION' }) => {
+export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRefreshAll, mode = 'REGISTRATION', currentSiteId }) => {
   const [activeView, setActiveView] = useState<'REGISTER' | 'ADMIN_APPROVAL'>(
     mode === 'APPROVALS' ? 'ADMIN_APPROVAL' : 'REGISTER'
   );
@@ -216,6 +217,7 @@ export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRe
       const payloadReqs = parsedBulkReqs.map((r) => ({
         ...r,
         registrationType: 'PARKING_ADMIN' as const,
+        siteId: currentSiteId && currentSiteId !== 'ALL' ? currentSiteId : undefined,
       }));
 
       // Persist to backend database API
@@ -318,6 +320,14 @@ export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRe
       const payload = {
         ...formData,
         registrationType: activeView === 'ADMIN_APPROVAL' ? 'PARKING_ADMIN' : 'EMPLOYEE_SELF',
+        // PARKING_ADMIN submissions happen from within the authenticated
+        // admin app, where currentSiteId is real and known — tag it
+        // directly. EMPLOYEE_SELF submissions are the public,
+        // unauthenticated self-service path (this exact endpoint is in
+        // PUBLIC_API_PATHS) — there's no admin site-context to attach
+        // there at all, a genuinely separate, harder problem than this
+        // fix covers. Left as a real, open gap rather than guessed at.
+        siteId: activeView === 'ADMIN_APPROVAL' && currentSiteId && currentSiteId !== 'ALL' ? currentSiteId : undefined,
       };
       const res = await fetch('/api/v1/registrations/submit', {
         method: 'POST',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 /**
  * Master Admin — Data & Retention page
@@ -41,6 +41,60 @@ export const MasterAdminData: React.FC = () => {
   const [result, setResult] = useState<Record<string, number> | null>(null);
   const [runError, setRunError] = useState('');
 
+  // Site data migration — built specifically to fix a real, confirmed
+  // gap: a large amount of genuine, pre-existing inventory was left
+  // implicitly tagged with the internal default site ID, with no real,
+  // named site record ever linked to it. Explicit, admin-triggered only.
+  const [sites, setSites] = useState<{ id: string; siteName: string }[]>([]);
+  const [fromSiteId, setFromSiteId] = useState('site-default');
+  const [toSiteId, setToSiteId] = useState('');
+  const [migrateConfirming, setMigrateConfirming] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrateResult, setMigrateResult] = useState<Record<string, number> | null>(null);
+  const [migrateError, setMigrateError] = useState('');
+
+  const loadSites = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/sites');
+      if (!res.ok) return;
+      const data = await res.json();
+      setSites(Array.isArray(data?.sites) ? data.sites : []);
+    } catch {
+      // Non-fatal — the migration selectors just show empty if this fails.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSites();
+  }, [loadSites]);
+
+  const runMigration = async () => {
+    if (!toSiteId) {
+      setMigrateError('Select a destination site.');
+      return;
+    }
+    setMigrating(true);
+    setMigrateError('');
+    try {
+      const res = await fetch('/api/v1/admin/migrate-site-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromSiteId, toSiteId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMigrateResult(data.migrated);
+        setMigrateConfirming(false);
+      } else {
+        setMigrateError(data.message || 'Migration failed. Nothing was changed.');
+      }
+    } catch {
+      setMigrateError('Could not reach the server. Nothing was changed — safe to retry.');
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   const toggle = (key: string) => setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
 
   const run = async () => {
@@ -69,6 +123,58 @@ export const MasterAdminData: React.FC = () => {
 
   return (
     <div>
+      <section style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 8, padding: 18, marginBottom: 20 }}>
+        <h5 style={{ margin: 0, fontSize: 15, color: '#1e40af' }}>Migrate site data</h5>
+        <div style={{ fontSize: 11.5, color: '#3b5a8a', margin: '4px 0 14px', lineHeight: 1.5 }}>
+          Re-tags every slot, employee, log, alert, registration, notification, valet ticket, and overnight request from one site to another. Built specifically to fix pre-existing inventory that predates site-scoping and was never linked to a real, named site.
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+          <div style={{ minWidth: 220 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#3b5a8a', display: 'block', marginBottom: 4 }}>From (current internal default)</label>
+            <input value={fromSiteId} onChange={(e) => setFromSiteId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', border: '1px solid #bfdbfe', borderRadius: 8, fontSize: 13, background: '#fff' }} />
+          </div>
+          <div style={{ minWidth: 220 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#3b5a8a', display: 'block', marginBottom: 4 }}>To (real site)</label>
+            <select value={toSiteId} onChange={(e) => setToSiteId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', border: '1px solid #bfdbfe', borderRadius: 8, fontSize: 13, background: '#fff' }}>
+              <option value="">Select a site…</option>
+              {sites.map((s) => <option key={s.id} value={s.id}>{s.siteName}</option>)}
+            </select>
+          </div>
+          {!migrateConfirming ? (
+            <button
+              onClick={() => { setMigrateConfirming(true); setMigrateError(''); }}
+              disabled={!toSiteId}
+              style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13, cursor: toSiteId ? 'pointer' : 'not-allowed', opacity: toSiteId ? 1 : 0.5 }}
+            >
+              Migrate
+            </button>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setMigrateConfirming(false)} disabled={migrating} style={{ padding: '9px 16px', border: '1px solid #bfdbfe', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={runMigration}
+                disabled={migrating}
+                style={{ padding: '9px 16px', border: 'none', borderRadius: 8, background: '#dc2626', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer', opacity: migrating ? 0.6 : 1 }}
+              >
+                {migrating ? 'Migrating…' : `Confirm: move everything to ${sites.find((s) => s.id === toSiteId)?.siteName || toSiteId}`}
+              </button>
+            </div>
+          )}
+        </div>
+        {migrateResult && (
+          <div style={{ padding: '10px 14px', border: '1px solid #a7e3c8', background: '#e7f8f0', borderRadius: 8, fontSize: 12.5, color: '#065f46' }}>
+            {Object.entries(migrateResult).filter(([, v]) => v > 0).map(([k, v]) => `${k}: ${v}`).join(' · ') || 'Nothing matched — already migrated or already empty.'}
+          </div>
+        )}
+        {migrateError && (
+          <div style={{ padding: '10px 14px', border: '1px solid #f7b6c2', background: '#fdeaee', borderRadius: 8, fontSize: 12.5, color: '#be123c' }}>
+            {migrateError}
+          </div>
+        )}
+      </section>
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
         <section style={{ border: '1px solid #e2e6ee', borderRadius: 8, padding: 18 }}>
           <h5 style={{ margin: 0, fontSize: 15 }}>Retention windows</h5>

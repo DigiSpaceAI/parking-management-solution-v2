@@ -2568,6 +2568,55 @@ export function getSlotUtilization(siteId: string, fromISO: string, toISO: strin
  * system, which would only start accumulating data from when it's
  * switched on.
  */
+/**
+ * Migrates every site-scoped record from one site to another — built
+ * specifically to fix the real, confirmed gap where a large amount of
+ * genuine, pre-existing inventory was still implicitly tagged with
+ * DEFAULT_SITE_ID and had no real, named site record linking to it.
+ * Covers every collection that carries siteId: slots, employees, logs,
+ * alerts, registrationRequests, slotChangeNotifications, valetTickets,
+ * overnightRequests. Explicit, admin-triggered only — never runs
+ * automatically, given this touches real production data directly.
+ */
+export function migrateSiteData(fromSiteId: string, toSiteId: string): { success: boolean; message: string; migrated: Record<string, number> } {
+  const storeData = getStore();
+  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const migrated: Record<string, number> = {};
+
+  const migrateCollection = <T extends { siteId?: string }>(items: T[], label: string) => {
+    let count = 0;
+    for (const item of items) {
+      if (resolveSiteId(item) === fromSiteId) {
+        item.siteId = toSiteId;
+        count++;
+      }
+    }
+    migrated[label] = count;
+  };
+
+  migrateCollection(storeData.slots, 'slots');
+  migrateCollection(storeData.employees, 'employees');
+  migrateCollection(storeData.logs, 'logs');
+  migrateCollection(storeData.alerts, 'alerts');
+  migrateCollection(storeData.registrationRequests, 'registrationRequests');
+  migrateCollection(storeData.slotChangeNotifications, 'slotChangeNotifications');
+  migrateCollection(storeData.valetTickets, 'valetTickets');
+  migrateCollection(storeData.overnightRequests || [], 'overnightRequests');
+
+  const totalMigrated = Object.values(migrated).reduce((a, b) => a + b, 0);
+  if (totalMigrated === 0) {
+    return { success: false, message: `No records found under site '${fromSiteId}' — nothing to migrate.`, migrated };
+  }
+
+  saveDB();
+
+  return {
+    success: true,
+    message: `Migrated ${totalMigrated} records from '${fromSiteId}' to '${toSiteId}'.`,
+    migrated,
+  };
+}
+
 export function getOccupancyTrend(siteId: string, fromISO: string, toISO: string): {
   date: string;
   peakOccupancyPct: number;

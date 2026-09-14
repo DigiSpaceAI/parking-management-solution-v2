@@ -31,6 +31,7 @@ import {
   getSlotUtilization,
   getOccupancyTrend,
   getPeakHours,
+  migrateSiteData,
   approveRegistrationRequest,
   rejectRegistrationRequest,
   bulkUploadRegistrations,
@@ -759,6 +760,34 @@ app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canD
   });
 
   res.json({ success: true, cleared: result });
+});
+
+app.post('/api/v1/admin/migrate-site-data', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
+  const { fromSiteId, toSiteId } = req.body;
+
+  if (!fromSiteId || !toSiteId) {
+    return res.status(400).json({ success: false, message: 'fromSiteId and toSiteId are both required.' });
+  }
+  if (fromSiteId === toSiteId) {
+    return res.status(400).json({ success: false, message: 'fromSiteId and toSiteId cannot be the same.' });
+  }
+
+  const result = migrateSiteData(fromSiteId, toSiteId);
+  if (!result.success) {
+    return res.status(400).json(result);
+  }
+
+  logSecurityEvent({
+    action: 'SITE_DATA_MIGRATED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `site-migration/${fromSiteId}->${toSiteId}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} migrated ${JSON.stringify(result.migrated)} from '${fromSiteId}' to '${toSiteId}'.`,
+  });
+
+  res.json(result);
 });
 
 app.post('/api/v1/sites/pricing', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {

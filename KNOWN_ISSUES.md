@@ -5,6 +5,21 @@
 **Found:** 2026-09-15, while investigating why Live Slots showed no data for the
 Alphatech site.
 
+**Status: fixed for the FLOOR_PLAN (Live Parking Slots) screen and the
+fetches it depends on**, in commit `2472379` ("Give every site the same
+Live Parking Slots UI, scoped to its own data") — `fetchSlots`,
+`fetchEmployees`, `fetchLogs`, `fetchAlerts`, `fetchPendingReqs`, and
+`handleVehicleEntry`/`handleVehicleExit` in `App.tsx` are now site-scoped
+via a `withSite()` helper, `refreshAll()` re-runs on site-context change,
+and the Site Admin vs Master Admin UI split on the Live Slots tab was
+removed (everyone now gets `LiveFloorPlan`; `SiteAdminLiveSlots` is no
+longer used). **Not yet deployed** — this session has no push access to
+this repo, so `admin.parkflows.in` is still running the old, unscoped
+code as of this writing. The rest of this entry (root cause, repro, and
+the parts of the fix direction below not yet covered — e.g. other pages
+that read `slots`/`employees`/etc. from `App.tsx`'s state, if any exist
+beyond what commit `2472379` touched) is kept for reference.
+
 **Severity:** Data isolation gap, not just a display glitch. A logged-in Site
 Admin (or a Master Admin simulating a site role via the Role View Simulator)
 sees inventory/employee data from **every** site mixed together on the

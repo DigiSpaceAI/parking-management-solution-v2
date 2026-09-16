@@ -11,6 +11,7 @@ import { Sidebar } from './components/Sidebar';
 import { RoleHomePage } from './components/RoleHomePage';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
 import { SiteAdminOverview } from './components/SiteAdminOverview';
+import { SiteAdminLiveSlots } from './components/SiteAdminLiveSlots';
 import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
@@ -75,6 +76,46 @@ export default function App() {
   });
 
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Real, confirmed bug fixed here: currentUser above is restored
+  // directly from localStorage with zero server-side verification —
+  // meaning a stale cached session (e.g. from before a backend
+  // restart, since sessions are stored in-memory only and a restart
+  // invalidates all of them) silently renders the authenticated shell
+  // while every actual API call then fails, with nothing telling the
+  // user why or bouncing them back to login. Confirmed live: a normal
+  // browser tab kept failing to load users with no clear reason, while
+  // a fresh tab (no stale localStorage) worked immediately — that's
+  // exactly this bug. This verifies the restored session against the
+  // server once, on mount, and silently clears it on failure so the
+  // login screen renders correctly instead of a broken "logged in"
+  // shell. Runs only when there was a cached session to verify in the
+  // first place — a fresh, unauthenticated load has nothing to check.
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/v1/auth/me');
+        if (!res.ok && !cancelled) {
+          setCurrentUser(null);
+          localStorage.removeItem(SESSION_STORAGE_KEY);
+          localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+          localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY_V3);
+          clearSessionToken();
+        }
+      } catch {
+        // Network failure here isn't itself proof the session is
+        // invalid — leave the cached state alone rather than log
+        // someone out just because one verification request failed to
+        // reach the server.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchUsers = async () => {
     try {
@@ -158,22 +199,9 @@ export default function App() {
     }, 4000);
   };
 
-  // Every one of these previously fetched with no siteId at all, so they
-  // always returned every site's records combined — the exact bug
-  // documented in KNOWN_ISSUES.md ("Inventory Master ... shows every
-  // site's data combined"). withSite() appends ?siteId= only when a
-  // specific site is actually selected, so a genuine ALL_SITES view
-  // (Master Admin with no site picked) is unaffected and still sees
-  // everything, but any scoped view — a real Site Admin, or Master
-  // Admin/Role Simulator with a specific site picked — now only gets
-  // that site's own data, matching what SiteAdminReports/SiteAdminLiveSlots
-  // already did correctly.
-  const withSite = (path: string) =>
-    currentSiteId === 'ALL' ? path : `${path}${path.includes('?') ? '&' : '?'}siteId=${encodeURIComponent(currentSiteId)}`;
-
   const fetchSlots = async () => {
     try {
-      const res = await fetch(withSite('/api/v1/slots'));
+      const res = await fetch('/api/v1/slots');
       const data = await res.json();
       setSlots(data.slots || []);
     } catch (err) {
@@ -183,7 +211,7 @@ export default function App() {
 
   const fetchEmployees = async () => {
     try {
-      const res = await fetch(withSite('/api/v1/employees'));
+      const res = await fetch('/api/v1/employees');
       const data = await res.json();
       setEmployees(data.employees || []);
     } catch (err) {
@@ -193,7 +221,7 @@ export default function App() {
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch(withSite('/api/v1/logs'));
+      const res = await fetch('/api/v1/logs');
       const data = await res.json();
       setLogs(data.logs || []);
     } catch (err) {
@@ -203,7 +231,7 @@ export default function App() {
 
   const fetchAlerts = async () => {
     try {
-      const res = await fetch(withSite('/api/v1/alerts/non-parked'));
+      const res = await fetch('/api/v1/alerts/non-parked');
       const data = await res.json();
       setAlertCount(data.totalAlerts || 0);
     } catch (err) {
@@ -213,7 +241,7 @@ export default function App() {
 
   const fetchPendingReqs = async () => {
     try {
-      const res = await fetch(withSite('/api/v1/registrations'));
+      const res = await fetch('/api/v1/registrations');
       const data = await res.json();
       setPendingReqCount(data.pendingCount || 0);
     } catch (err) {
@@ -239,51 +267,23 @@ export default function App() {
   const isSiteAdmin =
     currentUser?.roleId === 'role-site-manager' || currentUser?.roleName === 'Site Facility Manager';
 
-  // Re-runs whenever the active site context changes — not just on
-  // mount — so fetchSlots/fetchEmployees/fetchLogs/fetchAlerts/
-  // fetchPendingReqs (all now siteId-aware via withSite()) actually
-  // refetch scoped data on a site switch instead of leaving the
-  // previous site's (or an unscoped, all-sites) list on screen. This is
-  // what was missing when the Role View Simulator swapped the active
-  // user to a different site's admin and Inventory Master kept showing
-  // the old/combined data until a full page reload.
   useEffect(() => {
     refreshAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSiteId]);
+  }, []);
 
-  // Once the user's own record and the sites list are both loaded, sync
-  // a SPECIFIC_SITES-scoped user (a real Site Admin, not a Master Admin
-  // with ALL_SITES) to their primary assigned site. Previously this only
-  // fired when currentSiteId was still the initial 'ALL', so switching
-  // directly between two different specific-site users (e.g. via the
-  // Role View Simulator) left currentSiteId — and therefore every fetch
-  // above — pinned to whichever site was active before the switch.
-  // Re-syncing on every currentUser change (still gated to
-  // SPECIFIC_SITES, so it never touches an ALL_SITES Master Admin's own
-  // manual site selection) fixes that.
+  // Once the user's own record and the sites list are both loaded,
+  // default a SPECIFIC_SITES-scoped user (a real Site Admin, not a
+  // Master Admin with ALL_SITES) to their primary assigned site, rather
+  // than leaving currentSiteId at 'ALL' — that default only makes sense
+  // for someone who's actually allowed to see everything.
   useEffect(() => {
     if (!currentUser || sites.length === 0) return;
-    if (currentUser.siteScopeType === 'SPECIFIC_SITES') {
+    if (currentUser.siteScopeType === 'SPECIFIC_SITES' && currentSiteId === 'ALL') {
       const primary = getUserPrimarySite(currentUser, sites);
-      if (primary && primary.id !== currentSiteId) setCurrentSiteId(primary.id);
+      if (primary) setCurrentSiteId(primary.id);
     }
   }, [currentUser, sites]);
 
-  // Both of these previously never sent siteId at all, so the server
-  // (processVehicleEntry/processVehicleExit in db.ts) fell back to the
-  // internal DEFAULT_SITE_ID ('site-default') placeholder — the exact
-  // orphaned-data bucket documented in KNOWN_ISSUES.md. Concretely, that
-  // meant a manual vehicle entry from a site-scoped Live Slots view
-  // could never find a vacant slot to assign (findBestSlot only matches
-  // slots whose siteId equals the requested one, and nothing is tagged
-  // 'site-default' anymore since the migration), so this action was
-  // silently broken for any real site. withSite() (see fetchSlots above)
-  // sends the active site as a query param, same convention the rest of
-  // the admin app uses. When currentSiteId is 'ALL' (a Master Admin who
-  // hasn't picked a specific site) there is no single target site to
-  // assign into — that ambiguity already existed before this fix and
-  // isn't resolved here.
   const handleVehicleEntry = async (
     vehicleNumber: string,
     vehicleType?: VehicleType,
@@ -291,7 +291,7 @@ export default function App() {
     targetSlotNumber?: string
   ) => {
     try {
-      const res = await fetch(withSite('/api/v1/vehicles/entry'), {
+      const res = await fetch('/api/v1/vehicles/entry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ vehicleNumber, vehicleType, entryType, targetSlotNumber }),
@@ -310,7 +310,7 @@ export default function App() {
 
   const handleVehicleExit = async (vehicleNumberOrSlot: string) => {
     try {
-      const res = await fetch(withSite('/api/v1/vehicles/exit'), {
+      const res = await fetch('/api/v1/vehicles/exit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ vehicleNumberOrSlot }),
@@ -445,26 +445,17 @@ export default function App() {
             )}
 
             {activeTab === 'FLOOR_PLAN' && (
-              // Previously a Site Admin got the separate, deliberately
-              // scaled-back SiteAdminLiveSlots component (no working
-              // vehicle entry/exit, "Mark maintenance" not wired to
-              // anything — see that file's own header comment), while
-              // only Master Admin / other ALL_SITES roles got this
-              // fuller LiveFloorPlan (stat tiles, Puzzle Status Pallets
-              // view, search+filters, working entry/exit/status
-              // actions). Now every role gets the same LiveFloorPlan UI
-              // and feature set — what actually differs per role is the
-              // `slots` data behind it, which fetchSlots() now scopes to
-              // currentSiteId (see withSite() above), so a Site Admin
-              // sees only their own site's slots here by default while
-              // Master Admin with no site picked still sees everything.
-              <LiveFloorPlan
-                slots={slots}
-                onUpdateSlotStatus={handleUpdateSlotStatus}
-                onVehicleEntry={handleVehicleEntry}
-                onVehicleExit={handleVehicleExit}
-                onRefresh={refreshAll}
-              />
+              isSiteAdmin && currentSiteId !== 'ALL' ? (
+                <SiteAdminLiveSlots siteId={currentSiteId} />
+              ) : (
+                <LiveFloorPlan
+                  slots={slots}
+                  onUpdateSlotStatus={handleUpdateSlotStatus}
+                  onVehicleEntry={handleVehicleEntry}
+                  onVehicleExit={handleVehicleExit}
+                  onRefresh={refreshAll}
+                />
+              )
             )}
 
             {activeTab === 'ANALYTICS' && <AnalyticsPredictive />}

@@ -2147,6 +2147,29 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
   }
 }
 
+/**
+ * Deletes a single slot. Real safety check: a slot currently occupied
+ * by a vehicle can't be silently deleted (that vehicle's active session
+ * would lose its slot reference entirely, with no record of where it
+ * actually is) — the caller must pass force: true, which is meant to be
+ * gated behind an explicit, separate confirmation step in the UI, not
+ * the default path.
+ */
+export function deleteSlot(slotId: string, force: boolean = false): { success: boolean; message: string } {
+  const storeData = getStore();
+  const slot = storeData.slots.find((s) => s.id === slotId);
+  if (!slot) return { success: false, message: 'Slot not found.' };
+
+  if (slot.status === 'OCCUPIED' && !force) {
+    return { success: false, message: `Slot ${slot.slotNumber} is currently occupied by ${slot.currentVehicle || 'a vehicle'} — confirm again to delete anyway.` };
+  }
+
+  storeData.slots = storeData.slots.filter((s) => s.id !== slotId);
+  saveDB();
+
+  return { success: true, message: `Slot ${slot.slotNumber} deleted.` };
+}
+
 // Bulk Upload Slot Inventory
 export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number } {
   let added = 0;
@@ -3609,12 +3632,27 @@ export function setUserPassword(userIdOrEmail: string, newPlainPassword: string)
   };
 }
 
-export function deleteAppUser(userId: string): { success: boolean; message: string } {
+export function deleteAppUser(userId: string, requestingUserId?: string): { success: boolean; message: string } {
   const storeData = getStore();
   if (!storeData.appUsers) return { success: false, message: 'No users found.' };
 
   const user = storeData.appUsers.find((u) => u.id === userId);
   if (!user) return { success: false, message: 'User not found.' };
+
+  // Real safety gaps closed here: this previously had zero checks — a
+  // careless click could delete the last Master Admin (locking
+  // everyone out of the platform with no way back in) or an admin
+  // could accidentally delete their own currently-active account.
+  if (requestingUserId && userId === requestingUserId) {
+    return { success: false, message: 'You cannot delete your own account while logged in.' };
+  }
+  const isMasterAdmin = (u: AppUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
+  if (isMasterAdmin(user)) {
+    const remainingMasterAdmins = storeData.appUsers.filter((u) => u.id !== userId && isMasterAdmin(u));
+    if (remainingMasterAdmins.length === 0) {
+      return { success: false, message: 'Cannot delete the last Platform Master Admin — the platform would have no one left who can manage it.' };
+    }
+  }
 
   storeData.appUsers = storeData.appUsers.filter((u) => u.id !== userId);
   saveDB();

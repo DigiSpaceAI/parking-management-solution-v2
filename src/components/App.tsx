@@ -1,0 +1,584 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { ParkingSlot, Employee, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig } from './types';
+import { clearSessionToken } from './sessionTokenFallback';
+import { Header, ActiveTabType } from './components/Header';
+import { Sidebar } from './components/Sidebar';
+import { RoleHomePage } from './components/RoleHomePage';
+import { LiveFloorPlan } from './components/LiveFloorPlan';
+import { SiteAdminOverview } from './components/SiteAdminOverview';
+import { SiteAdminLiveSlots } from './components/SiteAdminLiveSlots';
+import { SiteAdminReports } from './components/SiteAdminReports';
+import { AnalyticsPredictive } from './components/AnalyticsPredictive';
+import { InventoryMaster } from './components/InventoryMaster';
+import { ParkingLogs } from './components/ParkingLogs';
+import { NonParkedAlerts } from './components/NonParkedAlerts';
+// Lazy-loaded rather than bundled upfront — these two files alone are
+// nearly 4,000 lines (the stale, pre-ML-Kit mobile source, kept here
+// only as an in-admin preview feature), and bundling them into every
+// page load was the direct cause of the "chunks larger than 500 kB"
+// warning on every single build. Now only loaded the first time someone
+// actually clicks into the Mobile App or Employee Mobile App preview
+// tabs, not before.
+const AttendantMobileApp = lazy(() =>
+  import('./components/AttendantMobileApp').then((m) => ({ default: m.AttendantMobileApp }))
+);
+const EmployeeMobileApp = lazy(() =>
+  import('./components/EmployeeMobileApp').then((m) => ({ default: m.EmployeeMobileApp }))
+);
+import { EmployeeRegistration } from './components/EmployeeRegistration';
+import { MasterConfigModule } from './components/MasterConfigModule';
+import { ValetXModule } from './components/ValetXModule';
+import { UserManagementModule } from './components/UserManagementModule';
+import { SecurityAuditModule } from './components/SecurityAuditModule';
+import { LoginScreen } from './components/LoginScreen';
+import { isModulePermitted, getUserPermittedSites, getUserPrimarySite } from './utils/rbac';
+import { CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
+
+const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
+const LEGACY_SESSION_STORAGE_KEY = 'parkorbit_authenticated_user_session_v4';
+const LEGACY_SESSION_STORAGE_KEY_V3 = 'pm_authenticated_user_session_v4';
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<ActiveTabType>('HOME');
+  const [slots, setSlots] = useState<ParkingSlot[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [logs, setLogs] = useState<ParkingLog[]>([]);
+  const [roles, setRoles] = useState<RolePermissionConfig[]>([]);
+  const [sites, setSites] = useState<SiteConfig[]>([]);
+  const [currentSiteId, setCurrentSiteId] = useState<string>('ALL');
+  const [alertCount, setAlertCount] = useState<number>(0);
+  const [pendingReqCount, setPendingReqCount] = useState<number>(0);
+
+  // Sidebar state
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState<boolean>(false);
+
+  // RBAC User Session state
+  const [allUsers, setAllUsers] = useState<AppUser[]>([]);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    try {
+      const saved =
+        localStorage.getItem(SESSION_STORAGE_KEY) ||
+        localStorage.getItem(LEGACY_SESSION_STORAGE_KEY) ||
+        localStorage.getItem(LEGACY_SESSION_STORAGE_KEY_V3);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('Failed to parse saved user session:', e);
+    }
+    return null;
+  });
+
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Real, confirmed bug fixed here: currentUser above is restored
+  // directly from localStorage with zero server-side verification —
+  // meaning a stale cached session (e.g. from before a backend
+  // restart, since sessions are stored in-memory only and a restart
+  // invalidates all of them) silently renders the authenticated shell
+  // while every actual API call then fails, with nothing telling the
+  // user why or bouncing them back to login. Confirmed live: a normal
+  // browser tab kept failing to load users with no clear reason, while
+  // a fresh tab (no stale localStorage) worked immediately — that's
+  // exactly this bug. This verifies the restored session against the
+  // server once, on mount, and silently clears it on failure so the
+  // login screen renders correctly instead of a broken "logged in"
+  // shell. Runs only when there was a cached session to verify in the
+  // first place — a fresh, unauthenticated load has nothing to check.
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/v1/auth/me');
+        if (!res.ok && !cancelled) {
+          setCurrentUser(null);
+          localStorage.removeItem(SESSION_STORAGE_KEY);
+          localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+          localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY_V3);
+          clearSessionToken();
+        }
+      } catch {
+        // Network failure here isn't itself proof the session is
+        // invalid — leave the cached state alone rather than log
+        // someone out just because one verification request failed to
+        // reach the server.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch('/api/v1/rbac/users');
+      const data = await res.json();
+      if (data.success && data.users && data.users.length > 0) {
+        setAllUsers(data.users);
+        if (currentUser) {
+          const freshCurrent = data.users.find((u: AppUser) => u.id === currentUser.id);
+          if (freshCurrent) {
+            setCurrentUser(freshCurrent);
+            try {
+              localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(freshCurrent));
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch users:', err);
+    }
+  };
+
+  const fetchRoles = async () => {
+    try {
+      const res = await fetch('/api/v1/rbac/roles');
+      const data = await res.json();
+      if (data.success && data.roles && data.roles.length > 0) {
+        setRoles(data.roles);
+      }
+    } catch (err) {
+      console.error('Failed to fetch roles:', err);
+    }
+  };
+
+  const fetchSites = async () => {
+    try {
+      const res = await fetch('/api/v1/sites');
+      const data = await res.json();
+      const list = data.sites || (Array.isArray(data) ? data : []);
+      if (list && list.length > 0) {
+        setSites(list);
+      }
+    } catch (err) {
+      console.error('Failed to fetch sites:', err);
+    }
+  };
+
+  const handleLoginSuccess = (user: AppUser, redirectTab?: string) => {
+    setCurrentUser(user);
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(user));
+    } catch (e) {
+      console.error('Failed to persist session:', e);
+    }
+
+    if (redirectTab) {
+      setActiveTab(redirectTab as ActiveTabType);
+    } else {
+      // Default to the tailored Role Home Page for every role!
+      setActiveTab('HOME');
+    }
+
+    showToast('success', `Signed in as ${user.fullName} (${user.roleName})`);
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (e) {
+      console.error('Failed to remove session:', e);
+    }
+    clearSessionToken();
+    showToast('success', 'You have been signed out successfully.');
+  };
+
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setNotification({ type, message });
+    setTimeout(() => {
+      setNotification(null);
+    }, 4000);
+  };
+
+  const fetchSlots = async () => {
+    try {
+      // Real, confirmed inconsistency fixed here: this previously called
+      // /api/v1/slots with no site parameter at all — which returns
+      // EVERY slot across EVERY site, completely unscoped. Site Admin's
+      // own live-slots page and the mobile Attendant app both correctly
+      // scope by site; this shared fetch (which also feeds Master
+      // Admin's Inventory Master page) did not, so a Master Admin
+      // viewing a specific site would silently see every other site's
+      // inventory mixed in too. Respecting currentSiteId here brings it
+      // in line with every other role — "All Sites" (the deliberate,
+      // explicit choice) still shows everything, since that's a real,
+      // intentional Master Admin use case, not the bug.
+      const qs = currentSiteId && currentSiteId !== 'ALL' ? `?siteId=${encodeURIComponent(currentSiteId)}` : '';
+      const res = await fetch(`/api/v1/slots${qs}`);
+      const data = await res.json();
+      setSlots(data.slots || []);
+    } catch (err) {
+      console.error('Error fetching slots:', err);
+    }
+  };
+
+  const fetchEmployees = async () => {
+    try {
+      const qs = currentSiteId && currentSiteId !== 'ALL' ? `?siteId=${encodeURIComponent(currentSiteId)}` : '';
+      const res = await fetch(`/api/v1/employees${qs}`);
+      const data = await res.json();
+      setEmployees(data.employees || []);
+    } catch (err) {
+      console.error('Error fetching employees:', err);
+    }
+  };
+
+  const fetchLogs = async () => {
+    try {
+      const qs = currentSiteId && currentSiteId !== 'ALL' ? `?siteId=${encodeURIComponent(currentSiteId)}` : '';
+      const res = await fetch(`/api/v1/logs${qs}`);
+      const data = await res.json();
+      setLogs(data.logs || []);
+    } catch (err) {
+      console.error('Error fetching logs:', err);
+    }
+  };
+
+  const fetchAlerts = async () => {
+    try {
+      const qs = currentSiteId && currentSiteId !== 'ALL' ? `?siteId=${encodeURIComponent(currentSiteId)}` : '';
+      const res = await fetch(`/api/v1/alerts/non-parked${qs}`);
+      const data = await res.json();
+      setAlertCount(data.totalAlerts || 0);
+    } catch (err) {
+      console.error('Error fetching alerts:', err);
+    }
+  };
+
+  const fetchPendingReqs = async () => {
+    try {
+      const res = await fetch('/api/v1/registrations');
+      const data = await res.json();
+      setPendingReqCount(data.pendingCount || 0);
+    } catch (err) {
+      console.error('Error fetching pending registrations:', err);
+    }
+  };
+
+  const refreshAll = () => {
+    fetchSlots();
+    fetchEmployees();
+    fetchLogs();
+    fetchAlerts();
+    fetchPendingReqs();
+    fetchUsers();
+    fetchRoles();
+    fetchSites();
+  };
+
+  // Same role check used in the bolaIdentityGuard security fix, kept
+  // consistent — a real Site Admin, matched by roleId first (stable)
+  // with roleName as a fallback (matches the display name shown
+  // throughout the UI).
+  const isSiteAdmin =
+    currentUser?.roleId === 'role-site-manager' || currentUser?.roleName === 'Site Facility Manager';
+
+  useEffect(() => {
+    refreshAll();
+  }, []);
+
+  // Real, confirmed bug fixed here: refreshAll's mount-only effect
+  // above never re-ran when currentSiteId changed — so even after
+  // fixing fetchSlots/fetchEmployees/fetchLogs/fetchAlerts to respect
+  // the selected site, switching sites via the header wouldn't
+  // actually refresh any of that data; it would keep showing whatever
+  // was loaded at the previous site (or "All Sites" from initial load)
+  // until some other action happened to trigger a refresh. This keeps
+  // this page's data honestly in sync with the site switcher, the same
+  // way every Site-Admin-specific page already does.
+  useEffect(() => {
+    if (!currentSiteId) return;
+    fetchSlots();
+    fetchEmployees();
+    fetchLogs();
+    fetchAlerts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSiteId]);
+
+  // Once the user's own record and the sites list are both loaded,
+  // default a SPECIFIC_SITES-scoped user (a real Site Admin, not a
+  // Master Admin with ALL_SITES) to their primary assigned site, rather
+  // than leaving currentSiteId at 'ALL' — that default only makes sense
+  // for someone who's actually allowed to see everything.
+  useEffect(() => {
+    if (!currentUser || sites.length === 0) return;
+    if (currentUser.siteScopeType === 'SPECIFIC_SITES' && currentSiteId === 'ALL') {
+      const primary = getUserPrimarySite(currentUser, sites);
+      if (primary) setCurrentSiteId(primary.id);
+    }
+  }, [currentUser, sites]);
+
+  const handleVehicleEntry = async (
+    vehicleNumber: string,
+    vehicleType?: VehicleType,
+    entryType: EntryType = 'MANUAL',
+    targetSlotNumber?: string
+  ) => {
+    try {
+      const res = await fetch('/api/v1/vehicles/entry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vehicleNumber, vehicleType, entryType, targetSlotNumber }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('success', data.message);
+        refreshAll();
+      } else {
+        showToast('error', data.message);
+      }
+    } catch (err: any) {
+      showToast('error', 'Failed to process vehicle entry');
+    }
+  };
+
+  const handleVehicleExit = async (vehicleNumberOrSlot: string) => {
+    try {
+      const res = await fetch('/api/v1/vehicles/exit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vehicleNumberOrSlot }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('success', data.message);
+        refreshAll();
+      } else {
+        showToast('error', data.message);
+      }
+    } catch (err: any) {
+      showToast('error', 'Failed to process vehicle exit');
+    }
+  };
+
+  const handleUpdateSlotStatus = async (slotId: string, newStatus: SlotStatus) => {
+    try {
+      const res = await fetch('/api/v1/slots/update-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slotId, newStatus }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('success', data.message);
+        refreshAll();
+      } else {
+        showToast('error', data.message);
+      }
+    } catch (err) {
+      showToast('error', 'Failed to update slot status');
+    }
+  };
+
+  const occupiedCount = slots.filter((s) => s.status === 'OCCUPIED').length;
+
+  if (!currentUser) {
+    return (
+      <LoginScreen
+        allUsers={allUsers}
+        onLoginSuccess={handleLoginSuccess}
+      />
+    );
+  }
+
+  return (
+    <div className="h-screen w-screen overflow-hidden bg-slate-100 text-slate-900 font-sans antialiased selection:bg-blue-600 selection:text-white flex flex-col">
+      {/* Top Header Bar */}
+      <Header
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        occupiedCount={occupiedCount}
+        totalSlots={slots.length}
+        alertCount={alertCount}
+        pendingReqCount={pendingReqCount}
+        onRefresh={refreshAll}
+        currentUser={currentUser}
+        allUsers={allUsers}
+        sites={sites}
+        currentSiteId={currentSiteId}
+        onSelectSite={(siteId) => setCurrentSiteId(siteId)}
+        onSelectUser={(u) => handleLoginSuccess(u)}
+        onToggleMobileSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
+        onLogout={handleLogout}
+      />
+
+      {/* Floating Toast Notification */}
+      {notification && (
+        <div
+          className={`fixed bottom-5 right-5 z-50 p-4 rounded-xl shadow-xl border text-xs font-mono font-bold flex items-center space-x-3 transition-all ${
+            notification.type === 'success'
+              ? 'bg-white border-emerald-300 text-emerald-800 shadow-emerald-100'
+              : 'bg-white border-rose-300 text-rose-800 shadow-rose-100'
+          }`}
+        >
+          {notification.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+          )}
+          <span>{notification.message}</span>
+        </div>
+      )}
+
+      {/* Main Body Layout: Left Navigation Sidebar + Right Main Panel */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* Left Navigation Sidebar */}
+        <Sidebar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          collapsed={sidebarCollapsed}
+          setCollapsed={setSidebarCollapsed}
+          alertCount={alertCount}
+          pendingReqCount={pendingReqCount}
+          mobileOpen={mobileSidebarOpen}
+          setMobileOpen={setMobileSidebarOpen}
+          currentUser={currentUser}
+          roles={roles}
+        />
+
+        {/* Right Main Panel Displays Selected Module Content */}
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-slate-50 h-full">
+          <div className="max-w-7xl mx-auto">
+            {activeTab === 'HOME' && (
+              isSiteAdmin && currentSiteId !== 'ALL' ? (
+                <SiteAdminOverview
+                  siteId={currentSiteId}
+                  onNavigate={(screen) => {
+                    const map: Record<string, ActiveTabType> = {
+                      alerts: 'ALERTS',
+                      slots: 'FLOOR_PLAN',
+                      staff: 'INVENTORY',
+                      employees: 'INVENTORY',
+                    };
+                    setActiveTab(map[screen] || 'HOME');
+                  }}
+                />
+              ) : (
+                <RoleHomePage
+                  currentUser={currentUser}
+                  roles={roles}
+                  slots={slots}
+                  employees={employees}
+                  logs={logs}
+                  alertCount={alertCount}
+                  pendingReqCount={pendingReqCount}
+                  setActiveTab={setActiveTab}
+                  onRefreshAll={refreshAll}
+                />
+              )
+            )}
+
+            {activeTab === 'FLOOR_PLAN' && (
+              // Per explicit request: Site Admin now uses the exact same
+              // Live Parking Status UI as Master Admin (previously routed
+              // to a separate, differently-designed SiteAdminLiveSlots
+              // component here). The underlying `slots` prop is already
+              // correctly scoped to the current site (see fetchSlots in
+              // this file), so this shows only the right site's data
+              // while looking identical to Master Admin's view — not
+              // just similar, the same component.
+              <LiveFloorPlan
+                slots={slots}
+                onUpdateSlotStatus={handleUpdateSlotStatus}
+                onVehicleEntry={handleVehicleEntry}
+                onVehicleExit={handleVehicleExit}
+                onRefresh={refreshAll}
+              />
+            )}
+
+            {activeTab === 'ANALYTICS' && <AnalyticsPredictive />}
+
+            {activeTab === 'REPORTS' && (
+              currentSiteId !== 'ALL' ? (
+                <SiteAdminReports siteId={currentSiteId} />
+              ) : (
+                <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+                  Select a specific site (top right) to view its reports.
+                </div>
+              )
+            )}
+
+            {activeTab === 'INVENTORY' && (
+              <InventoryMaster
+                slots={slots}
+                employees={employees}
+                onUpdateSlotStatus={handleUpdateSlotStatus}
+                onVehicleExit={handleVehicleExit}
+                onRefresh={refreshAll}
+                currentSiteId={currentSiteId}
+              />
+            )}
+
+            {activeTab === 'LOGS' && (
+              <ParkingLogs
+                logs={logs}
+                onVehicleEntry={handleVehicleEntry}
+                onVehicleExit={handleVehicleExit}
+                onRefresh={refreshAll}
+              />
+            )}
+
+            {activeTab === 'ALERTS' && <NonParkedAlerts onRefresh={refreshAll} />}
+
+            {activeTab === 'MOBILE_APP' && (
+              <Suspense fallback={<div className="p-8 text-center text-slate-500 text-sm">Loading mobile app preview…</div>}>
+                <AttendantMobileApp
+                  slots={slots}
+                  employees={employees}
+                  onVehicleEntry={handleVehicleEntry}
+                  onVehicleExit={handleVehicleExit}
+                  onRefresh={refreshAll}
+                />
+              </Suspense>
+            )}
+
+            {activeTab === 'EMPLOYEE_MOBILE_APP' && (
+              <Suspense fallback={<div className="p-8 text-center text-slate-500 text-sm">Loading employee app preview…</div>}>
+                <EmployeeMobileApp
+                  slots={slots}
+                  onRefreshAll={refreshAll}
+                />
+              </Suspense>
+            )}
+
+            {activeTab === 'REGISTRATION' && (
+              <EmployeeRegistration mode="REGISTRATION" onRefreshAll={refreshAll} currentSiteId={currentSiteId} />
+            )}
+
+            {activeTab === 'APPROVALS' && (
+              <EmployeeRegistration mode="APPROVALS" onRefreshAll={refreshAll} currentSiteId={currentSiteId} />
+            )}
+
+            {activeTab === 'MASTER_CONFIG' && <MasterConfigModule onRefresh={refreshAll} />}
+
+            {activeTab === 'VALET_SERVICE' && <ValetXModule />}
+
+            {activeTab === 'USER_MANAGEMENT' && (
+              <UserManagementModule
+                currentUser={currentUser}
+                onSelectSimulatedUser={(u) => setCurrentUser(u)}
+                onRefreshAll={refreshAll}
+              />
+            )}
+
+            {activeTab === 'SECURITY_AUDIT' && (
+              <SecurityAuditModule
+                currentUserRole={currentUser?.roleName}
+                onRefreshAll={refreshAll}
+              />
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}

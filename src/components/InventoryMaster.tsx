@@ -21,7 +21,8 @@ import {
   AlertTriangle,
   Check,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  Trash2
 } from 'lucide-react';
 
 interface InventoryMasterProps {
@@ -369,6 +370,44 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
     }
     setSlotFormError(null);
     setIsSlotEditModalOpen(true);
+  };
+
+  const handleDeleteSlot = async (slot: ParkingSlot) => {
+    const confirmMsg = slot.status === 'OCCUPIED'
+      ? `Slot ${slot.slotNumber} is currently occupied by ${slot.currentVehicle || 'a vehicle'}. Delete it anyway? This does not close out that vehicle's session — it just removes the slot record.`
+      : `Delete slot ${slot.slotNumber}? This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const res = await fetch('/api/v1/slots/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slotId: slot.id, force: slot.status === 'OCCUPIED' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        onRefresh();
+      } else {
+        // If it failed specifically because it's occupied and we hadn't
+        // yet forced it, offer that as an explicit second confirmation
+        // rather than silently retrying — the user should see why it
+        // was rejected the first time.
+        if (data.message?.includes('occupied') && window.confirm(`${data.message}\n\nDelete anyway?`)) {
+          const retryRes = await fetch('/api/v1/slots/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slotId: slot.id, force: true }),
+          });
+          const retryData = await retryRes.json();
+          if (retryData.success) onRefresh();
+          else alert(retryData.message || 'Failed to delete slot.');
+        } else if (!data.message?.includes('occupied')) {
+          alert(data.message || 'Failed to delete slot.');
+        }
+      }
+    } catch {
+      alert('Could not reach the server. Nothing was deleted — safe to retry.');
+    }
   };
 
   const handleSaveSlotSubmit = async (e: React.FormEvent) => {
@@ -796,6 +835,15 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                           Set Maintenance
                         </button>
                       )}
+
+                      <button
+                        onClick={() => handleDeleteSlot(slot)}
+                        className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded border border-rose-300 text-[10px] font-bold transition-colors inline-flex items-center space-x-1"
+                        title="Delete this slot permanently"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
                     </td>
                   </tr>
                 ))}

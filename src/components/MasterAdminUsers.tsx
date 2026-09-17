@@ -55,6 +55,7 @@ export const MasterAdminUsers: React.FC = () => {
   const [loadError, setLoadError] = useState('');
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [resetMessage, setResetMessage] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [provisionBusy, setProvisionBusy] = useState(false);
@@ -192,6 +193,24 @@ export const MasterAdminUsers: React.FC = () => {
       setResetMessage('Could not reach the server.');
     } finally {
       setResettingId(null);
+    }
+  };
+
+  const handleDeleteUser = async (u: AppUserRow) => {
+    if (!window.confirm(`Delete user '${u.fullName}' (${u.email})? This cannot be undone.`)) return;
+    setDeletingId(u.id);
+    try {
+      const res = await fetch(`/api/v1/rbac/users/${encodeURIComponent(u.id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        load();
+      } else {
+        alert(data.message || 'Failed to delete user.');
+      }
+    } catch {
+      alert('Could not reach the server. Nothing was deleted — safe to retry.');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -377,9 +396,16 @@ export const MasterAdminUsers: React.FC = () => {
                       <button
                         onClick={() => resetPassword(u.id)}
                         disabled={resettingId === u.id}
-                        style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #cbd3e0', borderRadius: 6, background: '#fff', cursor: 'pointer', opacity: resettingId === u.id ? 0.6 : 1 }}
+                        style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #cbd3e0', borderRadius: 6, background: '#fff', cursor: 'pointer', opacity: resettingId === u.id ? 0.6 : 1, marginRight: 6 }}
                       >
                         {resettingId === u.id ? 'Resetting…' : 'Reset pw'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(u)}
+                        disabled={deletingId === u.id}
+                        style={{ fontSize: 12, padding: '4px 10px', border: '1px solid #f7b6c2', borderRadius: 6, background: '#fdeaee', color: '#be123c', cursor: 'pointer', opacity: deletingId === u.id ? 0.6 : 1, fontWeight: 600 }}
+                      >
+                        {deletingId === u.id ? 'Deleting…' : 'Delete'}
                       </button>
                     </td>
                   </tr>

@@ -19,6 +19,7 @@ import {
   updateEmployeeVehicle,
   saveOrUpdateSlot,
   bulkUploadSlots,
+  deleteSlot,
   getWhitelistedDomains,
   addWhitelistedDomain,
   removeWhitelistedDomain,
@@ -889,6 +890,27 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
   }
 });
 
+app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (req, res) => {
+  const { slotId, force } = req.body;
+  if (!slotId) {
+    return res.status(400).json({ success: false, message: 'slotId is required.' });
+  }
+  const result = deleteSlot(slotId, force === true);
+  if (!result.success) {
+    return res.status(400).json(result);
+  }
+  logSecurityEvent({
+    action: 'SLOT_DELETED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `slot/${slotId}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} deleted slot ${slotId}${force ? ' (forced, was occupied)' : ''}.`,
+  });
+  res.json(result);
+});
+
 // 3e. Bulk Upload Slot Inventory Endpoint
 app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'), (req, res) => {
   try {
@@ -1667,7 +1689,7 @@ app.post('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'canCreate')
 });
 
 app.delete('/api/v1/rbac/users/:id', requirePermission('USER_MANAGEMENT', 'canDelete'), (req, res) => {
-  const result = deleteAppUser(req.params.id);
+  const result = deleteAppUser(req.params.id, req.user!.id);
   logSecurityEvent({
     action: 'RBAC_USER_DELETED',
     actor: req.user!.email,

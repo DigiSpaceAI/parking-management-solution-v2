@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { getSessionToken } from '../sessionTokenFallback';
 
 /**
  * Site Admin — Reports page
@@ -55,6 +56,7 @@ interface OvernightRequest {
 }
 
 interface SlotUtilization {
+  slotId: string;
   slotNumber: string;
   basement: string;
   occupiedHours: number;
@@ -175,6 +177,37 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
   const [violations, setViolations] = useState<Violation[]>([]);
   const [requests, setRequests] = useState<OvernightRequest[]>([]);
   const [utilization, setUtilization] = useState<SlotUtilization[]>([]);
+  // Per-slot daily vehicle-count drill-down, added specifically to
+  // answer "how many vehicles parked in this slot on this date" — the
+  // aggregate utilization % above doesn't show this. Fetched on demand
+  // per slot when expanded, not upfront for every slot, to avoid N
+  // extra requests firing on every page load.
+  const [expandedSlotId, setExpandedSlotId] = useState<string | null>(null);
+  const [dailyBreakdown, setDailyBreakdown] = useState<{ date: string; vehicleCount: number; vehicles: { vehicleNumber: string; entryTime: string; exitTime: string | null }[] }[] | null>(null);
+  const [dailyBreakdownLoading, setDailyBreakdownLoading] = useState(false);
+
+  const toggleSlotDetail = async (u: SlotUtilization) => {
+    if (expandedSlotId === u.slotId) {
+      setExpandedSlotId(null);
+      setDailyBreakdown(null);
+      return;
+    }
+    setExpandedSlotId(u.slotId);
+    setDailyBreakdown(null);
+    setDailyBreakdownLoading(true);
+    try {
+      const qs = `slotId=${encodeURIComponent(u.slotId)}&from=${encodeURIComponent(effectiveFrom)}&to=${encodeURIComponent(effectiveTo)}`;
+      const res = await fetch(`/api/v1/reports/slot-daily-vehicles?${qs}`);
+      const data = await res.json();
+      if (data.success) setDailyBreakdown(data.days);
+    } catch {
+      // Non-fatal — the expanded panel will just show nothing further
+      // below; the aggregate row itself is unaffected.
+    } finally {
+      setDailyBreakdownLoading(false);
+    }
+  };
+
   const [occupancyTrend, setOccupancyTrend] = useState<OccupancyDay[]>([]);
   const [peakHours, setPeakHours] = useState<PeakHour[]>([]);
   const [levelFilter, setLevelFilter] = useState('All levels');
@@ -287,7 +320,15 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
   };
 
   const exportCsv = (type: 'slots' | 'logs') => {
-    window.open(`/api/v1/export/reports?type=${type}&siteId=${encodeURIComponent(siteId)}`, '_blank');
+    // window.open() is a plain browser navigation, not the app's own
+    // wrapped fetch — it can't carry the x-session-token header that
+    // fetch relies on (see sessionTokenFallback.ts for why that header
+    // exists at all). requireAuth now also accepts this same token as a
+    // query param specifically for GET requests like this one, so a
+    // direct-navigation download link can still authenticate.
+    const token = getSessionToken();
+    const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+    window.open(`/api/v1/export/reports?type=${type}&siteId=${encodeURIComponent(siteId)}${tokenParam}`, '_blank');
   };
 
   const pendingRequests = requests.filter((r) => r.status === 'PENDING');
@@ -506,12 +547,42 @@ export const SiteAdminReports: React.FC<SiteAdminReportsProps> = ({ siteId }) =>
           <div style={{ padding: 20, fontSize: 12, color: 'var(--color-neutral-600, #7a7a7d)' }}>{loading ? 'Loading…' : 'No slots found.'}</div>
         ) : (
           filteredUtilization.map((u) => (
-            <div key={u.slotNumber} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderBottom: '1px solid var(--color-divider, rgba(29,31,32,.16))' }}>
-              <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12.5, fontWeight: 600, width: 110 }}>{u.slotNumber}</div>
-              <div style={{ flex: 1, height: 8, background: 'var(--color-neutral-200, #e7e7ea)' }}>
-                <div style={{ width: `${Math.min(u.utilizationPct, 100)}%`, height: '100%', background: 'var(--color-accent, #5980a6)' }} />
+            <div key={u.slotId}>
+              <div
+                onClick={() => toggleSlotDetail(u)}
+                style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderBottom: '1px solid var(--color-divider, rgba(29,31,32,.16))', cursor: 'pointer', background: expandedSlotId === u.slotId ? 'var(--color-neutral-100, #f6f6f7)' : 'transparent' }}
+              >
+                <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12.5, fontWeight: 600, width: 110 }}>{u.slotNumber}</div>
+                <div style={{ flex: 1, height: 8, background: 'var(--color-neutral-200, #e7e7ea)' }}>
+                  <div style={{ width: `${Math.min(u.utilizationPct, 100)}%`, height: '100%', background: 'var(--color-accent, #5980a6)' }} />
+                </div>
+                <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, width: 60, textAlign: 'right' }}>{u.utilizationPct}%</div>
+                <div style={{ fontSize: 11, color: 'var(--color-neutral-600, #7a7a7d)', width: 70, textAlign: 'right' }}>{expandedSlotId === u.slotId ? 'Hide ▲' : 'Details ▼'}</div>
               </div>
-              <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, width: 60, textAlign: 'right' }}>{u.utilizationPct}%</div>
+              {expandedSlotId === u.slotId && (
+                <div style={{ padding: '10px 16px 14px 16px', background: 'var(--color-neutral-50, #fafafa)', borderBottom: '1px solid var(--color-divider, rgba(29,31,32,.16))' }}>
+                  <div style={{ ...monoLabel, marginBottom: 8 }}>vehicles parked per day · {u.slotNumber}</div>
+                  {dailyBreakdownLoading ? (
+                    <div style={{ fontSize: 12, color: 'var(--color-neutral-600, #7a7a7d)' }}>Loading…</div>
+                  ) : !dailyBreakdown || dailyBreakdown.length === 0 ? (
+                    <div style={{ fontSize: 12, color: 'var(--color-neutral-600, #7a7a7d)' }}>No data for this range.</div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      {dailyBreakdown.map((d) => (
+                        <div key={d.date} style={{ display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 12 }}>
+                          <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', width: 90 }}>{d.date}</div>
+                          <div style={{ fontWeight: 600 }}>{d.vehicleCount} vehicle{d.vehicleCount === 1 ? '' : 's'}</div>
+                          {d.vehicles.length > 0 && (
+                            <div style={{ color: 'var(--color-neutral-600, #7a7a7d)', fontFamily: 'ui-monospace, Menlo, monospace' }}>
+                              {d.vehicles.map((v) => v.vehicleNumber).join(', ')}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}

@@ -2547,6 +2547,7 @@ export function getEntryMix(siteId: string, fromISO: string, toISO: string): { r
  * entry/exit timestamps clipped to the requested range.
  */
 export function getSlotUtilization(siteId: string, fromISO: string, toISO: string): {
+  slotId: string;
   slotNumber: string;
   basement: string;
   occupiedHours: number;
@@ -2572,12 +2573,53 @@ export function getSlotUtilization(siteId: string, fromISO: string, toISO: strin
     }
     const occupiedHours = Math.round((occupiedMs / 3600000) * 10) / 10;
     return {
+      slotId: slot.id,
       slotNumber: slot.slotNumber,
       basement: slot.basement,
       occupiedHours,
       utilizationPct: Math.round((occupiedHours / rangeHours) * 1000) / 10,
     };
   });
+}
+
+/**
+ * Per-day vehicle count and plate list for one specific slot, over a
+ * date range — built specifically to answer "how many vehicles parked
+ * in this slot on this date", which the aggregate utilization % above
+ * doesn't show. Counts a vehicle on every day its stay overlaps (an
+ * overnight stay counts on both the entry day and the exit day), since
+ * that's the day(s) the slot was genuinely in use by that vehicle.
+ */
+export function getSlotDailyVehicleCounts(slotId: string, fromISO: string, toISO: string): {
+  date: string;
+  vehicleCount: number;
+  vehicles: { vehicleNumber: string; entryTime: string; exitTime: string | null }[];
+}[] {
+  const storeData = getStore();
+  const slotLogs = storeData.logs.filter(l => l.slotId === slotId);
+
+  const from = new Date(fromISO);
+  const to = new Date(toISO);
+  const results: { date: string; vehicleCount: number; vehicles: { vehicleNumber: string; entryTime: string; exitTime: string | null }[] }[] = [];
+
+  for (let day = new Date(from); day <= to; day.setDate(day.getDate() + 1)) {
+    const dayStart = new Date(`${day.toISOString().slice(0, 10)}T00:00:00`).getTime();
+    const dayEnd = dayStart + 86400000;
+
+    const vehiclesThatDay = slotLogs.filter(l => {
+      const entryMs = new Date(l.entryTime).getTime();
+      const exitMs = l.exitTime ? new Date(l.exitTime).getTime() : Date.now();
+      return entryMs < dayEnd && exitMs >= dayStart;
+    });
+
+    results.push({
+      date: day.toISOString().slice(0, 10),
+      vehicleCount: vehiclesThatDay.length,
+      vehicles: vehiclesThatDay.map(l => ({ vehicleNumber: l.vehicleNumber, entryTime: l.entryTime, exitTime: l.exitTime || null })),
+    });
+  }
+
+  return results;
 }
 
 /**

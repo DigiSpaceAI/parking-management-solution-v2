@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ParkingLog, VehicleType, EntryType } from '../types';
 import {
   FileSpreadsheet,
@@ -28,6 +28,25 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
   onRefresh,
 }) => {
   const [searchQuery, setSearchQuery] = useState<string>('');
+  // Self-contained site-name lookup, added specifically to show a real
+  // site name (not a raw internal ID) on each log row, per explicit
+  // request. Fetched independently here rather than threaded through
+  // as a new prop from App.tsx, to keep this a self-contained change.
+  const [siteNames, setSiteNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    fetch('/api/v1/sites')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.sites) return;
+        const map: Record<string, string> = {};
+        for (const s of data.sites) map[s.id] = s.siteName;
+        setSiteNames(map);
+      })
+      .catch(() => {
+        // Non-fatal — rows just fall back to showing the raw siteId.
+      });
+  }, []);
+
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [basementFilter, setBasementFilter] = useState<string>('ALL');
   const [showEntryModal, setShowEntryModal] = useState<boolean>(false);
@@ -165,6 +184,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
                 <th className="p-3.5">Department</th>
                 <th className="p-3.5">Assigned Slot</th>
                 <th className="p-3.5">Level</th>
+                <th className="p-3.5">Site</th>
                 <th className="p-3.5">Entry Timestamp</th>
                 <th className="p-3.5">Exit Timestamp</th>
                 <th className="p-3.5">Duration</th>
@@ -186,6 +206,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
                   <td className="p-3.5 text-blue-600 font-medium">{log.department || 'Visitor'}</td>
                   <td className="p-3.5 font-mono font-bold text-emerald-700">{log.slotNumber}</td>
                   <td className="p-3.5 font-medium">{log.basement}</td>
+                  <td className="p-3.5 text-slate-600 text-[11px]">{siteNames[log.siteId || ''] || log.siteId || '—'}</td>
                   <td className="p-3.5 text-slate-600 font-mono text-[11px]">{new Date(log.entryTime).toLocaleString()}</td>
                   <td className="p-3.5 text-slate-500 font-mono text-[11px]">{log.exitTime ? new Date(log.exitTime).toLocaleString() : '-'}</td>
                   <td className="p-3.5 font-mono font-bold text-amber-700">

@@ -30,6 +30,7 @@ import {
   getOvernightViolations,
   getEntryMix,
   getSlotUtilization,
+  getSlotDailyVehicleCounts,
   getOccupancyTrend,
   getPeakHours,
   migrateSiteData,
@@ -1312,6 +1313,16 @@ app.get('/api/v1/reports/utilization', requirePermission('REPORTS', 'view'), (re
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ slots: getSlotUtilization(siteId, from, to) });
+});
+
+app.get('/api/v1/reports/slot-daily-vehicles', requirePermission('REPORTS', 'view'), (req, res) => {
+  const { slotId } = req.query;
+  if (!slotId || typeof slotId !== 'string') {
+    return res.status(400).json({ success: false, message: 'slotId is required.' });
+  }
+  const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const to = (req.query.to as string) || new Date().toISOString();
+  res.json({ success: true, days: getSlotDailyVehicleCounts(slotId, from, to) });
 });
 
 app.get('/api/v1/reports/occupancy-trend', requirePermission('REPORTS', 'view'), (req, res) => {

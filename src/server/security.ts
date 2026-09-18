@@ -717,7 +717,20 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     (req.headers['authorization']?.startsWith('Bearer ')
       ? req.headers['authorization'].slice(7)
       : req.headers['authorization']) ||
-    (req.headers['x-session-token'] as string);
+    (req.headers['x-session-token'] as string) ||
+    // File-download links (CSV export etc.) use window.open() to a
+    // plain URL, which is a real browser navigation, not the app's own
+    // wrapped fetch — it can't carry the custom x-session-token header
+    // that same fetch relies on, and cookies aren't guaranteed to
+    // survive either depending on hosting setup. This lets such a link
+    // carry its token as a query param instead, GET requests only,
+    // since that's the only shape a plain navigation can produce. The
+    // real tradeoff: this token can now end up in server access logs
+    // and browser history, unlike a header or cookie — acceptable here
+    // because it's a short-lived, already-issued session token (not a
+    // password or long-lived credential), and scoped to GET so it's
+    // never used to authenticate a state-changing action this way.
+    (req.method === 'GET' && typeof req.query?.token === 'string' ? req.query.token : undefined);
 
   if (!token) {
     return res.status(401).json({ success: false, message: 'Not signed in.' });

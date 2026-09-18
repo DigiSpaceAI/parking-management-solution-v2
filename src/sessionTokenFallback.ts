@@ -47,7 +47,7 @@ export function clearSessionToken(): void {
   }
 }
 
-function getSessionToken(): string | null {
+export function getSessionToken(): string | null {
   try {
     return sessionStorage.getItem(TOKEN_KEY);
   } catch {

@@ -11,7 +11,6 @@ import { Sidebar } from './components/Sidebar';
 import { RoleHomePage } from './components/RoleHomePage';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
 import { SiteAdminOverview } from './components/SiteAdminOverview';
-import { SiteAdminLiveSlots } from './components/SiteAdminLiveSlots';
 import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
@@ -445,17 +444,21 @@ export default function App() {
             )}
 
             {activeTab === 'FLOOR_PLAN' && (
-              isSiteAdmin && currentSiteId !== 'ALL' ? (
-                <SiteAdminLiveSlots siteId={currentSiteId} />
-              ) : (
-                <LiveFloorPlan
-                  slots={slots}
-                  onUpdateSlotStatus={handleUpdateSlotStatus}
-                  onVehicleEntry={handleVehicleEntry}
-                  onVehicleExit={handleVehicleExit}
-                  onRefresh={refreshAll}
-                />
-              )
+              // Per explicit request: Site Admin uses the exact same
+              // Live Parking Status UI as Master Admin — previously
+              // routed to a separate, differently-designed
+              // SiteAdminLiveSlots component here. The underlying
+              // `slots` prop is already correctly scoped to the current
+              // site, so this shows only the right site's data while
+              // looking identical to Master Admin's view — the same
+              // component, not a lookalike rebuild.
+              <LiveFloorPlan
+                slots={slots}
+                onUpdateSlotStatus={handleUpdateSlotStatus}
+                onVehicleEntry={handleVehicleEntry}
+                onVehicleExit={handleVehicleExit}
+                onRefresh={refreshAll}
+              />
             )}
 
             {activeTab === 'ANALYTICS' && <AnalyticsPredictive />}

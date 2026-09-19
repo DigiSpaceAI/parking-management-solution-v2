@@ -3590,7 +3590,11 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
         passwordHash: passHash,
         passwordSalt: passSalt,
       } as AppUser;
-      saveDB();
+      // Same targeted-sync fix as setUserPassword above — blind saveDB()
+      // here risked a stale concurrent instance's full sync silently
+      // reverting this exact edit (site reassignment, role change,
+      // etc.), not just password resets.
+      saveDB([{ collection: 'appUsers', ids: [storeData.appUsers[index].id] }]);
       return { success: true, message: `User '${storeData.appUsers[index].fullName}' updated successfully.`, user: storeData.appUsers[index] };
     }
   }
@@ -3632,7 +3636,9 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
   };
 
   storeData.appUsers.unshift(newUser);
-  saveDB();
+  // Same reasoning as the update branch above — target just this new
+  // user's own record.
+  saveDB([{ collection: 'appUsers', ids: [newUser.id] }]);
 
   const resetToken = generatePasswordResetToken(newUser.id);
   return {
@@ -3665,7 +3671,17 @@ export function setUserPassword(userIdOrEmail: string, newPlainPassword: string)
   user.passwordHash = hash;
   user.passwordSalt = salt;
   user.mustChangePassword = false;
-  saveDB();
+  // Real bug fixed here, matching the same class already fixed for
+  // vehicle entry/exit: saveDB() with no arguments triggers a blind,
+  // full-collection sync — on Cloud Run's multi-instance autoscaling,
+  // a different instance's stale in-memory copy of appUsers could
+  // later overwrite this exact password change with the old hash, the
+  // same way stale parking-log syncs once clobbered completed sessions.
+  // Confirmed as the cause of passwords appearing to silently reset
+  // after a deploy — targeting just this user's record, the same fix
+  // already proven for logs/slots, prevents any other instance's
+  // stale copy from touching it.
+  saveDB([{ collection: 'appUsers', ids: [user.id] }]);
 
   return {
     success: true,

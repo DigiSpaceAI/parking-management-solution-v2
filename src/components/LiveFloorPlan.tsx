@@ -187,24 +187,13 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Primary Heading Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-5 rounded-2xl shadow-md border border-slate-800">
-        <div>
-          <div className="flex items-center space-x-2">
-            <span className="px-2.5 py-0.5 rounded-md bg-blue-500/20 text-blue-300 border border-blue-400/30 font-mono text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              Live Monitoring System
-            </span>
-          </div>
-          <h1 className="text-2xl font-extrabold tracking-tight mt-1 text-white flex items-center gap-2 font-sans">
-            Live Parking Slots
-          </h1>
-          <p className="text-xs text-slate-300 mt-0.5">
-            Real-time level occupancy, sensor grid, and puzzle stacker pallets matrix
-          </p>
-        </div>
-
-        {/* View Mode Switcher */}
+      {/* View Mode Switcher — text content and dark banner background
+          removed per explicit request (redundant with the page header,
+          and "Live Monitoring System" wasn't wired to anything real).
+          The switcher itself and its internal styling are untouched,
+          exactly as it was working before — only its outer wrapper
+          changed, from a dark gradient banner to a plain container. */}
+      <div className="flex justify-end">
         <div className="flex items-center bg-slate-950/80 p-1.5 rounded-xl border border-slate-700/80 gap-1 text-xs font-bold">
           <button
             onClick={() => { setViewMode('SLOTS'); setCurrentPage(1); }}

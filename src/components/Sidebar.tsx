@@ -106,7 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'MOBILE_APP',
-      label: 'ParkFlow Field',
+      label: 'ParkFlows Field',
       icon: Smartphone,
       badge: 'App',
       badgeColor: 'bg-emerald-100 text-emerald-800 font-bold',
@@ -208,7 +208,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)' }} className="shrink-0 flex items-center justify-between">
           {(!collapsed || mobileOpen) && (
             <div>
-              <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#60a5fa', fontWeight: 700 }}>ParkFlow</div>
+              <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#60a5fa', fontWeight: 700 }}>ParkFlows</div>
               <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.15, marginTop: 2, color: '#ffffff' }}>Navigation</div>
             </div>
           )}

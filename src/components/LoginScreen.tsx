@@ -41,7 +41,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [employeeEmail, setEmployeeEmail] = useState<string>('');
-  const [rememberMe, setRememberMe] = useState<boolean>(true);
 
   // Set / Reset Password inputs
   const [resetIdentifier, setResetIdentifier] = useState<string>('');
@@ -265,7 +264,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--color-accent, #5980a6)', color: 'var(--color-bg, #f2f2f3)', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 15, letterSpacing: '0.04em' }}>PF</div>
-        <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 30, lineHeight: 1, letterSpacing: '0.01em' }}>ParkFlow</div>
+        <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600, fontSize: 30, lineHeight: 1, letterSpacing: '0.01em' }}>ParkFlows</div>
       </div>
 
       <div style={{ width: '100%', maxWidth: 400, padding: '34px 32px', background: 'transparent', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', boxSizing: 'border-box' }}>
@@ -396,19 +395,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     </div>
                   </div>
 
-                  <label style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={rememberMe}
-                      onChange={(e) => setRememberMe(e.target.checked)}
-                      style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
-                    />
-                    <span style={{ width: 15, height: 15, flex: 'none', border: '1px solid var(--color-divider, rgba(29,31,32,.16))', display: 'flex', alignItems: 'center', justifyContent: 'center', background: rememberMe ? 'var(--color-accent, #5980a6)' : 'transparent' }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--color-bg, #f2f2f3)" strokeWidth={3} strokeLinecap="square" style={{ opacity: rememberMe ? 1 : 0 }}><path d="M20 6 9 17l-5-5"></path></svg>
-                    </span>
-                    <span style={{ fontSize: 13, color: 'var(--color-neutral-700, #5d5d60)' }}>Keep me signed in for 30 days</span>
-                  </label>
-
                   <button
                     type="submit"
                     disabled={isLoading}
@@ -526,22 +512,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 </div>
               )}
 
-              {/* Password setup prompt banner */}
-              <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--color-divider, rgba(29,31,32,.16))', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, color: 'var(--color-neutral-700, #5d5d60)' }}>
-                <span>First time or need a password?</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResetIdentifier(identifier);
-                    setErrorMessage(null);
-                    setSuccessMessage(null);
-                    setViewState('SET_PASSWORD');
-                  }}
-                  style={{ all: 'unset', cursor: 'pointer', color: 'var(--color-accent-700, #416180)', fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontWeight: 600 }}
-                >
-                  Set up password →
-                </button>
-              </div>
             </>
           ) : (
             /* ViewState: SET / CREATE PASSWORD FLOW */
@@ -659,7 +629,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <a href="#" style={{ color: 'inherit', textDecoration: 'none' }}>Support</a>
         </div>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--color-neutral-600, #7a7a7d)' }}>
-          ParkFlow Enterprise PMS v4.2 — Protected by End-to-End Encryption &amp; OAuth SSO Gateway. Access to this system is restricted to authorised users. Activity is monitored and logged; unauthorised use may result in disciplinary action or prosecution.
+          ParkFlows Enterprise PMS v4.2 — Protected by End-to-End Encryption &amp; OAuth SSO Gateway. Access to this system is restricted to authorised users. Activity is monitored and logged; unauthorised use may result in disciplinary action or prosecution.
         </p>
       </div>
     </div>

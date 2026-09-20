@@ -1563,6 +1563,21 @@ app.post(
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
+    // Real, confirmed vulnerability closed here: this endpoint is
+    // reachable by anyone with the User & RBAC module enabled — most
+    // notably a Site Admin, who was never meant to have authority over
+    // a strictly higher-privileged account. Without this check, that
+    // Site Admin could generate a reset token for a Platform Master
+    // Admin's account, then redeem it themselves via the ordinary
+    // self-service reset flow to take over that account outright.
+    // Module permissions govern feature access, not seniority over a
+    // specific target account — this is a separate, vertical-privilege
+    // check layered on top.
+    const isMasterAdmin = (u: typeof targetUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
+    if (isMasterAdmin(targetUser) && !isMasterAdmin(req.user!)) {
+      return res.status(403).json({ success: false, message: 'Only a Platform Master Admin can generate a reset token for another Platform Master Admin account.' });
+    }
+
     const token = generatePasswordResetToken(targetUser.id);
 
     logSecurityEvent({
@@ -1620,7 +1635,7 @@ app.post('/api/v1/auth/set-password', (req, res) => {
     return res.status(404).json({ success: false, message: 'Account no longer exists.' });
   }
 
-  const result = setUserPassword(targetUser.id, cleanPassword);
+  const result = setUserPassword(targetUser.id, cleanPassword, targetUser.id);
   if (!result.success) {
     return res.status(400).json(result);
   }
@@ -1682,11 +1697,32 @@ app.delete('/api/v1/rbac/roles/:id', requirePermission('USER_MANAGEMENT', 'canDe
 
 app.get('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'view'), (req, res) => {
   const users = getAppUsers();
-  res.json({ success: true, count: users.length, users: toPublicUsers(users) });
+  const requester = req.user!;
+  const requesterIsMasterAdmin = requester.roleId === 'role-master-admin' || (requester.roleName && requester.roleName.toLowerCase().includes('master admin'));
+
+  // Real, confirmed gap closed here: this previously returned every
+  // user in the entire system to anyone with view permission on this
+  // module — meaning a Site Admin granted User & RBAC would have seen
+  // every other site's staff and every Platform Master Admin account
+  // too. A Site Admin should only ever see accounts at their own
+  // site(s), and should never see Master Admin accounts regardless of
+  // site — those two rules, not the module permission alone, define
+  // what this endpoint returns for a non-Master-Admin requester.
+  const visibleUsers = requesterIsMasterAdmin
+    ? users
+    : users.filter((u) => {
+        const uIsMasterAdmin = u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
+        if (uIsMasterAdmin) return false;
+        const requesterSiteIds = requester.assignedSiteIds || [];
+        const targetSiteIds = u.assignedSiteIds || [];
+        return targetSiteIds.some((sid) => requesterSiteIds.includes(sid));
+      });
+
+  res.json({ success: true, count: visibleUsers.length, users: toPublicUsers(visibleUsers) });
 });
 
 app.post('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'canCreate'), (req, res) => {
-  const result = saveAppUser(req.body);
+  const result = saveAppUser(req.body, req.user!.id);
   logSecurityEvent({
     action: 'RBAC_USER_SAVED',
     actor: req.user!.email,

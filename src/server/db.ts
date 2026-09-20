@@ -3443,7 +3443,15 @@ export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { succes
     const index = storeData.appRoles.findIndex((r) => r.id === roleConfig.id);
     if (index !== -1) {
       storeData.appRoles[index] = { ...storeData.appRoles[index], ...roleConfig } as RolePermissionConfig;
-      saveDB();
+      // Real bug fixed here, same class already fixed for passwords
+      // and user records: blind saveDB() risked a stale concurrent
+      // Cloud Run instance's full sync silently reverting a permission
+      // change — a module a Master Admin just disabled for a role
+      // could appear to "come back" after a deploy, because a
+      // different instance's older in-memory copy of appRoles
+      // overwrote this exact edit. Confirmed as the cause of module
+      // permissions reappearing after being removed.
+      saveDB([{ collection: 'appRoles', ids: [storeData.appRoles[index].id] }]);
       return { success: true, message: `Role '${storeData.appRoles[index].roleName}' permissions updated successfully.`, role: storeData.appRoles[index] };
     }
   }
@@ -3476,7 +3484,7 @@ export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { succes
   };
 
   storeData.appRoles.push(newRole);
-  saveDB();
+  saveDB([{ collection: 'appRoles', ids: [newRole.id] }]);
 
   return { success: true, message: `New role '${newRole.roleName}' created successfully.`, role: newRole };
 }
@@ -3549,7 +3557,7 @@ export function getAppUsers(): AppUser[] {
   return storeData.appUsers;
 }
 
-export function saveAppUser(userData: Partial<AppUser>): { success: boolean; message: string; user?: AppUser; resetToken?: string } {
+export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: string): { success: boolean; message: string; user?: AppUser; resetToken?: string } {
   const storeData = getStore();
   if (!storeData.appUsers) storeData.appUsers = [];
 
@@ -3573,6 +3581,28 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
     const index = storeData.appUsers.findIndex((u) => u.id === userData.id);
     if (index !== -1) {
       const existing = storeData.appUsers[index];
+
+      // Vertical-privilege checks, matching deleteAppUser/setUserPassword.
+      // Two separate things to guard against here, not one: editing an
+      // account that's ALREADY a Master Admin, and editing any account
+      // to CHANGE its role TO Master Admin (a promotion) — the earlier
+      // version of this check only covered the first case, checking the
+      // target's role before the edit. A non-Master-Admin could still
+      // have edited an ordinary user and set roleId to
+      // 'role-master-admin' in the same request, promoting them (or
+      // themselves) straight to full platform access with no check at
+      // all catching it.
+      const isMasterAdminRole = (roleId?: string, roleNm?: string) => roleId === 'role-master-admin' || (roleNm && roleNm.toLowerCase().includes('master admin'));
+      const targetIsCurrentlyMasterAdmin = isMasterAdminRole(existing.roleId, existing.roleName);
+      const editWouldMakeThemMasterAdmin = userData.roleId !== undefined && isMasterAdminRole(userData.roleId, roleName);
+      if (targetIsCurrentlyMasterAdmin || editWouldMakeThemMasterAdmin) {
+        const requester = requestingUserId ? storeData.appUsers.find((u) => u.id === requestingUserId) : undefined;
+        const requesterIsMasterAdmin = requester ? isMasterAdminRole(requester.roleId, requester.roleName) : false;
+        if (!requesterIsMasterAdmin) {
+          return { success: false, message: targetIsCurrentlyMasterAdmin ? 'Only a Platform Master Admin can edit another Platform Master Admin account.' : 'Only a Platform Master Admin can grant the Platform Master Admin role to an account.' };
+        }
+      }
+
       let passHash = existing.passwordHash;
       let passSalt = existing.passwordSalt;
 
@@ -3615,6 +3645,22 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
   const initialPassword = (userData as any).plainPassword || crypto.randomBytes(32).toString('hex');
   const initialHash = hashPassword(initialPassword);
 
+  // Real, confirmed vulnerability closed here: creating a brand-new
+  // user had zero restriction on which role could be assigned — a
+  // Site Admin with just create permission could request roleId:
+  // 'role-master-admin' directly and the backend would happily create
+  // a new Platform Master Admin account for them, completely
+  // bypassing the edit-time protection above (that only guards
+  // existing accounts, not new ones).
+  const requestedRoleIsMasterAdmin = (userData.roleId === 'role-master-admin') || (roleName && roleName.toLowerCase().includes('master admin'));
+  if (requestedRoleIsMasterAdmin) {
+    const requester = requestingUserId ? storeData.appUsers.find((u) => u.id === requestingUserId) : undefined;
+    const requesterIsMasterAdmin = requester ? (requester.roleId === 'role-master-admin' || (requester.roleName && requester.roleName.toLowerCase().includes('master admin'))) : false;
+    if (!requesterIsMasterAdmin) {
+      return { success: false, message: 'Only a Platform Master Admin can create another Platform Master Admin account.' };
+    }
+  }
+
   const newUser: AppUser = {
     id: `usr-${Date.now()}`,
     username: userData.username || `user.${Math.floor(100 + Math.random() * 899)}`,
@@ -3649,7 +3695,7 @@ export function saveAppUser(userData: Partial<AppUser>): { success: boolean; mes
   };
 }
 
-export function setUserPassword(userIdOrEmail: string, newPlainPassword: string): { success: boolean; message: string; user?: AppUser } {
+export function setUserPassword(userIdOrEmail: string, newPlainPassword: string, requestingUserId?: string): { success: boolean; message: string; user?: AppUser } {
   const storeData = getStore();
   if (!storeData.appUsers) return { success: false, message: 'No users found.' };
 
@@ -3660,6 +3706,18 @@ export function setUserPassword(userIdOrEmail: string, newPlainPassword: string)
 
   if (!user) {
     return { success: false, message: `User "${userIdOrEmail}" not found.` };
+  }
+
+  // Same vertical-privilege gap as deleteAppUser, fixed the same way:
+  // this had no authorization check at all — any account with the
+  // User & RBAC module enabled could reset a Master Admin's password,
+  // regardless of the requester's own role.
+  const isMasterAdmin = (u: AppUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
+  if (isMasterAdmin(user)) {
+    const requester = requestingUserId ? storeData.appUsers.find((u) => u.id === requestingUserId) : undefined;
+    if (!requester || !isMasterAdmin(requester)) {
+      return { success: false, message: 'Only a Platform Master Admin can reset another Platform Master Admin\'s password.' };
+    }
   }
 
   const cleanPassword = typeof newPlainPassword === 'string' ? newPlainPassword.replace(/^\x00+|\x00+$/g, '') : '';
@@ -3710,6 +3768,20 @@ export function deleteAppUser(userId: string, requestingUserId?: string): { succ
     if (remainingMasterAdmins.length === 0) {
       return { success: false, message: 'Cannot delete the last Platform Master Admin — the platform would have no one left who can manage it.' };
     }
+    // Real, separate vulnerability closed here: the check above only
+    // ever protected against a total lockout — it did nothing to stop
+    // a lower-privileged role (a Site Admin granted the User & RBAC
+    // module) from deleting a Master Admin account outright, as long
+    // as one other Master Admin happened to remain. Module permissions
+    // govern whether a role can reach this feature at all; they were
+    // never meant to also grant authority over a strictly
+    // higher-privileged account. This is a vertical-privilege check,
+    // independent of and layered on top of the module permission
+    // system, not a replacement for it.
+    const requester = requestingUserId ? storeData.appUsers.find((u) => u.id === requestingUserId) : undefined;
+    if (!requester || !isMasterAdmin(requester)) {
+      return { success: false, message: 'Only a Platform Master Admin can delete another Platform Master Admin account.' };
+    }
   }
 
   storeData.appUsers = storeData.appUsers.filter((u) => u.id !== userId);
@@ -3730,7 +3802,10 @@ export function toggleUserModuleOverride(userId: string, moduleId: AppModuleId, 
   }
 
   user.customModuleOverrides[moduleId] = enabled;
-  saveDB();
+  // Same fix as saveAppRole above — per-user overrides are just as
+  // vulnerable to a stale concurrent instance's full sync reverting
+  // this exact toggle.
+  saveDB([{ collection: 'appUsers', ids: [user.id] }]);
 
   return {
     success: true,

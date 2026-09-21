@@ -405,7 +405,8 @@ export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRe
       if (data.success) {
         setIsEditModalOpen(false);
         setEditingEmployee(null);
-        onRefresh();
+        refreshData();
+        if (onRefreshAll) onRefreshAll();
       } else {
         setFormError(data.message || 'Failed to save employee.');
       }
@@ -531,7 +532,8 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
           setBulkSuccessMsg(null);
           setEmpBulkCsvText('');
           setParsedBulkEmployees([]);
-          onRefresh();
+          refreshData();
+          if (onRefreshAll) onRefreshAll();
         }, 1800);
       }
     } catch (err) {
@@ -801,6 +803,24 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
     }
     return true;
   });
+
+  // Employee Whitelist filter/pagination, matching the same pattern
+  // used for filteredRequests above — this was missing entirely,
+  // causing a runtime crash when the Employee Whitelist tab rendered.
+  const filteredEmployees = employees.filter((e) => {
+    if (deptFilter !== 'ALL' && e.department !== deptFilter) return false;
+    if (empStatusFilter !== 'ALL' && e.status !== empStatusFilter) return false;
+    if (empSearchQuery) {
+      const q = empSearchQuery.toLowerCase();
+      const matchId = e.employeeId?.toLowerCase().includes(q);
+      const matchName = e.name?.toLowerCase().includes(q);
+      const matchVehicle = e.vehicleNumber?.toLowerCase().includes(q);
+      if (!matchId && !matchName && !matchVehicle) return false;
+    }
+    return true;
+  });
+  const totalEmpPages = Math.ceil(filteredEmployees.length / pageSize) || 1;
+  const paginatedEmployees = filteredEmployees.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div className="space-[#121826] space-y-6">

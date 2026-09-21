@@ -4,6 +4,7 @@ import {
   Cpu,
   Search,
   Filter,
+  CheckCircle,
   XCircle,
   Wrench,
   ShieldAlert,
@@ -81,6 +82,9 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     if (orderA !== orderB) return orderA - orderB;
     return a.slotNumber.localeCompare(b.slotNumber, undefined, { numeric: true });
   });
+
+  const totalSlotPages = Math.ceil(filteredSlots.length / pageSize) || 1;
+  const paginatedSlots = filteredSlots.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   // Slot Management Handlers
   const handleOpenSlotEditModal = (slot?: ParkingSlot) => {
@@ -305,6 +309,44 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
       setSlotBulkSuccessMsg(`Upload failed: ${err.message || err}`);
     } finally {
       setSlotBulkUploading(false);
+    }
+  };
+
+  // Reconstructed: this helper was lost from an earlier edit (its own
+  // usages were the only reason CheckCircle/Wrench/ShieldAlert/Car
+  // were still imported), matching the same visual pattern used for
+  // getEmployeeStatusBadge.
+  const getSlotStatusBadge = (status?: SlotStatus) => {
+    switch (status) {
+      case 'OCCUPIED':
+        return (
+          <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-300 inline-flex items-center space-x-1">
+            <Car className="w-3 h-3 text-slate-600" />
+            <span>Occupied</span>
+          </span>
+        );
+      case 'RESERVED':
+        return (
+          <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center space-x-1">
+            <ShieldAlert className="w-3 h-3 text-amber-600" />
+            <span>Reserved</span>
+          </span>
+        );
+      case 'MAINTENANCE':
+        return (
+          <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-100 text-rose-800 border border-rose-300 inline-flex items-center space-x-1">
+            <Wrench className="w-3 h-3 text-rose-600" />
+            <span>Maintenance</span>
+          </span>
+        );
+      case 'VACANT':
+      default:
+        return (
+          <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
+            <CheckCircle className="w-3 h-3 text-emerald-600" />
+            <span>Vacant</span>
+          </span>
+        );
     }
   };
 

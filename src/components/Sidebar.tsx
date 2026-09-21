@@ -138,11 +138,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'APPROVALS',
-      label: 'Vehicle Approval Queue',
+      label: 'Employee & Vehicle Approval',
       icon: ShieldCheck,
       badge: pendingReqCount > 0 ? pendingReqCount : null,
       badgeColor: 'bg-amber-500 text-white font-black',
-      description: 'Review & approve vehicle requests',
+      description: 'Review requests & manage employee whitelist',
     },
     {
       id: 'LOGS',

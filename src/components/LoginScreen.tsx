@@ -448,69 +448,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 </form>
               )}
 
-              {/* Quick Fill Demo Credentials Bar — dev-only. This must
-                  never render in production: real, guessable account
-                  identifiers plus their passwords on an unauthenticated
-                  page is a direct account-takeover vector. import.meta.env.DEV
-                  is false in any production build (npm run build), so this
-                  is structurally impossible to ship live, not just hidden
-                  by convention. */}
-              {loginMode === 'ADMIN_STAFF' && import.meta.env.DEV && (
-                <div className="mt-5 pt-4 border-t border-slate-100 space-y-2">
-                  <div className="flex items-center justify-between text-[11px] font-bold text-amber-600 uppercase tracking-wider">
-                    <span>⚠ Dev-only quick fill (not shown in production build):</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIdentifier('digisolutions.fm@gmail.com');
-                        setPassword('Admin@1234');
-                      }}
-                      className="p-1.5 bg-indigo-50/80 hover:bg-indigo-100 border border-indigo-200/80 rounded-lg text-left transition"
-                    >
-                      <div className="font-bold text-indigo-900 truncate">Master Admin</div>
-                      <div className="text-[10px] text-indigo-600 truncate">digisolutions.fm@gmail.com</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIdentifier('ananya.sharma@prestige.com');
-                        setPassword('Site@1234');
-                      }}
-                      className="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-left transition"
-                    >
-                      <div className="font-bold text-slate-800 truncate">Site Manager</div>
-                      <div className="text-[10px] text-slate-500 truncate">ananya.sharma@prestige.com</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIdentifier('suresh.k@valetx.in');
-                        setPassword('Valet@1234');
-                      }}
-                      className="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-left transition"
-                    >
-                      <div className="font-bold text-slate-800 truncate">Valet Lead</div>
-                      <div className="text-[10px] text-slate-500 truncate">suresh.k@valetx.in</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIdentifier('ramesh.g@security.com');
-                        setPassword('Gate@1234');
-                      }}
-                      className="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-left transition"
-                    >
-                      <div className="font-bold text-slate-800 truncate">Gate Attendant</div>
-                      <div className="text-[10px] text-slate-500 truncate">ramesh.g@security.com</div>
-                    </button>
-                  </div>
-                </div>
-              )}
+              {/* Demo quick-fill removed: this repository is public, so no account
+                  identifiers or passwords may live in client source. */}
 
             </>
           ) : (

@@ -34,6 +34,12 @@ interface RateLimitRecord {
   resetAt: number;
 }
 const rateLimitMap = new Map<string, RateLimitRecord>();
+// Expired windows are otherwise never removed, so the map would grow without
+// bound (one entry per client IP + path).
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, r] of rateLimitMap) if (now > r.resetAt) rateLimitMap.delete(k);
+}, 60000).unref();
 
 /**
  * Generate SHA-256 HMAC Integrity Checksum for an audit log entry
@@ -332,6 +338,12 @@ interface LoginAttemptRecord {
 
 const loginAttemptMap = new Map<string, LoginAttemptRecord>();
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, r] of loginAttemptMap) {
+    if (r.lockoutUntil <= now && now - r.lastAttemptAt > LOGIN_WINDOW_MS * 2) loginAttemptMap.delete(k);
+  }
+}, 5 * 60 * 1000).unref();
 const MAX_FAILED_LOGIN_ATTEMPTS = 15;
 const BASE_LOCKOUT_MS = 2 * 60 * 1000;
 
@@ -355,7 +367,30 @@ export function getLoginRateLimitKey(ip: string, identifier: string): string {
   return `${cleanIp}:${cleanId}`;
 }
 
+// IP-independent backstop: however the client IP is derived (or spoofed), one
+// account can only absorb a bounded number of wrong passwords per window.
+const MAX_FAILED_PER_IDENTIFIER = 20;
+const IDENTIFIER_WINDOW_MS = 15 * 60 * 1000;
+const identifierFailures = new Map<string, { count: number; resetAt: number }>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, r] of identifierFailures) if (now > r.resetAt) identifierFailures.delete(k);
+}, 5 * 60 * 1000).unref();
+
+function identifierKey(identifier: string): string {
+  return (sanitizeEmailInput(identifier) || 'anonymous').toLowerCase();
+}
+
 export function checkLoginRateLimit(ip: string, identifier: string): { allowed: boolean; retryAfterSeconds: number; reason?: string } {
+  const idRec = identifierFailures.get(identifierKey(identifier));
+  if (idRec && Date.now() <= idRec.resetAt && idRec.count >= MAX_FAILED_PER_IDENTIFIER) {
+    const retryAfterSeconds = Math.max(Math.ceil((idRec.resetAt - Date.now()) / 1000), 1);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      reason: `Too many failed sign-in attempts for this account. Retry in ${Math.ceil(retryAfterSeconds / 60)} minute(s).`,
+    };
+  }
   const key = getLoginRateLimitKey(ip, identifier);
   const now = Date.now();
   const record = loginAttemptMap.get(key);
@@ -391,6 +426,13 @@ export function checkLoginRateLimit(ip: string, identifier: string): { allowed: 
 }
 
 export function recordFailedLoginAttempt(ip: string, identifier: string): { lockedOut: boolean; retryAfterSeconds: number; totalFailures: number } {
+  {
+    const idKey = identifierKey(identifier);
+    const nowTs = Date.now();
+    const r = identifierFailures.get(idKey);
+    if (!r || nowTs > r.resetAt) identifierFailures.set(idKey, { count: 1, resetAt: nowTs + IDENTIFIER_WINDOW_MS });
+    else r.count += 1;
+  }
   const key = getLoginRateLimitKey(ip, identifier);
   const now = Date.now();
   let record = loginAttemptMap.get(key);
@@ -435,12 +477,13 @@ export function recordFailedLoginAttempt(ip: string, identifier: string): { lock
 }
 
 export function clearLoginFailures(ip: string, identifier: string): void {
+  identifierFailures.delete(identifierKey(identifier));
   const key = getLoginRateLimitKey(ip, identifier);
   loginAttemptMap.delete(key);
 }
 
 export function loginRateLimiterMiddleware(req: Request, res: Response, next: NextFunction) {
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+  const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
   const identifier = (req.body?.identifier || req.body?.email || req.body?.username || '').toString();
 
   const check = checkLoginRateLimit(ip, identifier);
@@ -492,8 +535,13 @@ export function securityHeadersMiddleware(req: Request, res: Response, next: Nex
 
 export function rateLimiterMiddleware(maxRequests: number = 3000, windowMs: number = 60000) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const ip = ((req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()) || req.socket.remoteAddress || '127.0.0.1';
-    const key = `${ip}:${req.path}`;
+    const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
+    // Signed-in traffic is limited per verified session user, not per IP: behind
+    // a shared proxy every user can share one address, and the user id can't be
+    // spoofed. A token is only honoured if it resolves to a live session, so
+    // rotating fake tokens can't dodge the per-IP limit on public endpoints.
+    const sessionUser = resolveSessionUserId(extractSessionToken(req));
+    const key = `${sessionUser ? 'u:' + sessionUser : 'ip:' + ip}:${req.path}`;
     const now = Date.now();
 
     const record = rateLimitMap.get(key);
@@ -542,7 +590,7 @@ export function bolaIdentityGuard(options?: { allowAdminOverride?: boolean; acti
     // be a genuine, server-verified account — that's what this check
     // now actually relies on, not anything the client claims about
     // itself.
-    const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+    const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
     const caller = req.user;
 
     if (!caller) {
@@ -709,8 +757,13 @@ declare global {
  * Verifies session credentials from cookies or authorization headers.
  * Attaches user to req.user. Responds 401/403 if invalid or inactive.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token =
+/**
+ * Pulls the session token out of a request (cookie, Authorization header,
+ * x-session-token header, or ?token= on GET). Shared by requireAuth and the
+ * rate limiter so both agree on what "the caller's session" is.
+ */
+export function extractSessionToken(req: Request): string | undefined {
+  return (
     req.cookies?.['__session'] ||
     req.cookies?.['parkorbit_session'] ||
     req.cookies?.['pms_session'] ||
@@ -730,7 +783,12 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     // because it's a short-lived, already-issued session token (not a
     // password or long-lived credential), and scoped to GET so it's
     // never used to authenticate a state-changing action this way.
-    (req.method === 'GET' && typeof req.query?.token === 'string' ? req.query.token : undefined);
+    (req.method === 'GET' && typeof req.query?.token === 'string' ? req.query.token : undefined)
+  );
+}
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const token = extractSessionToken(req);
 
   if (!token) {
     return res.status(401).json({ success: false, message: 'Not signed in.' });

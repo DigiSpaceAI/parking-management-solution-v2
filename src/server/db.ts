@@ -137,6 +137,7 @@ export function verifyPassword(password: string, hash?: string, salt?: string): 
   return Boolean(hash && salt && isMatch && cleanPassword.length >= 8 && cleanPassword.length <= 64);
 }
 
+let bootstrapDefaultsWarned = false;
 function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppUser[] } {
   const fullAccessRights: ModuleAccessRights = {
     enabled: true,
@@ -299,22 +300,40 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
 
   const roles = [masterAdminRole, siteManagerRole, valetSupervisorRole, misAuditorRole, gateAttendantRole];
 
-  // SECURITY FIX: these previously passed a hardcoded, predictable salt
-  // ('salt_admin_101' etc.) instead of letting hashPassword generate a
-  // real random one — a fixed, guessable salt undermines the whole point
-  // of salting, since it can just be read directly from this source file.
-  // Now uses hashPassword's own secure random default. The password text
-  // itself (Admin@1234, etc.) is a known, documented seed value meant to
-  // be rotated immediately on any fresh deployment — already the case
-  // for this project's live environment — but the salt should never have
-  // been predictable regardless.
-  const adminCreds = hashPassword('Admin@1234');
-  const siteCreds = hashPassword('Site@1234');
-  const valetCreds = hashPassword('Valet@1234');
-  const auditCreds = hashPassword('Audit@1234');
-  const gateCreds = hashPassword('Gate@1234');
+  // SECURITY: no default passwords live in source anymore. This repo is
+  // public, so any password written here is a password known to everyone.
+  //
+  //  - The bootstrap Master Admin's password comes from the
+  //    BOOTSTRAP_ADMIN_PASSWORD environment variable (Cloud Run secret).
+  //    If it is unset, the account gets a random password nobody knows,
+  //    so it is unusable until an admin sets BOOTSTRAP_ADMIN_PASSWORD (or
+  //    issues a reset token). Existing accounts that already have a
+  //    password hash (Firestore / local store) are never touched by this.
+  //  - The demo accounts below are only created when SEED_DEMO_USERS=true
+  //    (local development), and get a random password too — use a reset
+  //    token, or set DEMO_USER_PASSWORD, to sign in as them.
+  const bootstrapPw = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
+  if (bootstrapPw.length < 12 || bootstrapPw.length > 64) {
+    if (!bootstrapDefaultsWarned) {
+      bootstrapDefaultsWarned = true;
+      console.warn(
+        '[SECURITY] BOOTSTRAP_ADMIN_PASSWORD is not set (or not 12-64 chars): the bootstrap Master Admin ' +
+        'account is seeded with a random, unknown password. Existing accounts are unaffected.'
+      );
+    }
+  }
+  const randomPw = () => crypto.randomBytes(24).toString('hex');
+  const adminCreds = hashPassword(bootstrapPw.length >= 12 && bootstrapPw.length <= 64 ? bootstrapPw : randomPw());
+  const demoPw = process.env.DEMO_USER_PASSWORD || '';
+  const demoPwOk = demoPw.length >= 12 && demoPw.length <= 64;
+  const seedDemo = process.env.SEED_DEMO_USERS === 'true';
+  const mkDemo = () => hashPassword(demoPwOk ? demoPw : randomPw());
+  const siteCreds = mkDemo();
+  const valetCreds = mkDemo();
+  const auditCreds = mkDemo();
+  const gateCreds = mkDemo();
 
-  const users: AppUser[] = [
+  const allUsers: AppUser[] = [
     {
       id: 'usr-digi-master',
       username: 'digisolutions',
@@ -424,6 +443,11 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       lastLoginAt: new Date(Date.now() - 900000).toISOString(),
     },
   ];
+
+  // Only the bootstrap Master Admin is seeded by default. The remaining
+  // entries are fictional demo accounts (and a second fake Master Admin)
+  // and exist only when explicitly enabled for local development.
+  const users = seedDemo ? allUsers : allUsers.filter((u) => u.id === 'usr-digi-master');
 
   return { roles, users };
 }
@@ -1287,6 +1311,61 @@ async function loadStoreFromFirestore(): Promise<{ data: StoreData | null; faile
   }
 }
 
+// Historical seed passwords that were committed to this (public) repo.
+// Any account still using one of them is rotated at startup — see below.
+const KNOWN_DEFAULT_PASSWORDS: Record<string, string[]> = {
+  digisolutions: ['Admin@1234'],
+  superadmin: ['Admin@1234'],
+  'ananya.site': ['Site@1234'],
+  'suresh.valet': ['Valet@1234'],
+  'rajesh.audit': ['Audit@1234'],
+  'ramesh.gate': ['Gate@1234'],
+};
+
+/**
+ * Rotates any account that still has one of the old, publicly-visible seed
+ * passwords. Accounts whose owners already changed their password are not
+ * touched (the check is a real password verification, not a username match).
+ * The bootstrap Master Admin is only rotated when BOOTSTRAP_ADMIN_PASSWORD is
+ * set, so the owner can never be locked out of their own system; otherwise a
+ * loud error is logged instead. Idempotent — safe to call after every load.
+ */
+export function rotateKnownDefaultPasswords(): void {
+  const users = store?.appUsers || [];
+  const rotated: string[] = [];
+  const bootstrapPw = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
+  const bootstrapOk = bootstrapPw.length >= 12 && bootstrapPw.length <= 64;
+
+  for (const u of users) {
+    const known = KNOWN_DEFAULT_PASSWORDS[(u.username || '').toLowerCase()];
+    if (!known || !u.passwordHash || !u.passwordSalt) continue;
+    if (!known.some((pw) => verifyPassword(pw, u.passwordHash, u.passwordSalt))) continue;
+
+    if (u.id === 'usr-digi-master') {
+      if (!bootstrapOk) {
+        console.error(
+          '[SECURITY][CRITICAL] The Master Admin account still uses the publicly-known default password. ' +
+          'Set BOOTSTRAP_ADMIN_PASSWORD (12-64 chars) and redeploy, or change the password now.'
+        );
+        continue;
+      }
+      const c = hashPassword(bootstrapPw);
+      u.passwordHash = c.hash;
+      u.passwordSalt = c.salt;
+    } else {
+      const c = hashPassword(crypto.randomBytes(24).toString('hex'));
+      u.passwordHash = c.hash;
+      u.passwordSalt = c.salt;
+    }
+    rotated.push(u.id);
+  }
+
+  if (rotated.length > 0) {
+    console.warn(`[SECURITY] Rotated default seed passwords for ${rotated.length} account(s): ${rotated.join(', ')}.`);
+    saveDB([{ collection: 'appUsers', ids: rotated }]);
+  }
+}
+
 export async function bootstrapFirestore(): Promise<void> {
   const db = getFirestoreDb();
   if (!db) return;
@@ -1295,6 +1374,7 @@ export async function bootstrapFirestore(): Promise<void> {
   if (remote) {
     store = remote;
     console.log('[firestore] Loaded existing data from Firestore.');
+    rotateKnownDefaultPasswords();
   } else if (failed) {
     // Loading genuinely failed (quota, timeout, network) — do NOT
     // reseed. Keep running on whatever's already in the in-memory
@@ -3557,6 +3637,29 @@ export function getAppUsers(): AppUser[] {
   return storeData.appUsers;
 }
 
+// Site scope a non-Master-Admin requester may grant / manage. Returns an error
+// message when the requested scope exceeds the requester's own, else null.
+function siteScopeViolation(
+  storeData: StoreData,
+  requester: AppUser | undefined,
+  siteScopeType: string | undefined,
+  assignedSiteIds: string[] | undefined
+): string | null {
+  if (!requester) return 'Requesting account not found.';
+  const isMaster = requester.roleId === 'role-master-admin' || requester.siteScopeType === 'ALL_SITES';
+  if (isMaster) return null;
+  const norm = (sid: string) => {
+    const m = (storeData.sites || []).find((x) => x.id === sid || x.siteCode === sid);
+    return m ? m.id : sid;
+  };
+  const own = new Set((requester.assignedSiteIds || []).map(norm));
+  if (siteScopeType === 'ALL_SITES') return 'Only an all-sites administrator can grant all-sites access.';
+  for (const sid of assignedSiteIds || []) {
+    if (!own.has(norm(sid))) return 'You can only assign sites that you have access to yourself.';
+  }
+  return null;
+}
+
 export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: string): { success: boolean; message: string; user?: AppUser; resetToken?: string } {
   const storeData = getStore();
   if (!storeData.appUsers) storeData.appUsers = [];
@@ -3603,6 +3706,15 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
         }
       }
 
+      const editor = requestingUserId ? storeData.appUsers.find((u) => u.id === requestingUserId) : undefined;
+
+      // A scoped admin may only manage accounts that sit inside their own
+      // sites, and may not widen anyone's scope beyond their own.
+      const targetScopeError = siteScopeViolation(storeData, editor, undefined, existing.assignedSiteIds);
+      if (targetScopeError) return { success: false, message: 'You can only edit accounts at your own sites.' };
+      const newScopeError = siteScopeViolation(storeData, editor, userData.siteScopeType, userData.assignedSiteIds);
+      if (newScopeError) return { success: false, message: newScopeError };
+
       let passHash = existing.passwordHash;
       let passSalt = existing.passwordSalt;
 
@@ -3612,11 +3724,35 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
         passSalt = hashed.salt;
       }
 
+      // Explicit field whitelist — the request body used to be spread over the
+      // stored record, which let a caller overwrite anything (passwordHash,
+      // passwordSalt, id, createdAt, siteScopeType, ...). Only these fields
+      // are editable here; passwords go through plainPassword / reset tokens.
+      const nextRoleId = userData.roleId !== undefined ? userData.roleId : existing.roleId;
+      const nextRole = (storeData.appRoles || []).find((r) => r.id === nextRoleId);
+      const pick = <K extends keyof AppUser>(k: K): AppUser[K] => (userData[k] !== undefined ? (userData[k] as AppUser[K]) : existing[k]);
+      const nextScopeType = pick('siteScopeType');
+      const nextSiteIds = pick('assignedSiteIds');
+      const nextSiteNames = nextScopeType === 'ALL_SITES'
+        ? ['All Enterprise Sites']
+        : userData.assignedSiteIds !== undefined
+          ? siteNames
+          : existing.assignedSiteNames;
+
       storeData.appUsers[index] = {
         ...existing,
-        ...userData,
-        roleName,
-        assignedSiteNames: siteNames,
+        username: pick('username'),
+        fullName: pick('fullName'),
+        email: pick('email'),
+        phone: pick('phone'),
+        designation: pick('designation'),
+        roleId: nextRoleId,
+        roleName: nextRole ? nextRole.roleName : existing.roleName,
+        siteScopeType: nextScopeType,
+        assignedSiteIds: nextSiteIds,
+        assignedSiteNames: nextSiteNames,
+        status: pick('status'),
+        customModuleOverrides: pick('customModuleOverrides'),
         passwordHash: passHash,
         passwordSalt: passSalt,
       } as AppUser;
@@ -3660,6 +3796,10 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
       return { success: false, message: 'Only a Platform Master Admin can create another Platform Master Admin account.' };
     }
   }
+
+  const creator = requestingUserId ? storeData.appUsers.find((u) => u.id === requestingUserId) : undefined;
+  const createScopeError = siteScopeViolation(storeData, creator, userData.siteScopeType, userData.assignedSiteIds || [DEFAULT_SITE_ID]);
+  if (createScopeError) return { success: false, message: createScopeError };
 
   const newUser: AppUser = {
     id: `usr-${Date.now()}`,

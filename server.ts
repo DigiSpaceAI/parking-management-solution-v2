@@ -8,6 +8,7 @@ import {
   getStore,
   saveDB,
   bootstrapFirestore,
+  rotateKnownDefaultPasswords,
   DEFAULT_SITE_ID,
   processVehicleEntry,
   processVehicleExit,
@@ -99,37 +100,80 @@ import {
   clearAuditLogs
 } from './src/server/security';
 import { VehicleType, EntryType } from './src/types';
+import { isFirestoreConfigured } from './src/server/firestoreClient';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
+// With Firestore configured, rotation runs after the remote data is loaded
+// (bootstrapFirestore) — running it now would act on the boot-time seed store.
+if (!isFirestoreConfigured()) rotateKnownDefaultPasswords();
 void loadAuditLogsFromFirestore();
 
 const app = express();
+
+// Trust exactly N proxy hops so req.ip is the real client address and cannot
+// be spoofed by a client-supplied X-Forwarded-For header. Default 1 = Cloud Run
+// only (the direct *.run.app URL): safe against spoofing. If ALL traffic comes
+// through Firebase Hosting, req.ip will be the hosting proxy's address for every
+// user (rate limits for signed-in users are per-user, so this is harmless
+// there; unauthenticated limits become shared). Setting TRUST_PROXY_HOPS=2
+// restores real client IPs for that path but makes the direct *.run.app URL
+// spoofable — the per-account login throttle still bounds password guessing.
+// Verify the `ipAddress` in the audit log after any change.
+const TRUST_PROXY_HOPS = process.env.TRUST_PROXY_HOPS !== undefined && Number.isInteger(Number(process.env.TRUST_PROXY_HOPS))
+  ? Number(process.env.TRUST_PROXY_HOPS)
+  : 1;
+app.set('trust proxy', TRUST_PROXY_HOPS);
 
 // Attach Infosec Security HTTP Headers & Payload Limits
 app.use(securityHeadersMiddleware);
 app.use(cookieParser());
 
-// CORS for the ParkFlow mobile app, which runs from a different origin
-// than this API once wrapped in Capacitor. The admin web dashboard is
-// always same-origin and is unaffected by this — CORS only applies to
-// cross-origin requests, which same-origin ones never are.
-// Origin is reflected (not wildcarded) because credentialed requests
-// (cookies) can't use Access-Control-Allow-Origin: *. The real security
-// boundary here is still the session cookie itself, not which origin
-// asked — a native app doesn't operate under the same-origin model a
-// browser tab does, so origin restriction wouldn't add real protection
-// against a native client anyway.
+// CORS: an explicit allowlist, never a reflected Origin. Reflecting any origin
+// while also sending Access-Control-Allow-Credentials lets any website a
+// signed-in admin visits call this API as that admin and read the replies.
+// Allowed: the admin web app, the Capacitor mobile shells (https://localhost /
+// capacitor://localhost), local dev, and anything in CORS_ALLOWED_ORIGINS
+// (comma-separated). Same-origin requests never need CORS and are unaffected.
+const ALLOWED_ORIGINS = new Set<string>([
+  'https://admin.parkflows.in',
+  'https://parkflows.in',
+  'https://www.parkflows.in',
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  ...(process.env.CORS_ALLOWED_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean),
+]);
+
+function isOriginAllowed(origin: string, req: express.Request): boolean {
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    // Same-origin (e.g. the direct Cloud Run URL): Origin host == Host header.
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin) {
+  if (origin && isOriginAllowed(origin, req)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-site-id, x-session-token');
   }
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
+  }
+  // CSRF defence in depth: the session cookie is SameSite=None (needed by the
+  // mobile apps), so refuse state-changing requests from a browser page on an
+  // origin we don't recognise, even before auth runs.
+  if (origin && !['GET', 'HEAD'].includes(req.method) && !isOriginAllowed(origin, req)) {
+    return res.status(403).json({ success: false, message: 'Cross-origin request blocked.' });
   }
   next();
 });
@@ -170,21 +214,120 @@ const PUBLIC_API_PATHS = new Set([
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/v1/') && req.path !== '/login') return next();
   if (PUBLIC_API_PATHS.has(req.path)) return next();
-  return requireAuth(req, res, next);
+  return requireAuth(req, res, (err?: any) => (err ? next(err) : enforceSiteScope(req, res, next)));
 });
 
 
-// Resolves the requesting site from either a ?siteId= query param (used
-// by the admin web app, since a query param is the natural fit there)
-// or an x-site-id header (used by the mobile apps via their centralized
-// apiFetch helper, which sets this once after login rather than every
-// individual call site needing to remember to pass it). Query param
-// wins if somehow both are present.
-function getRequestedSiteId(req: express.Request): string | undefined {
+// ---------------------------------------------------------------------------
+// SERVER-SIDE SITE SCOPING
+// The site a request may touch is derived from the signed-in user's own
+// record (siteScopeType / assignedSiteIds) — never from what the client
+// claims. Master Admins and ALL_SITES users are unrestricted; everyone else
+// is limited to their assigned sites. A client-supplied siteId that is not
+// one of them is rejected (403); a missing / "ALL" value falls back to the
+// user's first assigned site instead of meaning "every site".
+// ---------------------------------------------------------------------------
+const NO_SITE_ACCESS = '__no_site_access__';
+
+// null = unrestricted. Otherwise the list of site ids (and site codes, since
+// assignedSiteIds has historically held either) the user may access. Site
+// ids come first so allowed[0] is always a real site id when one exists.
+function getAllowedSiteIds(user: { siteScopeType?: string; roleId?: string; assignedSiteIds?: string[] }): string[] | null {
+  if (user.siteScopeType === 'ALL_SITES' || user.roleId === 'role-master-admin') return null;
+  const sites = getSites();
+  const ids: string[] = [];
+  const codes: string[] = [];
+  for (const sid of user.assignedSiteIds || []) {
+    const m = sites.find((x) => x.id === sid || x.siteCode === sid);
+    ids.push(m ? m.id : sid);
+    codes.push(sid);
+    if (m?.siteCode) codes.push(m.siteCode);
+  }
+  return Array.from(new Set([...ids, ...codes]));
+}
+
+// Records with no siteId are treated as belonging to DEFAULT_SITE_ID, matching
+// the read paths elsewhere in this file.
+function siteAllowedFor(user: express.Request['user'], siteId?: string): boolean {
+  if (!user) return false;
+  const allowed = getAllowedSiteIds(user);
+  return allowed === null || allowed.includes(siteId || DEFAULT_SITE_ID);
+}
+
+// Sends a 403 and returns true when the record's site is outside the caller's scope.
+function denyForeignSite(req: express.Request, res: express.Response, siteId?: string): boolean {
+  if (siteAllowedFor(req.user, siteId)) return false;
+  res.status(403).json({ success: false, message: 'You do not have access to this site.' });
+  return true;
+}
+
+function rawClientSiteId(req: express.Request): string | undefined {
   const fromQuery = req.query?.siteId;
   if (fromQuery && typeof fromQuery === 'string') return fromQuery;
   const fromHeader = req.headers['x-site-id'];
   return typeof fromHeader === 'string' ? fromHeader : undefined;
+}
+
+// Body shapes that carry site-owned records. Routes read either the body
+// itself or body.employee / body.slot, and bulk routes send arrays.
+function siteCarryingObjects(body: any): any[] {
+  if (!body || typeof body !== 'object') return [];
+  const out: any[] = [body, body.employee, body.slot];
+  for (const key of ['employees', 'slots', 'requests']) {
+    if (Array.isArray(body[key])) out.push(...body[key]);
+  }
+  return out.filter((o) => o && typeof o === 'object');
+}
+
+const SITE_INJECT_PATHS = new Set([
+  '/api/v1/employees/save',
+  '/api/v1/employees/bulk-upload',
+  '/api/v1/slots/save',
+  '/api/v1/slots/bulk-upload',
+  '/api/v1/registrations/bulk-upload',
+  '/api/v1/valet/checkin',
+]);
+
+function enforceSiteScope(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = req.user;
+  if (!user) return next();
+  const allowed = getAllowedSiteIds(user);
+  if (allowed === null) return next();
+
+  const deny = () =>
+    res.status(403).json({ success: false, message: 'You do not have access to this site.', errorCode: 'ERR_SITE_FORBIDDEN' });
+
+  const claimed = rawClientSiteId(req);
+  if (claimed && claimed !== 'ALL' && !allowed.includes(claimed)) return deny();
+
+  const objs = siteCarryingObjects(req.body);
+  for (const o of objs) {
+    if (o.siteId !== undefined && o.siteId !== null && o.siteId !== '' && o.siteId !== 'ALL' && !allowed.includes(String(o.siteId))) {
+      return deny();
+    }
+  }
+
+  // Records created by a scoped user belong to that user's site, never to the
+  // legacy default site by omission.
+  if (req.method === 'POST' && SITE_INJECT_PATHS.has(req.path) && allowed.length > 0) {
+    const fallback = claimed && claimed !== 'ALL' ? claimed : allowed[0];
+    const targets = req.path.endsWith('/bulk-upload') ? objs.filter((o) => o !== req.body) : [req.body.employee || req.body.slot || req.body];
+    for (const o of targets) {
+      if (!o.siteId || o.siteId === 'ALL') o.siteId = fallback;
+    }
+  }
+  next();
+}
+
+// Resolves the requesting site from either a ?siteId= query param (used
+// by the admin web app) or an x-site-id header (used by the mobile apps).
+// For scoped users the result is always one of their own sites.
+function getRequestedSiteId(req: express.Request): string | undefined {
+  const raw = rawClientSiteId(req);
+  const allowed = req.user ? getAllowedSiteIds(req.user) : null;
+  if (allowed === null) return raw;
+  if (!raw || raw === 'ALL') return allowed[0] ?? NO_SITE_ACCESS;
+  return allowed.includes(raw) ? raw : NO_SITE_ACCESS;
 }
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -204,6 +347,28 @@ function getGeminiClient() {
       },
     },
   });
+}
+
+// Gemini is billed per call, so every route that reaches it is capped per
+// signed-in user per (UTC) day, plus one global daily ceiling, on top of the
+// permission check. In-memory: resets on restart / per instance, so also set a
+// budget alert and a quota cap on the key in Google Cloud.
+const AI_GLOBAL_DAILY_CAP = Number(process.env.AI_DAILY_GLOBAL_CAP) > 0 ? Number(process.env.AI_DAILY_GLOBAL_CAP) : 5000;
+const aiUsage = new Map<string, { day: string; count: number }>();
+let aiGlobal = { day: '', count: 0 };
+
+function consumeAiQuota(userId: string, perUserLimit: number): boolean {
+  const day = new Date().toISOString().slice(0, 10);
+  if (aiGlobal.day !== day) {
+    aiGlobal = { day, count: 0 };
+    aiUsage.clear();
+  }
+  if (aiGlobal.count >= AI_GLOBAL_DAILY_CAP) return false;
+  const rec = aiUsage.get(userId);
+  if (rec && rec.count >= perUserLimit) return false;
+  aiUsage.set(userId, { day, count: (rec?.count || 0) + 1 });
+  aiGlobal.count++;
+  return true;
 }
 
 // REST API ROUTES
@@ -359,8 +524,8 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
     if (!isValidLicensePlate(employeeData.vehicleNumber)) {
       logSecurityEvent({
         action: 'INPUT_VALIDATION_FAILED',
-        actor: req.headers['x-user-email'] as string || 'Admin',
-        actorRole: req.headers['x-user-role'] as string || 'ADMIN',
+        actor: req.user?.email || 'Admin',
+        actorRole: req.user?.roleName || 'ADMIN',
         ipAddress: req.ip,
         targetResource: `vehicleNumber: ${employeeData.vehicleNumber}`,
         status: 'VALIDATION_FAILED',
@@ -373,8 +538,8 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
 
     logSecurityEvent({
       action: 'EMPLOYEE_WHITELIST_MODIFIED',
-      actor: req.headers['x-user-email'] as string || 'Admin',
-      actorRole: req.headers['x-user-role'] as string || 'ADMIN',
+      actor: req.user?.email || 'Admin',
+      actorRole: req.user?.roleName || 'ADMIN',
       ipAddress: req.ip,
       targetResource: `employee/${saved.employeeId}`,
       status: 'SUCCESS',
@@ -403,8 +568,8 @@ app.post('/api/v1/employees/bulk-upload', requirePermission('REGISTRATION', 'can
 
     logSecurityEvent({
       action: 'BULK_EMPLOYEE_WHITELIST_UPLOAD',
-      actor: req.headers['x-user-email'] as string || 'Admin',
-      actorRole: req.headers['x-user-role'] as string || 'ADMIN',
+      actor: req.user?.email || 'Admin',
+      actorRole: req.user?.roleName || 'ADMIN',
       ipAddress: req.ip,
       targetResource: `BulkBatch/${list.length} records`,
       status: 'SUCCESS',
@@ -438,14 +603,18 @@ app.get(
       return res.json({ success: false, message: 'No registered whitelist record found for this employee identifier.', employee: null });
     }
 
+    // Admins may only look up employees at their own sites; anyone may
+    // always look up their own record (BOLA guard already enforces that).
+    if (employee.email?.toLowerCase() !== req.user!.email.toLowerCase() && denyForeignSite(req, res, employee.siteId)) return;
+
     // Also check if currently parked
     const store = getStore();
     const currentSlot = store.slots.find(s => s.currentVehicle && s.currentVehicle.toUpperCase() === employee.vehicleNumber.toUpperCase() && s.status === 'OCCUPIED');
 
     logSecurityEvent({
       action: 'EMPLOYEE_PROFILE_LOOKUP',
-      actor: (req.headers['x-user-email'] as string) || employee.email,
-      actorRole: (req.headers['x-user-role'] as string) || 'EMPLOYEE',
+      actor: req.user?.email || employee.email,
+      actorRole: req.user?.roleName || 'EMPLOYEE',
       ipAddress: req.ip,
       targetResource: `employee/${employee.employeeId}`,
       status: 'SUCCESS',
@@ -480,11 +649,14 @@ app.post(
 
       const sanitizedPlate = sanitizeInputString(vehicleNumber).toUpperCase();
 
+      const targetEmployee = getEmployeeByEmailOrId(sanitizeInputString(email || employeeId || ''));
+      if (targetEmployee && targetEmployee.email?.toLowerCase() !== req.user!.email.toLowerCase() && denyForeignSite(req, res, targetEmployee.siteId)) return;
+
       if (!isValidLicensePlate(sanitizedPlate)) {
         logSecurityEvent({
           action: 'INVALID_PLATE_FORMAT_REJECTED',
           actor: email || employeeId || req.ip || 'Unknown',
-          actorRole: (req.headers['x-user-role'] as string) || 'EMPLOYEE',
+          actorRole: req.user?.roleName || 'EMPLOYEE',
           ipAddress: req.ip,
           targetResource: `vehicleNumber: ${vehicleNumber}`,
           status: 'VALIDATION_FAILED',
@@ -517,7 +689,7 @@ app.post(
       logSecurityEvent({
         action: 'VEHICLE_UPDATE_SUCCESS',
         actor: email || employeeId || 'Employee',
-        actorRole: (req.headers['x-user-role'] as string) || 'EMPLOYEE',
+        actorRole: req.user?.roleName || 'EMPLOYEE',
         ipAddress: req.ip,
         targetResource: `vehicle/${sanitizedPlate}`,
         status: 'SUCCESS',
@@ -572,8 +744,15 @@ app.get('/api/v1/registrations', (req, res) => {
   res.json({ requests, pendingCount });
 });
 
-app.post('/api/v1/registrations/submit', (req, res) => {
-  const result = submitRegistrationRequest(req.body);
+// Public (no login) — so it gets its own tight limit and field-length caps.
+app.post('/api/v1/registrations/submit', rateLimiterMiddleware(10, 60000), (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  for (const [k, v] of Object.entries(body)) {
+    if (typeof v === 'string' && v.length > 200) {
+      return res.status(400).json({ success: false, message: `Field '${k}' is too long.` });
+    }
+  }
+  const result = submitRegistrationRequest(body);
   if (!result.success) {
     return res.status(400).json(result);
   }
@@ -585,6 +764,8 @@ app.post('/api/v1/registrations/approve', requirePermission('APPROVALS', 'canEdi
   if (!requestId) {
     return res.status(400).json({ success: false, message: 'requestId is required.' });
   }
+  const regReq = getRegistrationRequests().find((r) => r.id === requestId);
+  if (regReq && denyForeignSite(req, res, regReq.siteId)) return;
   const result = approveRegistrationRequest(requestId);
   if (!result.success) {
     return res.status(400).json(result);
@@ -597,6 +778,8 @@ app.post('/api/v1/registrations/reject', requirePermission('APPROVALS', 'canEdit
   if (!requestId) {
     return res.status(400).json({ success: false, message: 'requestId is required.' });
   }
+  const regReq = getRegistrationRequests().find((r) => r.id === requestId);
+  if (regReq && denyForeignSite(req, res, regReq.siteId)) return;
   const result = rejectRegistrationRequest(requestId, reason);
   if (!result.success) {
     return res.status(400).json(result);
@@ -896,6 +1079,8 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
   if (!slotId) {
     return res.status(400).json({ success: false, message: 'slotId is required.' });
   }
+  const targetSlot = getStore().slots.find((sl) => sl.id === slotId);
+  if (targetSlot && denyForeignSite(req, res, targetSlot.siteId)) return;
   const result = deleteSlot(slotId, force === true);
   if (!result.success) {
     return res.status(400).json(result);
@@ -980,6 +1165,12 @@ app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCrea
     const { imageBase64 } = req.body;
     const store = getStore();
 
+    // ~4.5 MB of image is plenty for a plate photo; anything bigger is abuse
+    // (or a cost-inflation attempt) rather than a real camera frame.
+    if (imageBase64 !== undefined && (typeof imageBase64 !== 'string' || imageBase64.length > 6_000_000)) {
+      return res.status(413).json({ success: false, message: 'Image too large or invalid.' });
+    }
+
     if (!imageBase64) {
       // Pick random sample employee plate for simulation
       const sampleEmp = store.employees[Math.floor(Math.random() * store.employees.length)];
@@ -1001,6 +1192,9 @@ app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCrea
     let rawText = '';
 
     if (ai) {
+      if (!consumeAiQuota(req.user!.id, 500)) {
+        return res.status(429).json({ success: false, message: 'Daily plate-scan limit reached.' });
+      }
       const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
       const response = await ai.models.generateContent({
         model: 'gemini-3.6-flash',
@@ -1153,15 +1347,23 @@ app.post('/api/v1/alerts/trigger-cron', requirePermission('ALERTS', 'canEdit'), 
 });
 
 // 11. AI Slot & PMS Recommendation Assistant (Gemini AI)
-app.post('/api/v1/ai/recommend', async (req, res) => {
+app.post('/api/v1/ai/recommend', requirePermission('ANALYTICS', 'view'), async (req, res) => {
   try {
-    const { prompt, context } = req.body;
+    // Free text goes into an LLM prompt: cap the length and drop control
+    // characters / quotes so it can't break out of the quoted query.
+    const prompt = typeof req.body?.prompt === 'string'
+      ? req.body.prompt.replace(/[\x00-\x1F\x7F"`\\]/g, ' ').trim().slice(0, 500)
+      : '';
     const ai = getGeminiClient();
 
     if (!ai) {
       return res.json({
         recommendation: `[Smart PMS Rule Engine] Peak hour is projected at 09:30 AM (96% occupancy). Recommended strategy: Direct incoming SUVs to Basement B1-VIP high clearance bays and redirect two-wheelers to B2-2W dedicated aisle. Enable Automated ANPR Lanes 1 & 2 for rapid entry.`,
       });
+    }
+
+    if (!consumeAiQuota(req.user!.id, 30)) {
+      return res.status(429).json({ success: false, message: 'Daily AI assistant limit reached. Try again tomorrow.' });
     }
 
     const store = getStore();
@@ -1194,11 +1396,16 @@ Provide concise, highly actionable architectural, spatial, and traffic optimizat
 app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'), (req, res) => {
   const { slotId, newStatus } = req.body;
   const store = getStore();
-  const slot = store.slots.find(s => s.id === slotId || s.slotNumber === slotId);
+  // Slot numbers repeat across sites, so prefer an exact id match, and
+  // otherwise only consider slots the caller's sites actually own.
+  const slot =
+    store.slots.find(s => s.id === slotId) ||
+    store.slots.find(s => s.slotNumber === slotId && siteAllowedFor(req.user, s.siteId));
 
   if (!slot) {
     return res.status(404).json({ success: false, message: 'Slot not found' });
   }
+  if (denyForeignSite(req, res, slot.siteId)) return;
 
   slot.status = newStatus;
   slot.updatedAt = new Date().toISOString();
@@ -1206,8 +1413,8 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
 
   logSecurityEvent({
     action: 'SLOT_STATUS_OVERRIDE',
-    actor: req.headers['x-user-email'] as string || 'Admin',
-    actorRole: req.headers['x-user-role'] as string || 'ADMIN',
+    actor: req.user?.email || 'Admin',
+    actorRole: req.user?.roleName || 'ADMIN',
     ipAddress: req.ip,
     targetResource: `slot/${slot.slotNumber}`,
     status: 'SUCCESS',
@@ -1222,6 +1429,15 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
 });
 
 // 13. MIS CSV Report Exporter Endpoint
+// Spreadsheet formula injection: a value starting with = + - @ (or tab/CR) is
+// executed as a formula when the CSV is opened in Excel/Sheets. Prefix with a
+// single quote and double any embedded quotes.
+const csvCell = (v: unknown): string => {
+  let str = v === undefined || v === null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+  return `"${str.replace(/"/g, '""')}"`;
+};
+
 app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (req, res) => {
   const store = getStore();
   const { type = 'logs' } = req.query;
@@ -1243,7 +1459,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
   if (type === 'slots') {
     let csv = 'SlotNumber,Basement,FloorLocation,PuzzleNumber,SlotType,ParkingType,Height,Allocation,Status,CurrentVehicle\n';
     siteFilter(store.slots).forEach(s => {
-      csv += `"${s.slotNumber}","${s.basement}","${s.floorLocation}","${s.puzzleNumber || ''}","${s.slotType}","${s.parkingType}","${s.height}","${s.allocation}","${s.status}","${s.currentVehicle || ''}"\n`;
+      csv += [s.slotNumber, s.basement, s.floorLocation, s.puzzleNumber || '', s.slotType, s.parkingType, s.height, s.allocation, s.status, s.currentVehicle || ''].map(csvCell).join(',') + '\n';
     });
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="pms_slots_inventory.csv"');
@@ -1252,7 +1468,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
 
   let csv = 'LogID,VehicleNumber,EmployeeName,Department,SlotNumber,Basement,EntryTime,ExitTime,DurationMinutes,EntryType,Status,Remarks\n';
   siteFilter(store.logs).forEach(l => {
-    csv += `"${l.id}","${l.vehicleNumber}","${l.employeeName || ''}","${l.department || ''}","${l.slotNumber}","${l.basement}","${l.entryTime}","${l.exitTime || ''}","${l.durationMinutes || ''}","${l.entryType}","${l.status}","${l.remarks || ''}"\n`;
+    csv += [l.id, l.vehicleNumber, l.employeeName || '', l.department || '', l.slotNumber, l.basement, l.entryTime, l.exitTime || '', l.durationMinutes || '', l.entryType, l.status, l.remarks || ''].map(csvCell).join(',') + '\n';
   });
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="pms_parking_logs.csv"');
@@ -1275,6 +1491,9 @@ app.post('/api/v1/valet/checkin', requirePermission('VALET_SERVICE', 'canCreate'
 });
 
 app.post('/api/v1/valet/status', requirePermission('VALET_SERVICE', 'canEdit'), (req, res) => {
+  const ticketRef = req.body?.ticketId;
+  const valetTicket = getValetTickets().find((t) => t.id === ticketRef || t.ticketNumber === ticketRef || t.keyTagNumber === ticketRef);
+  if (valetTicket && denyForeignSite(req, res, valetTicket.siteId)) return;
   const result = updateValetStatus(req.body);
   res.json(result);
 });
@@ -1362,6 +1581,8 @@ app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVA
   if (!requestId || !decision) {
     return res.status(400).json({ success: false, message: 'requestId and decision are required.' });
   }
+  const overnightReq = (getStore().overnightRequests || []).find((r) => r.id === requestId);
+  if (overnightReq && denyForeignSite(req, res, overnightReq.siteId)) return;
   const result = reviewOvernightRequest(requestId, decision, req.user!.fullName, rejectionReason);
   if (!result.success) return res.status(400).json(result);
 
@@ -1381,7 +1602,7 @@ app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVA
 // 15. USER MANAGEMENT & RBAC API ENDPOINTS
 // OWASP Compliant Authentication Handler
 const handleLoginRequest = (req: express.Request, res: express.Response) => {
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+  const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
   const rawIdentifier = req.body?.identifier || req.body?.email || req.body?.username;
   const rawPassword = req.body?.password;
 

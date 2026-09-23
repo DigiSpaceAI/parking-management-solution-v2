@@ -2968,19 +2968,26 @@ export function changeVehicleSlot(
   vehicleNumberOrSlot: string,
   newSlotNumberInput: string,
   reason: string = 'Attendant Re-allocation',
-  attendantName: string = 'Attendant'
+  attendantName: string = 'Attendant',
+  siteId?: string
 ): { success: boolean; message: string; notification?: SlotChangeNotification } {
   const storeData = getStore();
   const query = vehicleNumberOrSlot.trim().toUpperCase();
   const targetSlotNum = newSlotNumberInput.trim().toUpperCase();
+  const requestSiteId = siteId || DEFAULT_SITE_ID;
 
   if (!query || !targetSlotNum) {
     return { success: false, message: 'Vehicle number (or current slot) and Target Slot Number are required.' };
   }
 
-  // 1. Find the current slot and vehicle number
+  // 1. Find the current slot and vehicle number. Vehicle number is
+  // matched globally, same as processVehicleExit (genuinely unique
+  // regardless of site); slot number alone is scoped to the requesting
+  // site — this route previously scoped neither, so an attendant could
+  // relocate a vehicle using another site's slot numbers.
   let currentSlot = storeData.slots.find(
-    (s) => (s.currentVehicle && s.currentVehicle.toUpperCase() === query) || s.slotNumber.toUpperCase() === query
+    (s) => (s.currentVehicle && s.currentVehicle.toUpperCase() === query) ||
+      (s.slotNumber.toUpperCase() === query && (s.siteId || DEFAULT_SITE_ID) === requestSiteId)
   );
 
   let vehicleNum = query;
@@ -2995,8 +3002,10 @@ export function changeVehicleSlot(
     };
   }
 
-  // 2. Find target slot
-  const newSlot = storeData.slots.find((s) => s.slotNumber.toUpperCase() === targetSlotNum);
+  // 2. Find target slot — must be in the requesting site's own
+  // inventory, same reasoning as processVehicleEntry's custom-slot
+  // lookup, so a relocation can never land a vehicle in another site.
+  const newSlot = storeData.slots.find((s) => s.slotNumber.toUpperCase() === targetSlotNum && (s.siteId || DEFAULT_SITE_ID) === requestSiteId);
   if (!newSlot) {
     return { success: false, message: `Target slot '${targetSlotNum}' does not exist in inventory.` };
   }

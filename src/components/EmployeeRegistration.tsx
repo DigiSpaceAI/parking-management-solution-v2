@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { RegistrationRequest, WhitelistedDomain, VehicleType, ParkingSlot, Employee, EmployeeStatus } from '../types';
-import { normalizeVehicleNumber } from '../utils/plateNormalization';
+import { normalizeVehicleNumber, clampPlateInput } from '../utils/plateNormalization';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -1093,7 +1093,7 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
                     required
                     placeholder="e.g. KA-01-AB-1234"
                     value={formData.vehicleNumber}
-                    onChange={(e) => setFormData({ ...formData, vehicleNumber: e.target.value.toUpperCase() })}
+                    onChange={(e) => setFormData({ ...formData, vehicleNumber: clampPlateInput(e.target.value) })}
                     className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl font-bold font-mono text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none uppercase tracking-wider"
                   />
                 </div>

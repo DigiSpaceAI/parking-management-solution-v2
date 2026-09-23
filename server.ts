@@ -531,7 +531,7 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
         status: 'VALIDATION_FAILED',
         details: 'Rejected invalid license plate format during employee save.',
       });
-      return res.status(400).json({ success: false, message: 'Invalid license plate format. Must be 4-12 alphanumeric characters.' });
+      return res.status(400).json({ success: false, message: 'Invalid license plate format. Must be 4-10 alphanumeric characters.' });
     }
 
     const saved = saveOrUpdateEmployee(employeeData);
@@ -665,7 +665,7 @@ app.post(
 
         return res.status(400).json({
           success: false,
-          message: 'Invalid license plate format. Must be a valid 4-12 alphanumeric plate code.',
+          message: 'Invalid license plate format. Must be a valid 4-10 alphanumeric plate code.',
         });
       }
 
@@ -806,7 +806,12 @@ app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (re
   if (!vehicleNumberOrSlot || !newSlotNumber) {
     return res.status(400).json({ success: false, message: 'Vehicle number (or current slot) and newSlotNumber are required.' });
   }
-  const result = changeVehicleSlot(vehicleNumberOrSlot, newSlotNumber, reason, attendantName);
+  // Was the one write route in this file that never resolved a site at
+  // all — every other mutation (entry, exit, employee edits, etc.)
+  // already goes through getRequestedSiteId, so this was a real gap: an
+  // attendant could relocate a vehicle using another site's slot numbers.
+  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const result = changeVehicleSlot(vehicleNumberOrSlot, newSlotNumber, reason, attendantName, siteId);
   if (!result.success) {
     return res.status(400).json(result);
   }
@@ -832,6 +837,22 @@ app.get('/api/v1/slots/change-notifications', (req, res) => {
 // stays gated to MASTER_CONFIG — only this read was ever the problem.
 app.get('/api/v1/sites', (req, res) => {
   const sites = getSites();
+  res.json({ success: true, count: sites.length, sites });
+});
+
+// Which site(s) the signed-in caller is actually assigned to (used by the
+// attendant mobile portal right after login to resolve its own site) —
+// same underlying getAllowedSiteIds() this file already uses to enforce
+// scoping everywhere else, just exposed as a read for the client. Unlike
+// /api/v1/sites above (which intentionally returns every site to any
+// authenticated caller for admin/reporting UIs), this narrows to what
+// this specific caller is allowed to touch, so a site-scoped attendant's
+// own site list here already matches what the rest of the API will let
+// them do.
+app.get('/api/v1/my-sites', (req, res) => {
+  const allSites = getSites();
+  const allowed = req.user ? getAllowedSiteIds(req.user) : null;
+  const sites = allowed === null ? allSites : allSites.filter((s) => allowed.includes(s.id) || allowed.includes(s.siteCode));
   res.json({ success: true, count: sites.length, sites });
 });
 
@@ -1123,6 +1144,22 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
 
   if (!vehicleNumber) {
     return res.status(400).json({ success: false, message: 'vehicleNumber is required' });
+  }
+
+  if (!isValidLicensePlate(String(vehicleNumber))) {
+    logSecurityEvent({
+      action: 'INVALID_PLATE_FORMAT_REJECTED',
+      actor: (req.headers['x-user-email'] as string) || req.ip || 'Unknown',
+      actorRole: (req.headers['x-user-role'] as string) || 'ATTENDANT',
+      ipAddress: req.ip,
+      targetResource: `vehicleNumber: ${String(vehicleNumber).slice(0, 40)}`,
+      status: 'VALIDATION_FAILED',
+      details: 'Rejected invalid license plate format during vehicle entry.',
+    });
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid license plate format. Must be 4-10 alphanumeric characters.',
+    });
   }
 
   const result = processVehicleEntry({
@@ -2102,6 +2139,19 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
+    // Attendant mobile portal (browser-based standalone build, same
+    // screens/logic as the native Android app — see src/mobile/ and
+    // src/main-mobile.tsx) — served at its own path so it never gets
+    // swallowed by the admin dashboard's catch-all below. Must be
+    // registered first: Express matches routes in the order they're
+    // added, and the admin dashboard's '*' fallback would otherwise
+    // intercept every /attendant request before this ever ran.
+    const distMobilePath = path.join(process.cwd(), 'dist-mobile');
+    app.use('/attendant', express.static(distMobilePath));
+    app.get('/attendant*', (req, res) => {
+      res.sendFile(path.join(distMobilePath, 'index.html'));
+    });
+
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {

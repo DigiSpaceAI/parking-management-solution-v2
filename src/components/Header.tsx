@@ -196,7 +196,6 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={() => {
                   if (permittedSites.length > 1 || currentUser?.siteScopeType === 'ALL_SITES') {
                     setShowSiteMenu(!showSiteMenu);
-                    setShowPowerMenu(false);
                     setShowNotificationsMenu(false);
                     setShowProfileMenu(false);
                   }
@@ -321,7 +320,6 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 onClick={() => {
                   setShowNotificationsMenu(!showNotificationsMenu);
-                  setShowPowerMenu(false);
                   setShowProfileMenu(false);
                 }}
                 className={`h-10 w-10 flex items-center justify-center rounded-xl border transition-all relative cursor-pointer ${
@@ -413,7 +411,6 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   onClick={() => {
                     setShowProfileMenu(!showProfileMenu);
-                    setShowPowerMenu(false);
                     setShowNotificationsMenu(false);
                   }}
                   className="h-10 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 rounded-xl px-3 flex items-center space-x-2.5 shadow-sm transition-colors cursor-pointer"

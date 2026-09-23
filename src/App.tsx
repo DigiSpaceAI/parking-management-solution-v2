@@ -476,7 +476,6 @@ export default function App() {
             {activeTab === 'INVENTORY' && (
               <InventoryMaster
                 slots={slots}
-                employees={employees}
                 onUpdateSlotStatus={handleUpdateSlotStatus}
                 onVehicleExit={handleVehicleExit}
                 onRefresh={refreshAll}

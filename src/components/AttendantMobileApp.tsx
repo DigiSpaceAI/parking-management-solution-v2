@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { ParkingSlot, VehicleType, ANPRScanResult, Employee, SlotChangeNotification, RegistrationRequest } from '../types';
-import { normalizeVehicleNumber } from '../utils/plateNormalization';
+import { normalizeVehicleNumber, clampPlateInput, MAX_PLATE_LENGTH } from '../utils/plateNormalization';
 import {
   Smartphone,
   Camera,
@@ -294,6 +294,7 @@ export const AttendantMobileApp: React.FC<AttendantMobileAppProps> = ({
     e.preventDefault();
     if (!selectedLiveSlotForAssign || !directAssignPlate.trim()) return;
     const normPlate = normalizeVehicleNumber(directAssignPlate.trim());
+    if (normPlate.length > MAX_PLATE_LENGTH) return;
     onVehicleEntry(normPlate, directAssignVehicleType, 'MANUAL', selectedLiveSlotForAssign.slotNumber);
     setActionSuccessMsg(
       `VEHICLE ENTRY SUCCESS: Vehicle ${normPlate} (${directAssignVehicleType}) successfully assigned to Slot ${selectedLiveSlotForAssign.slotNumber} (${selectedLiveSlotForAssign.basement})!`
@@ -514,6 +515,11 @@ export const AttendantMobileApp: React.FC<AttendantMobileAppProps> = ({
     }
     const cat = scanResult?.vehicleType || selectedCategory;
     const finalSlot = manualSlotInput.trim();
+
+    if (normalizeVehicleNumber(inputPlate).length > MAX_PLATE_LENGTH) {
+      triggerError(`Vehicle number cannot be longer than ${MAX_PLATE_LENGTH} characters.`);
+      return;
+    }
 
     onVehicleEntry(inputPlate, cat, 'MANUAL', finalSlot || undefined);
     triggerSuccess(
@@ -1003,7 +1009,7 @@ export const AttendantMobileApp: React.FC<AttendantMobileAppProps> = ({
                       placeholder="Type plate e.g. KA-01-EX-8821 or name/ID..."
                       value={inputPlate}
                       onChange={(e) => {
-                        setInputPlate(e.target.value.toUpperCase());
+                        setInputPlate(clampPlateInput(e.target.value));
                         setShowPlateDropdown(true);
                       }}
                       onFocus={() => setShowPlateDropdown(true)}
@@ -1958,7 +1964,7 @@ export const AttendantMobileApp: React.FC<AttendantMobileAppProps> = ({
                       required
                       placeholder="e.g. KA-01-AB-1234 or DL-03-CC-9988"
                       value={directAssignPlate}
-                      onChange={(e) => setDirectAssignPlate(e.target.value)}
+                      onChange={(e) => setDirectAssignPlate(clampPlateInput(e.target.value))}
                       className={`w-full px-3 py-2.5 rounded-xl border text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
                         isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-900'
                       }`}

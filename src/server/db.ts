@@ -2284,7 +2284,16 @@ export function getWhitelistedDomains(): WhitelistedDomain[] {
   return getStore().whitelistedDomains || [];
 }
 
-export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Parking Admin'): { success: boolean; message: string; domain?: WhitelistedDomain } {
+// Domains that allow registration at a site: the site's own + platform-wide.
+export function domainsAllowedForSite(siteId: string): string[] {
+  return getWhitelistedDomains()
+    .filter(d => d.isActive && (!d.siteId || d.siteId === siteId))
+    .map(d => d.domain.toLowerCase());
+}
+
+// siteId undefined = platform-wide entry. The same domain may exist once
+// platform-wide and/or once per site.
+export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Parking Admin', siteId?: string): { success: boolean; message: string; domain?: WhitelistedDomain } {
   const storeData = getStore();
   const cleanDomain = domainInput.replace(/^@/, '').trim().toLowerCase();
 
@@ -2296,7 +2305,12 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
     storeData.whitelistedDomains = [];
   }
 
-  const existing = storeData.whitelistedDomains.find(d => d.domain.toLowerCase() === cleanDomain);
+  const global = storeData.whitelistedDomains.find(d => !d.siteId && d.isActive && d.domain.toLowerCase() === cleanDomain);
+  if (siteId && global) {
+    return { success: false, message: `Domain @${cleanDomain} is already allowed for every site.` };
+  }
+
+  const existing = storeData.whitelistedDomains.find(d => (d.siteId || undefined) === siteId && d.domain.toLowerCase() === cleanDomain);
   if (existing) {
     if (!existing.isActive) {
       existing.isActive = true;
@@ -2307,8 +2321,9 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
   }
 
   const newDom: WhitelistedDomain = {
-    id: `dom-${Date.now()}`,
+    id: `dom-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     domain: cleanDomain,
+    ...(siteId ? { siteId } : {}),
     addedBy,
     createdAt: new Date().toISOString(),
     isActive: true,
@@ -2319,16 +2334,25 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
 
   return {
     success: true,
-    message: `Domain @${cleanDomain} successfully added to Whitelist!`,
+    message: `Domain @${cleanDomain} successfully added to Whitelist${siteId ? ' for this site' : ' for all sites'}!`,
     domain: newDom,
   };
+}
+
+// Finds the entry to remove: by id, or by name within the given scope
+// (siteId undefined = platform-wide).
+export function findWhitelistedDomain(domainIdOrName: string, siteId?: string): WhitelistedDomain | undefined {
+  const list = getWhitelistedDomains();
+  const key = domainIdOrName.replace(/^@/, '').trim().toLowerCase();
+  return list.find(d => d.id === domainIdOrName) ||
+    list.find(d => (d.siteId || undefined) === siteId && d.domain.toLowerCase() === key);
 }
 
 export function removeWhitelistedDomain(domainId: string): { success: boolean; message: string } {
   const storeData = getStore();
   if (!storeData.whitelistedDomains) return { success: false, message: 'No domains registered.' };
 
-  const idx = storeData.whitelistedDomains.findIndex(d => d.id === domainId || d.domain.toLowerCase() === domainId.toLowerCase());
+  const idx = storeData.whitelistedDomains.findIndex(d => d.id === domainId);
   if (idx < 0) {
     return { success: false, message: 'Whitelisted domain not found.' };
   }
@@ -2363,7 +2387,9 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
 
   // Domain Authentication Verification
   const emailDomain = email && email.includes('@') ? (email.split('@')[1]?.toLowerCase() || '') : '';
-  const allowedDomains = (storeData.whitelistedDomains || []).filter(d => d.isActive).map(d => d.domain.toLowerCase());
+  // The site's own domains plus platform-wide ones.
+  const requestSite = data.siteId || DEFAULT_SITE_ID;
+  const allowedDomains = domainsAllowedForSite(requestSite);
 
   // Fail closed (H9): with no active whitelisted domain, self-registration
   // is not open at all, rather than open to every domain.
@@ -2851,9 +2877,6 @@ export function bulkUploadRegistrations(
   let updated = 0;
   const errors: string[] = [];
 
-  const allowedDomains = (storeData.whitelistedDomains || [])
-    .filter(d => d.isActive)
-    .map(d => d.domain.toLowerCase());
 
   items.forEach((item, index) => {
     const email = (item.email || '').trim().toLowerCase();
@@ -2866,6 +2889,7 @@ export function bulkUploadRegistrations(
     }
 
     const emailDomain = email.split('@')[1]?.toLowerCase();
+    const allowedDomains = domainsAllowedForSite(item.siteId || DEFAULT_SITE_ID);
     if (allowedDomains.length > 0 && emailDomain && !allowedDomains.includes(emailDomain)) {
       errors.push(`Row ${index + 1} (${email}): Domain '@${emailDomain}' is not whitelisted.`);
       return;

@@ -555,3 +555,34 @@ test('B11/R4 on Cloud Run (K_SERVICE set) the server refuses to start without AU
   const ok = await startServer({ K_SERVICE: 'parkflows-test', AUDIT_HMAC_SECRET: 'x'.repeat(64) });
   try { assert.equal(ok.exitCode(), null, 'starts when the secret is set'); } finally { ok.stop(); }
 });
+
+// ------------------------------------------------ Per-site domain whitelist (user decision 28 Sep, PERM-02)
+test('Domains: Site Admin allows a domain for their own site only; registration honours it per site', async () => {
+  const add = await post('adminA', '/domains/add', { domain: 'alpha-a.com' }, { site: F.A.id });
+  assert.equal(add.status, 200, JSON.stringify(add.body)); assert.equal(add.body.domain.siteId, F.A.id);
+  F.domA = add.body.domain;
+  assert.ok((await auditEntries('DOMAIN_WHITELIST_ADDED')).some((l) => l.siteId === F.A.id));
+  const foreign = await post('adminA', '/domains/add', { domain: 'alpha-b.com' }, { site: F.B.id });
+  assert.equal(foreign.status, 403);
+  const noSite = await post('adminA', '/domains/add', { domain: 'alpha-c.com' });
+  assert.equal(noSite.status, 400); assert.equal(noSite.body.errorCode, 'ERR_SITE_REQUIRED');
+  const atA = await post(null, '/registrations/submit', { name: 'Dom A', email: 'dom.a@alpha-a.com', vehicleNumber: 'MH12AC1001', siteId: F.A.id });
+  assert.equal(atA.status, 200, JSON.stringify(atA.body));
+  const atB = await post(null, '/registrations/submit', { name: 'Dom B', email: 'dom.b@alpha-a.com', vehicleNumber: 'MH12AC1002', siteId: F.B.id });
+  assert.equal(atB.status, 400, 'site A domain does not open site B');
+  const listB = (await get(null, `/domains?siteId=${F.B.id}`)).body.domains;
+  assert.ok(!listB.some((d) => d.domain === 'alpha-a.com'));
+  assert.ok(listB.some((d) => d.domain === 'company.com'), 'platform-wide domains still listed');
+});
+
+test('Domains: platform-wide entries are Master-only; another site\'s entry cannot be removed', async () => {
+  const company = (await get(null, '/domains')).body.domains.find((d) => d.domain === 'company.com' && !d.siteId);
+  const g = await post('adminA', '/domains/remove', { domainId: company.id }, { site: F.A.id });
+  assert.equal(g.status, 403); assert.equal(g.body.errorCode, 'ERR_MASTER_ONLY');
+  const x = await post('adminAB', '/domains/remove', { domainId: F.domA.id }, { site: F.B.id });
+  assert.equal(x.status, 403);
+  const m = await post('master', '/domains/add', { domain: 'everyone.example.com' });
+  assert.equal(m.status, 200); assert.equal(m.body.domain.siteId, undefined, 'Master without a site = all sites');
+  const own = await post('adminA', '/domains/remove', { domainId: 'alpha-a.com' }, { site: F.A.id });
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+});

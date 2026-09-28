@@ -24,6 +24,7 @@ import {
   getWhitelistedDomains,
   addWhitelistedDomain,
   removeWhitelistedDomain,
+  findWhitelistedDomain,
   getRegistrationRequests,
   submitRegistrationRequest,
   submitOvernightRequest,
@@ -988,32 +989,84 @@ app.post('/api/v1/employees/update-vehicle', rateLimiterMiddleware(20, 60000), (
 });
 
 // --- Whitelisted Domains Endpoints ---
+// Per-site whitelist (user decision 28 Sep, resolves PERM-02): a Site Admin
+// (REGISTRATION canEdit) adds/removes domains for the site they are working
+// in; platform-wide entries (no siteId) are Master Admin only. Registration
+// at a site accepts that site's domains plus platform-wide ones.
+
+// Public (the registration form). With a site (?siteId= or x-site-id) it
+// returns that site's domains plus platform-wide ones; without, all of them.
 app.get('/api/v1/domains', (req, res) => {
-  const domains = getWhitelistedDomains();
+  const raw = rawClientSiteId(req);
+  const all = getWhitelistedDomains();
+  const domains = raw && raw !== 'ALL'
+    ? all.filter((d) => !d.siteId || d.siteId === canonicalSiteId(raw))
+    : all;
   res.json({ domains });
 });
 
+// Which whitelist scope a domain write targets: a site id, or undefined for
+// platform-wide (Master Admin without a single site selected). null = an
+// error response was sent.
+function domainScope(req: express.Request, res: express.Response): string | undefined | null {
+  const raw = rawClientSiteId(req);
+  if (req.user && isMasterAdmin(req.user) && !req.viewAs && (!raw || raw === 'ALL')) return undefined;
+  return resolveSite(req, res, { allowAll: false });
+}
+
 app.post('/api/v1/domains/add', requirePermission('REGISTRATION', 'canEdit'), (req, res) => {
-  const { domain, addedBy } = req.body;
-  if (!domain) {
+  const { domain } = req.body || {};
+  if (!domain || typeof domain !== 'string') {
     return res.status(400).json({ success: false, message: 'Domain name is required.' });
   }
-  const result = addWhitelistedDomain(domain, addedBy || 'Parking Admin');
+  const scope = domainScope(req, res);
+  if (scope === null) return;
+  const result = addWhitelistedDomain(domain, req.user!.fullName, scope);
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'DOMAIN_WHITELIST_ADDED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `domain/${result.domain?.domain}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} allowed @${result.domain?.domain} for ${scope ? `site ${scope}` : 'all sites'}.`,
+    siteId: scope,
+  });
   res.json(result);
 });
 
 app.post('/api/v1/domains/remove', requirePermission('REGISTRATION', 'canEdit'), (req, res) => {
-  const { domainId } = req.body;
-  if (!domainId) {
+  const { domainId } = req.body || {};
+  if (!domainId || typeof domainId !== 'string') {
     return res.status(400).json({ success: false, message: 'Domain ID or name is required.' });
   }
-  const result = removeWhitelistedDomain(domainId);
+  const scope = domainScope(req, res);
+  if (scope === null) return;
+  const entry = findWhitelistedDomain(domainId, scope);
+  if (!entry) {
+    return res.status(400).json({ success: false, message: 'Whitelisted domain not found.' });
+  }
+  if (!entry.siteId && !(req.user && isMasterAdmin(req.user))) {
+    return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can change domains allowed for every site.');
+  }
+  if (entry.siteId && scope !== undefined && !assertRecordSite(req, res, entry, scope)) return;
+  const result = removeWhitelistedDomain(entry.id);
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'DOMAIN_WHITELIST_REMOVED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `domain/${entry.domain}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} removed @${entry.domain} from ${entry.siteId ? `site ${entry.siteId}` : 'all sites'}.`,
+    siteId: entry.siteId,
+  });
   res.json(result);
 });
 

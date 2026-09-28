@@ -120,6 +120,9 @@ export interface RegistrationRequest {
 export interface WhitelistedDomain {
   id: string;
   domain: string; // e.g., "company.com"
+  // Site this domain is allowed for. Absent = platform-wide (every site);
+  // only a Master Admin manages those. Site Admins manage their own site's.
+  siteId?: string;
   addedBy: string;
   createdAt: string;
   isActive: boolean;

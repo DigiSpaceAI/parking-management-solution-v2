@@ -77,6 +77,30 @@ Shared errors are as in 03: `ERR_SITE_REQUIRED` 400, `ERR_SITE_FORBIDDEN` 403 (a
 - Phase 2 items that QA's suite still fails, as expected: AC-13, AC-14, AC-16/17, AC-19–23, AC-24, AC-27, AC-29, AC-30, AC-32, AC-37, AC-39 (valet enum).
 - D1 (docs refresh) is scheduled after launch; not done.
 
+### Round 2 fixes (code review round 2, 2026-09-28)
+_Scope: C-1, M-1, M-2 (backend parts) and Minors m-1…m-4. One commit per finding, oldest first. Not self-reviewed; for re-review in round 3._
+
+| Finding | Commit | Change | Test (`001-backend.api.test.mjs`) |
+|---|---|---|---|
+| **C-1** (Critical) | `af00706` | Public `GET /domains` now **requires a site**: without one, or with `ALL`, it returns 400 `ERR_SITE_REQUIRED`. It returns only `[{ domain }]`: that site's active entries plus platform-wide ones, with no `id`, `siteId`, `addedBy` or `createdAt`. New **`GET /domains/manage`**: authenticated, `REGISTRATION:view`, `resolveSite({allowAll:true})`. It returns full rows for the admin panels (the site's entries plus platform-wide ones; everything for a Master using `ALL`). | "C-1 public GET /domains…", "C-1 GET /domains/manage…" |
+| **M-1** (Major) | `72be703` | `POST /rbac/users` checks for a non-Master caller. It refuses: changing **their own** `roleId`, `customModuleOverrides`, `siteScopeType`, `assignedSiteIds` or `status`; turning on a MASTER_CONFIG / USER_MANAGEMENT / SECURITY_AUDIT override for anyone; and assigning a role that grants those rights or has `siteScope: ALL_SITES`. Refusal is 403 `ERR_MASTER_ONLY` + `RBAC_PRIVILEGE_ESCALATION_BLOCKED`. **Unchanged values pass**, so re-saving a loaded record (e.g. only the name changed) still works. | "M-1 /rbac/users…" covers both of the reviewer's repros |
+| **M-2** (Major) | `25927dd` | `POST /rbac/roles` and `DELETE /rbac/roles/:id` are **Master-only for Phase 1** (403 `ERR_MASTER_ONLY` + audit). This replaces B8's finer role checks; the B8 test was updated to match. | "M-2 creating, editing and deleting roles is Master-only…" |
+| m-1 | `0dc2d0d` | `bulkUploadRegistrations` fails closed: with an empty allowed set, each row is refused with "Registration isn't open for this site yet." | added to "B7/H9 registration fails closed…" |
+| m-2 | `c5cd6e9` | A Master move (`siteForSave`) needs a known site id (or `site-default`); otherwise 400 and nothing changes. | "m-2 a Master Admin cannot move a record…" |
+| m-3 | `98e4a2c` | toggle-module / generate-reset-token: self and privileged refusals now return `ERR_MASTER_ONLY`. `ERR_SITE_FORBIDDEN` only for a target outside the caller's sites. | "m-3 self / privileged refusals…" |
+| m-4 | `5bf3523` | Deleted the dead `denyForeignSite`; fixed the `/slots/change` comment. No behaviour change. | none (dead code; lint covers it) |
+
+**Checks on `5bf3523`:**
+- `npm run lint`: exit 0. `npm run build`: exit 0.
+- `npm run test:qa`: 97 tests. `001-backend.api.test.mjs` passes **49/49**. `001-platform-v1.api.test.mjs` is 0/48 under strict mode (known: QA fixtures send no site, backend gap 5).
+- QA suite with `SITE_SCOPE_MODE=fallback`: **32/48**, unchanged, 0 new failures.
+
+**Hand-offs from round 2:**
+- **Frontend (C-1 c, blocking):** `DomainWhitelistPanel.tsx` and the domain management in `EmployeeRegistration.tsx` must read from **`GET /domains/manage`**. The public `/domains` no longer returns `id`/`siteId`/`addedBy`, so the panels can't label or remove entries until they switch. The registration forms (`EmployeeRegistration.tsx:298`, `EmployeeMobileApp.tsx:185`) must send the chosen site to the public route (they get 400 without one) and use only `domain`.
+- **Frontend (M-2):** role create/edit/delete buttons should be hidden for non-Masters. The server now refuses them.
+- **Security (step 7):** please re-check C-1 and M-1 as the review asks.
+- Not in this task and left open: M-3 (mobile M1), m-5 (frontend), m-6 (PM/architect decision), m-7/m-8 (frontend/security).
+
 ## Frontend
 _Author: frontend-dev · Date: 2026-09-28 · Status: **DONE: F1–F8 + PRD Addendum C domain labels on `feature/001-parkflows-platform-v1`; ready for code review (step 5)**. Not self-reviewed. `main` untouched, nothing pushed._
 _History: blocked on 25 Sep (no approved 02/03). This section replaces that note._

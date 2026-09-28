@@ -16,8 +16,11 @@ const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-
  * "All sites" (platform-wide). A Site Admin adds and removes only their own
  * site's domains; platform-wide entries are Master Admin only. New domains go
  * to the site chosen in the header; a Master Admin in All sites mode adds a
- * platform-wide domain. The list comes from GET /domains, which the fetch
- * wrapper scopes to the active site (that site's entries + platform-wide ones).
+ * platform-wide domain. The list comes from the authenticated
+ * GET /domains/manage (REGISTRATION view, code review C-1), scoped by the fetch
+ * wrapper's x-site-id: that site's entries + platform-wide ones, or every
+ * entry for a Master Admin in All sites mode. The public GET /domains only
+ * returns names, so it can't label or remove entries.
  */
 export const DomainWhitelistPanel: React.FC<DomainWhitelistPanelProps> = ({ canEdit }) => {
   const { siteId, activeSite, isAllSites, isViewAs, isMaster, siteCodeFor } = useSiteContext();
@@ -31,7 +34,7 @@ export const DomainWhitelistPanel: React.FC<DomainWhitelistPanelProps> = ({ canE
   const load = useCallback(async () => {
     setLoadState('loading');
     try {
-      const res = await fetch('/api/v1/domains');
+      const res = await fetch('/api/v1/domains/manage');
       const data = (await res.json()) as { domains?: WhitelistedDomain[] };
       if (!res.ok) throw new Error(String(res.status));
       setDomains(Array.isArray(data.domains) ? data.domains : []);

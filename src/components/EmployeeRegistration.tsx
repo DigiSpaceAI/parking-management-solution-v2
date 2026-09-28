@@ -66,7 +66,12 @@ export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRe
 
   // Requests, Domains & Live Parking Slots Data
   const [requests, setRequests] = useState<RegistrationRequest[]>([]);
-  const [domains, setDomains] = useState<WhitelistedDomain[]>([]);
+  // Allowed domain names for the chosen site, from the public list (C-1):
+  // null = no single site chosen, so the server alone decides on submit.
+  const [allowedDomainNames, setAllowedDomainNames] = useState<string[] | null>(null);
+  // Full rows (with siteId) for per-request checks on Approvals, from the
+  // authenticated /domains/manage; null = not loaded / not permitted.
+  const [managedDomains, setManagedDomains] = useState<WhitelistedDomain[] | null>(null);
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [slotMatrixFilter, setSlotMatrixFilter] = useState<string>('ALL');
@@ -295,9 +300,20 @@ export const EmployeeRegistration: React.FC<EmployeeRegistrationProps> = ({ onRe
 
   const fetchDomains = async () => {
     try {
-      const res = await fetch('/api/v1/domains');
-      const data = await res.json();
-      setDomains(data.domains || []);
+      // Public list: needs the site and returns domain names only (C-1).
+      const site = currentSiteId && currentSiteId !== 'ALL' ? currentSiteId : null;
+      if (site) {
+        const res = await fetch(`/api/v1/domains?siteId=${encodeURIComponent(site)}`);
+        const data = (await res.json()) as { domains?: { domain: string }[] };
+        setAllowedDomainNames(res.ok ? (data.domains || []).map((d) => d.domain.toLowerCase()) : null);
+      } else {
+        setAllowedDomainNames(null);
+      }
+      if (mode === 'APPROVALS') {
+        const res = await fetch('/api/v1/domains/manage');
+        const data = (await res.json()) as { domains?: WhitelistedDomain[] };
+        setManagedDomains(res.ok ? data.domains || [] : null);
+      }
     } catch (err) {
       console.error('Error fetching domains:', err);
     }
@@ -562,8 +578,20 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
   };
 
   const currentEnteredDomain = getEnteredDomain(formData.email);
-  const activeDomainList = domains.filter((d) => d.isActive).map((d) => d.domain.toLowerCase());
-  const isDomainWhitelisted = currentEnteredDomain ? activeDomainList.includes(currentEnteredDomain) : null;
+  const activeDomainList = allowedDomainNames ?? [];
+  // null = unknown (no domain typed yet, or no single site chosen).
+  const isDomainWhitelisted =
+    currentEnteredDomain && allowedDomainNames !== null ? activeDomainList.includes(currentEnteredDomain) : null;
+  // A request's domain is valid for its own site: that site's entries plus
+  // platform-wide ones. null = can't tell (list not loaded / not permitted).
+  const isDomainAllowedForRequest = (domain: string | null, requestSiteId?: string): boolean | null => {
+    if (!domain) return false;
+    if (managedDomains === null) return null;
+    const site = requestSiteId || 'site-default';
+    return managedDomains.some(
+      (d) => d.isActive !== false && d.domain.toLowerCase() === domain && (!d.siteId || d.siteId === site)
+    );
+  };
 
   // Submit Registration Request
   const handleSubmitRegistration = async (e: React.FormEvent) => {
@@ -952,6 +980,12 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
                 <span className="font-bold text-slate-700">Whitelisted Corporate Domains:</span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
+                {allowedDomainNames === null && (
+                  <span className="text-[11px] text-slate-500">Checked for the employee's site when the request is submitted.</span>
+                )}
+                {allowedDomainNames !== null && activeDomainList.length === 0 && (
+                  <span className="text-[11px] text-slate-500">None yet. Registration stays closed until a domain is allowed.</span>
+                )}
                 {activeDomainList.map((dom) => (
                   <span
                     key={dom}
@@ -1424,7 +1458,7 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
                       {filteredRequests.length > 0 ? (
                         filteredRequests.map((req) => {
                           const dom = getEnteredDomain(req.email);
-                          const isDomainValid = dom ? activeDomainList.includes(dom) : false;
+                          const isDomainValid = isDomainAllowedForRequest(dom, req.siteId);
 
                           return (
                             <tr key={req.id} className="hover:bg-slate-50 transition-colors">
@@ -1466,7 +1500,11 @@ EMP-3004,Siddharth Verma,Finance & Legal,Senior Analyst,+91 9876543213,siddharth
                               </td>
 
                               <td className="p-3.5">
-                                {isDomainValid ? (
+                                {isDomainValid === null ? (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-600 border border-slate-300">
+                                    @{dom || 'unknown'}
+                                  </span>
+                                ) : isDomainValid ? (
                                   <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
                                     @{dom} Valid
                                   </span>

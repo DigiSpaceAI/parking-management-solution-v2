@@ -2365,7 +2365,13 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
   const emailDomain = email && email.includes('@') ? (email.split('@')[1]?.toLowerCase() || '') : '';
   const allowedDomains = (storeData.whitelistedDomains || []).filter(d => d.isActive).map(d => d.domain.toLowerCase());
 
-  if (!emailDomain || (allowedDomains.length > 0 && !allowedDomains.includes(emailDomain))) {
+  // Fail closed (H9): with no active whitelisted domain, self-registration
+  // is not open at all, rather than open to every domain.
+  if (allowedDomains.length === 0) {
+    return { success: false, message: "Registration isn't open for this site yet." };
+  }
+
+  if (!emailDomain || !allowedDomains.includes(emailDomain)) {
     return {
       success: false,
       message: `DOMAIN AUTHENTICATION FAILED: Email domain '@${emailDomain || 'unknown'}' is NOT whitelisted. Registration is strictly restricted to authorized corporate domains (${allowedDomains.map(d => '@' + d).join(', ')}).`,
@@ -2375,9 +2381,10 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
   // Check if vehicle already exists in active employees whitelist
   const existingEmp = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === vehicleNumber);
   if (existingEmp) {
+    // Public endpoint: never disclose who owns a plate (H9).
     return {
       success: false,
-      message: `Vehicle ${vehicleNumber} is ALREADY registered in the Active Employee Whitelist (${existingEmp.name}, ${existingEmp.employeeId}).`,
+      message: "This vehicle can't be registered. Contact your site admin.",
     };
   }
 
@@ -2442,8 +2449,10 @@ export function approveRegistrationRequest(requestId: string): { success: boolea
   req.status = 'APPROVED';
   req.reviewedAt = new Date().toISOString();
 
-  // Automatically add to Employee Whitelist Master
+  // Automatically add to Employee Whitelist Master — in the REQUEST's own
+  // site (BUG-12); it previously landed in the default site.
   const newEmp = saveOrUpdateEmployee({
+    siteId: req.siteId || DEFAULT_SITE_ID,
     employeeId: req.employeeId,
     name: req.name,
     department: req.department,
@@ -2920,6 +2929,7 @@ export function bulkUploadRegistrations(
 
       if (isApproved) {
         saveOrUpdateEmployee({
+          siteId: newReq.siteId,
           employeeId: newReq.employeeId,
           name: newReq.name,
           department: newReq.department,

@@ -397,3 +397,38 @@ test('B6/H3 update-vehicle: no auto-create; own update works and audits old + ne
   const rows = await auditEntries('VEHICLE_UPDATE_SUCCESS');
   assert.ok(rows.some((l) => l.details.includes('MH12AB6006') && l.details.includes('MH12AB6116') && l.siteId === F.A.id));
 });
+
+// ---------------------------------------------------------------- B7
+test('B7/BUG-12 approval creates the pass in the request\'s site and is audit-logged with siteId', async () => {
+  const sub = await post(null, '/registrations/submit', { name: 'Reg A', email: 'reg.a@company.com', vehicleNumber: 'MH12AB8008', siteId: F.A.id });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  const ap = await post('adminA', '/registrations/approve', { requestId: sub.body.request.id }, { site: F.A.id });
+  assert.equal(ap.status, 200, JSON.stringify(ap.body));
+  assert.equal(ap.body.employee.siteId, F.A.id);
+  assert.ok((await auditEntries('REGISTRATION_APPROVED')).some((l) => l.siteId === F.A.id));
+  const rj = await post('adminAB', '/registrations/reject', { requestId: F.regB.id, reason: 'Not eligible' }, { site: F.B.id });
+  assert.equal(rj.status, 200);
+  assert.ok((await auditEntries('REGISTRATION_REJECTED')).some((l) => l.siteId === F.B.id));
+});
+
+test('B7/H9 public registration never discloses a plate owner', async () => {
+  const r = await post(null, '/registrations/submit', { name: 'Someone', email: 'someone@company.com', vehicleNumber: F.empB.vehicleNumber, siteId: F.A.id });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.message, "This vehicle can't be registered. Contact your site admin.");
+  assert.ok(!JSON.stringify(r.body).includes(F.empB.name) && !JSON.stringify(r.body).includes(F.empB.employeeId));
+});
+
+test('B7/H9 registration fails closed when no domain is whitelisted', async () => {
+  const s2 = await startServer();
+  try {
+    const j = async (method, url, body, t) => {
+      const r = await fetch(s2.base + url, { method, headers: { 'Content-Type': 'application/json', ...(t ? { 'x-session-token': t } : {}) }, body: body ? JSON.stringify(body) : undefined });
+      return { status: r.status, body: await r.json() };
+    };
+    const t = (await j('POST', '/auth/login', { identifier: MASTER_EMAIL, password: PW })).body.token;
+    for (const d of (await j('GET', '/domains')).body.domains) await j('POST', '/domains/remove', { domainId: d.id }, t);
+    const r = await j('POST', '/registrations/submit', { name: 'X', email: 'x@anything.com', vehicleNumber: 'MH12AB9009' });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.message, "Registration isn't open for this site yet.");
+  } finally { s2.stop(); }
+});

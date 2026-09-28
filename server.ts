@@ -1019,6 +1019,16 @@ app.post('/api/v1/registrations/approve', requirePermission('APPROVALS', 'canEdi
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'REGISTRATION_APPROVED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `registration/${requestId}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} approved the pass request for ${regReq?.vehicleNumber || requestId}.`,
+    siteId: site,
+  });
   res.json(result);
 });
 
@@ -1035,6 +1045,16 @@ app.post('/api/v1/registrations/reject', requirePermission('APPROVALS', 'canEdit
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'REGISTRATION_REJECTED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `registration/${requestId}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} rejected the pass request for ${regReq?.vehicleNumber || requestId}. Reason: ${reason || 'none given'}`,
+    siteId: site,
+  });
   res.json(result);
 });
 

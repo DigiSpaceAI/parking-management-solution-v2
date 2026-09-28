@@ -48,11 +48,20 @@ import {
   resetSiteStore,
   rememberSite,
   recallSite,
+  rememberReturnTo,
+  takeReturnTo,
+  saveErrorMessage,
+  COPY_SAVE_ERROR,
+  COPY_SESSION_ENDED,
+  COPY_SUSPENDED,
+  SESSION_ENDED_EVENT,
+  type SessionEndedDetail,
 } from './utils/withSite';
 import { ChooseSite } from './components/ChooseSite';
 import { NoSiteAssigned } from './components/NoSiteAssigned';
 import { ListSkeleton } from './components/ListSkeleton';
 import { NoAccess } from './components/NoAccess';
+import { ErrorCard } from './components/ErrorCard';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 
 const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
@@ -98,6 +107,10 @@ export default function App() {
   // True from a site switch until that site's lists arrive (L-2 skeletons).
   const [listsLoading, setListsLoading] = useState<boolean>(false);
   const currentSiteIdRef = useRef<string | null>(null);
+  // A site list failed to load (network / server error): error card + Try again (L-6).
+  const [listError, setListError] = useState<boolean>(false);
+  // Shown on the sign-in screen after the server ended the session (AC-45, AC-10).
+  const [loginNotice, setLoginNotice] = useState<string | null>(null);
   // Bumped by "Try again" when the site list couldn't load.
   const [siteResolveAttempt, setSiteResolveAttempt] = useState<number>(0);
   const [alertCount, setAlertCount] = useState<number>(0);
@@ -201,6 +214,7 @@ export default function App() {
   };
 
   const handleLoginSuccess = (user: AppUser, redirectTab?: string) => {
+    setLoginNotice(null);
     setCurrentUser(user);
     try {
       localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(user));
@@ -220,13 +234,15 @@ export default function App() {
     // not from this closure, so it always runs with the new session.
   };
 
-  const handleLogout = () => {
+  const clearSession = (opts: { notice?: string }) => {
     // Invalidate every request still in flight before clearing state, so
     // none of them can write the previous user's data back (05 Major).
     resetSiteStore();
     // Ask the server to destroy the session too (it accepts cookie, bearer
     // or x-session-token). Fire-and-forget: signing out locally never waits.
     fetch('/api/v1/auth/logout', { method: 'POST' }).catch(() => {});
+    setLoginNotice(opts.notice ?? null);
+    setListError(false);
     setCurrentUser(null);
     // Drop the previous user's data and site context so the next person
     // to sign in never sees it, even briefly.
@@ -247,8 +263,10 @@ export default function App() {
       console.error('Failed to remove session:', e);
     }
     clearSessionToken();
-    showToast('success', 'You have been signed out successfully.');
+    if (!opts.notice) showToast('success', 'You have been signed out successfully.');
   };
+
+  const handleLogout = () => clearSession({});
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
@@ -273,6 +291,26 @@ export default function App() {
 
     const value = <T,>(r: PromiseSettledResult<ApiResult<T>>): T | null =>
       r.status === 'fulfilled' && r.value.ok ? r.value.body : null;
+    const all = [slotsRes, employeesRes, logsRes, alertsRes, regsRes];
+    // 403 for a module the role lacks is normal (that list stays empty); a
+    // network failure or a server error is not.
+    const failed = all.some((r) => r.status === 'rejected' || r.value.status >= 500);
+    const siteForbidden = all.some(
+      (r) =>
+        r.status === 'fulfilled' &&
+        (r.value.body as { errorCode?: string } | null)?.errorCode === 'ERR_SITE_FORBIDDEN'
+    );
+    if (siteForbidden) {
+      // The site is no longer one of the user's (assignment changed): resolve again.
+      setSiteResolveAttempt((n) => n + 1);
+      return;
+    }
+    setListError(failed);
+    if (failed && !listsLoading && slots.length + employees.length + logs.length > 0) {
+      // Keep the last good rows (shown greyed out under the error card).
+      setListsLoading(false);
+      return;
+    }
 
     setSlots(value(slotsRes)?.slots || []);
     setEmployees(value(employeesRes)?.employees || []);
@@ -337,11 +375,16 @@ export default function App() {
           setSitePhase('no-site');
           return;
         }
-        const remembered = recallSite(userId);
+        // After a session ended, return to the same page and site (AC-47).
+        const back = takeReturnTo();
+        const returnTo = back && back.userId === userId ? back : null;
+        const remembered = returnTo?.siteId || recallSite(userId);
         let next: string | null = null;
         if (!master && permitted.length === 1) next = permitted[0].id;
         else if (remembered === ALL_SITES && master) next = ALL_SITES;
         else if (remembered && permitted.some((s) => s.id === remembered)) next = remembered;
+        // An unpermitted tab shows S-NA, so restoring it is safe.
+        if (returnTo) setActiveTab(returnTo.tab as ActiveTabType);
         selectSite(next);
         setSitePhase('ready');
       } catch {
@@ -350,6 +393,30 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, siteResolveAttempt]);
+
+  // The server ended the session (expired, or the account was suspended):
+  // remember where the user was, send them to sign-in with a notice, and
+  // bring them back to the same page and site afterwards (AC-45, AC-47, AC-10).
+  const latestNav = useRef<{ tab: ActiveTabType; siteId: string | null; userId: string | null }>({
+    tab: 'HOME',
+    siteId: null,
+    userId: null,
+  });
+  latestNav.current = { tab: activeTab, siteId: currentSiteId, userId: currentUser?.id ?? null };
+  const clearSessionRef = useRef(clearSession);
+  clearSessionRef.current = clearSession;
+  useEffect(() => {
+    const onSessionEnded = (event: Event) => {
+      const { reason } = (event as CustomEvent<SessionEndedDetail>).detail;
+      const nav = latestNav.current;
+      if (!nav.userId) return; // already signed out
+      rememberReturnTo({ tab: nav.tab, siteId: nav.siteId, userId: nav.userId });
+      latestNav.current = { ...nav, userId: null };
+      clearSessionRef.current({ notice: reason === 'ERR_ACCOUNT_INACTIVE' ? COPY_SUSPENDED : COPY_SESSION_ENDED });
+    };
+    window.addEventListener(SESSION_ENDED_EVENT, onSessionEnded);
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onSessionEnded);
+  }, []);
 
   // Load the chosen site's lists whenever the site changes.
   useEffect(() => {
@@ -382,10 +449,10 @@ export default function App() {
         showToast('success', data.message);
         refreshAll();
       } else {
-        showToast('error', data.message);
+        showToast('error', saveErrorMessage(data));
       }
-    } catch (err: any) {
-      showToast('error', 'Failed to process vehicle entry');
+    } catch {
+      showToast('error', COPY_SAVE_ERROR);
     }
   };
 
@@ -401,10 +468,10 @@ export default function App() {
         showToast('success', data.message);
         refreshAll();
       } else {
-        showToast('error', data.message);
+        showToast('error', saveErrorMessage(data));
       }
-    } catch (err: any) {
-      showToast('error', 'Failed to process vehicle exit');
+    } catch {
+      showToast('error', COPY_SAVE_ERROR);
     }
   };
 
@@ -420,10 +487,10 @@ export default function App() {
         showToast('success', data.message);
         refreshAll();
       } else {
-        showToast('error', data.message);
+        showToast('error', saveErrorMessage(data));
       }
-    } catch (err) {
-      showToast('error', 'Failed to update slot status');
+    } catch {
+      showToast('error', COPY_SAVE_ERROR);
     }
   };
 
@@ -432,6 +499,7 @@ export default function App() {
   if (!currentUser) {
     return (
       <LoginScreen
+        notice={loginNotice}
         allUsers={[]}
         onLoginSuccess={handleLoginSuccess}
       />
@@ -699,7 +767,11 @@ export default function App() {
                     </span>
                   )}
                 </p>
-                {renderActiveTab(currentSiteId)}
+                {listError && <ErrorCard onRetry={() => loadSiteLists()} />}
+                {/* Stale rows under an error are greyed out, never shown as current (§4). */}
+                <div className={listError ? 'opacity-50' : undefined} aria-busy={listError || undefined}>
+                  {renderActiveTab(currentSiteId)}
+                </div>
               </div>
             )}
           </div>

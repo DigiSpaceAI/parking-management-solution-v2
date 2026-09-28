@@ -14,6 +14,8 @@ import { AppUser } from '../types';
 interface LoginScreenProps {
   allUsers: AppUser[];
   onLoginSuccess: (user: AppUser, redirectTab?: string) => void;
+  /** Why the user is back at sign-in, e.g. the session ended (L-6, AC-45, AC-10). */
+  notice?: string | null;
 }
 
 // OWASP Input Validation Constants
@@ -32,6 +34,7 @@ const API_BASE = (
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   allUsers,
   onLoginSuccess,
+  notice,
 }) => {
   const [viewState, setViewState] = useState<'SIGN_IN' | 'SET_PASSWORD'>('SIGN_IN');
   const [loginMode, setLoginMode] = useState<'ADMIN_STAFF' | 'EMPLOYEE_PASS'>('ADMIN_STAFF');
@@ -319,6 +322,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </div>
 
               {/* Success Banner */}
+              {notice && !errorMessage && (
+                <div role="status" style={{ marginTop: 16, padding: '10px 12px', background: '#fef3c7', border: '1px solid #fcd34d', color: '#92400e', fontSize: 12.5, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{notice}</span>
+                </div>
+              )}
+
               {successMessage && (
                 <div style={{ marginTop: 16, padding: '10px 12px', background: 'var(--color-accent-100, #eef6ff)', border: '1px solid var(--color-accent-400, #94bce3)', color: 'var(--color-accent-800, #2c455d)', fontSize: 12.5, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                   <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />

@@ -137,6 +137,8 @@ export function recallViewAs(): string | null {
 export interface ReturnTo {
   tab: string;
   siteId: string | null;
+  /** Only restored for the same account. */
+  userId: string;
 }
 
 /** Where to go back to after the session ended and the user signs in again (AC-47). */
@@ -154,8 +156,8 @@ export function takeReturnTo(): ReturnTo | null {
     sessionStorage.removeItem(RETURN_TO_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ReturnTo>;
-    return typeof parsed.tab === 'string'
-      ? { tab: parsed.tab, siteId: typeof parsed.siteId === 'string' ? parsed.siteId : null }
+    return typeof parsed.tab === 'string' && typeof parsed.userId === 'string'
+      ? { tab: parsed.tab, siteId: typeof parsed.siteId === 'string' ? parsed.siteId : null, userId: parsed.userId }
       : null;
   } catch {
     return null;
@@ -251,4 +253,26 @@ export function useWriteGuard(): (title?: string, opts?: { perSiteRead?: boolean
     if (!reason) return { title, 'data-write-guard': '' };
     return { disabled: true, title: reason, 'aria-disabled': true, 'data-write-guard': '' };
   };
+}
+
+// ---- User-facing copy for API errors (02-ux-design §5, L-6) ----
+
+export const COPY_CROSS_SITE = 'This record belongs to another site. Nothing was changed.';
+export const COPY_SAVE_ERROR = "Couldn't save. Nothing was changed.";
+export const COPY_SESSION_ENDED = 'Your session ended. Sign in to continue.';
+export const COPY_SUSPENDED = 'Your account is suspended. Contact your administrator.';
+
+/** Message for a failed write, from the server's errorCode where there is one. */
+export function saveErrorMessage(body: { errorCode?: string; message?: string } | null | undefined): string {
+  switch (body?.errorCode) {
+    case 'ERR_SITE_FORBIDDEN':
+      return COPY_CROSS_SITE;
+    case 'ERR_SITE_ALL_NOT_ALLOWED':
+    case 'ERR_SITE_REQUIRED':
+      return `${WRITE_DISABLED_ALL_SITES}.`;
+    case 'ERR_VIEW_AS_READ_ONLY':
+      return 'Read-only while viewing as another user. Exit view to make changes.';
+    default:
+      return body?.message || COPY_SAVE_ERROR;
+  }
 }

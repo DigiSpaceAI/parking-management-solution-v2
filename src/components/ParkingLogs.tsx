@@ -119,7 +119,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
             <FileSpreadsheet className="w-4 h-4 text-blue-400" />
             Parking Entry/Exit Logs & MIS Reports
           </h2>
-          <p className="text-xs text-slate-300 font-mono mt-0.5">Complete timestamped audit logs for 1,080 parking inventory slots</p>
+          <p className="text-xs text-slate-300 font-mono mt-0.5">Complete timestamped entry and exit records for this site</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

@@ -13,7 +13,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
-  Activity,
   Car,
   UserPlus,
   CheckCheck,
@@ -102,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Inventory Master',
       icon: FileSpreadsheet,
       badge: null,
-      description: '1,080 slot mechanical matrix',
+      description: 'Slots, levels & bulk upload',
     },
     {
       id: 'MOBILE_APP',
@@ -280,23 +279,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           })}
         </nav>
 
-        {/* Bottom System Status Widget in Sidebar */}
-        {(!collapsed || mobileOpen) && (
+        {/* Sidebar footer: who is signed in and their scope. The made-up
+            "System healthy / 100% uptime" text is gone (L-7, G-12): there is
+            no real health signal to show yet. */}
+        {(!collapsed || mobileOpen) && currentUser && (
           <div style={{ margin: '8px', padding: '12px', background: 'rgba(2,6,23,0.6)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, fontSize: 11 }}>
-            <div className="flex items-center justify-between mb-1.5">
-              <span style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif" }} className="text-[10px] uppercase font-bold text-emerald-400 flex items-center space-x-1">
-                <Activity className="w-3 h-3 text-emerald-400 animate-pulse" />
-                <span>System healthy</span>
-              </span>
-            </div>
-            <p className="text-slate-400 leading-tight">
-              100% ANPR &amp; sensor uptime. All gate controllers synced.
-            </p>
-            {/* Current user footer — genuinely new addition, the design's
-                sidebar showed who's signed in and their scope; the
-                previous version never displayed this at all. */}
             {currentUser && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+              <div>
                 <div style={{ fontWeight: 700, fontSize: 13, color: '#ffffff' }}>{currentUser.fullName}</div>
                 <div style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif", fontSize: 10, color: '#94a3b8' }}>
                   {currentUser.roleName?.toUpperCase()} · {currentUser.siteScopeType === 'ALL_SITES' ? 'ALL_SITES' : (currentUser.assignedSiteNames?.join(', ') || 'NO SITE')}

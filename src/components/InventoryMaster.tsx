@@ -371,7 +371,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
               }`}
             >
               <Cpu className="w-4 h-4 text-blue-400" />
-              <span>1,080 Slots Inventory</span>
+              <span>Slots Inventory</span>
               <span
                 className={`ml-1 px-1.5 py-0.2 rounded font-mono text-[10px] ${
                   activeTab === 'SLOTS' ? 'bg-white/20 text-white' : 'bg-slate-700 text-slate-200'

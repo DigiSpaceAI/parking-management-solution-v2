@@ -181,7 +181,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
       label: 'Inventory Master',
       icon: SlidersHorizontal,
       category: 'Capacity Management',
-      description: '1,080 mechanical slot matrix, CSV bulk upload, EV bay quotas & vehicle allocations.',
+      description: 'Slots, levels, CSV bulk upload, EV bay quotas & vehicle allocations.',
       badge: `${totalSlotsCount} Slots`,
       badgeColor: 'bg-amber-100 text-amber-800 border-amber-300',
     },

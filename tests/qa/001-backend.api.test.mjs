@@ -523,3 +523,35 @@ test('B10 view-as is refused for non-Masters and unknown users; ignored on /auth
   const me = await get('master', '/auth/me', { headers: { 'x-view-as': F.attAUser.id } });
   assert.equal(me.body.user.email, MASTER_EMAIL);
 });
+
+// ---------------------------------------------------------------- B11
+test('B11 auth errors carry ERR_SESSION_EXPIRED / ERR_ACCOUNT_INACTIVE', async () => {
+  const none = await get(null, '/slots', { site: F.A.id });
+  assert.equal(none.status, 401); assert.equal(none.body.errorCode, 'ERR_SESSION_EXPIRED');
+  const bad = await get('not-a-real-token', '/slots', { site: F.A.id });
+  assert.equal(bad.status, 401); assert.equal(bad.body.errorCode, 'ERR_SESSION_EXPIRED');
+  await mkUser('susp', 'role-gate-attendant', [F.A.id]);
+  const s = await post('master', '/rbac/users', { ...F.suspUser, status: 'SUSPENDED' });
+  assert.ok(s.body.success, JSON.stringify(s.body));
+  const r = await get('susp', '/slots', { site: F.A.id });
+  assert.equal(r.status, 403); assert.equal(r.body.errorCode, 'ERR_ACCOUNT_INACTIVE');
+});
+
+test('B11/M4 logout destroys an x-session-token session', async () => {
+  await mkUser('logoutA', 'role-gate-attendant', [F.A.id]);
+  assert.equal((await get('logoutA', '/slots', { site: F.A.id })).status, 200);
+  assert.equal((await post('logoutA', '/auth/logout', {})).status, 200);
+  const after = await get('logoutA', '/slots', { site: F.A.id });
+  assert.equal(after.status, 401); assert.equal(after.body.errorCode, 'ERR_SESSION_EXPIRED');
+});
+
+test('B11/R4 on Cloud Run (K_SERVICE set) the server refuses to start without AUDIT_HMAC_SECRET', async () => {
+  const cr = await startServer({ K_SERVICE: 'parkflows-test', AUDIT_HMAC_SECRET: '' });
+  try {
+    assert.notEqual(cr.exitCode(), null, 'process exited');
+    assert.notEqual(cr.exitCode(), 0);
+    assert.match(cr.getLog(), /AUDIT_HMAC_SECRET is not set on Cloud Run/);
+  } finally { cr.stop(); }
+  const ok = await startServer({ K_SERVICE: 'parkflows-test', AUDIT_HMAC_SECRET: 'x'.repeat(64) });
+  try { assert.equal(ok.exitCode(), null, 'starts when the secret is set'); } finally { ok.stop(); }
+});

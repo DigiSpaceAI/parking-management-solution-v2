@@ -98,6 +98,7 @@ import {
   generatePasswordResetToken,
   consumePasswordResetToken,
   destroySession,
+  extractSessionToken,
   loadAuditLogsFromFirestore
 } from './src/server/security';
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId } from './src/types';
@@ -2183,8 +2184,14 @@ app.post('/api/v1/auth/login', loginRateLimiterMiddleware, handleLoginRequest);
 app.post('/login', loginRateLimiterMiddleware, handleLoginRequest);
 
 app.post('/api/v1/auth/logout', (req, res) => {
-  const token = req.cookies?.['__session'] || req.cookies?.['parkorbit_session'] || req.cookies?.['pms_session'];
-  if (token) destroySession(token);
+  // Destroy the session whichever way the client sent it: cookie, bearer or
+  // x-session-token (M4, partial). Cookie-only destruction left header-based
+  // sessions (the mobile / attendant portal) alive after sign-out.
+  const tokens = new Set(
+    [req.cookies?.['__session'], req.cookies?.['parkorbit_session'], req.cookies?.['pms_session'], extractSessionToken(req)]
+      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+  );
+  for (const t of tokens) destroySession(t);
   res.clearCookie('__session');
   res.clearCookie('parkorbit_session');
   res.clearCookie('pms_session');

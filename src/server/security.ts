@@ -13,6 +13,15 @@ import { getFirestoreDb } from './firestoreClient';
 // which defeats the entire point of a tamper-evident audit trail.
 const AUDIT_HMAC_SECRET = process.env.AUDIT_HMAC_SECRET || 'pms-enterprise-sec-token-2026-sha256-k9x';
 
+// On Cloud Run (K_SERVICE is set by the platform) the fallback is never
+// acceptable: refuse to start, so the old revision keeps serving instead of a
+// new one with forgeable audit hashes (001 design B11 / R4). Local and test
+// runs without K_SERVICE still start, with the warning below.
+if (process.env.K_SERVICE && !process.env.AUDIT_HMAC_SECRET) {
+  console.error('[SECURITY] AUDIT_HMAC_SECRET is not set on Cloud Run. Refusing to start. Set it in the service\'s environment (openssl rand -hex 32).');
+  process.exit(1);
+}
+
 if (!process.env.AUDIT_HMAC_SECRET) {
   console.error(
     '[SECURITY WARNING] AUDIT_HMAC_SECRET is not set — falling back to a ' +
@@ -802,7 +811,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const token = extractSessionToken(req);
 
   if (!token) {
-    return res.status(401).json({ success: false, message: 'Not signed in.' });
+    return res.status(401).json({ success: false, message: 'Not signed in.', errorCode: 'ERR_SESSION_EXPIRED' });
   }
 
   const store = getStore();
@@ -826,15 +835,15 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   // follow-up, not a reason to keep this fallback in the meantime.
 
   if (!userId) {
-    return res.status(401).json({ success: false, message: 'Session expired or invalid. Please sign in again.' });
+    return res.status(401).json({ success: false, message: 'Session expired or invalid. Please sign in again.', errorCode: 'ERR_SESSION_EXPIRED' });
   }
 
   const user = store.appUsers.find((u) => u.id === userId);
   if (!user) {
-    return res.status(401).json({ success: false, message: 'Account no longer exists.' });
+    return res.status(401).json({ success: false, message: 'Account no longer exists.', errorCode: 'ERR_SESSION_EXPIRED' });
   }
   if (user.status !== 'ACTIVE') {
-    return res.status(403).json({ success: false, message: `Account is ${user.status.toLowerCase()}.` });
+    return res.status(403).json({ success: false, message: `Account is ${user.status.toLowerCase()}.`, errorCode: 'ERR_ACCOUNT_INACTIVE' });
   }
 
   req.user = user;

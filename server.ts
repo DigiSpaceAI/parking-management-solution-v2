@@ -99,7 +99,7 @@ import {
   loadAuditLogsFromFirestore,
   clearAuditLogs
 } from './src/server/security';
-import { VehicleType, EntryType } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
 
 // Initialize PMS Store with 1,080 parking inventory slots
@@ -294,8 +294,10 @@ function enforceSiteScope(req: express.Request, res: express.Response, next: exp
   const allowed = getAllowedSiteIds(user);
   if (allowed === null) return next();
 
-  const deny = () =>
-    res.status(403).json({ success: false, message: 'You do not have access to this site.', errorCode: 'ERR_SITE_FORBIDDEN' });
+  const deny = () => {
+    auditDenied(req, claimed && claimed !== 'ALL' ? claimed : undefined);
+    return res.status(403).json({ success: false, message: 'You do not have access to this site.', errorCode: 'ERR_SITE_FORBIDDEN' });
+  };
 
   const claimed = rawClientSiteId(req);
   if (claimed && claimed !== 'ALL' && !allowed.includes(claimed)) return deny();
@@ -328,6 +330,117 @@ function getRequestedSiteId(req: express.Request): string | undefined {
   if (allowed === null) return raw;
   if (!raw || raw === 'ALL') return allowed[0] ?? NO_SITE_ACCESS;
   return allowed.includes(raw) ? raw : NO_SITE_ACCESS;
+}
+
+// ---------------------------------------------------------------------------
+// STRICT SITE RESOLUTION (001 tech design, B1)
+// Every list / report / write route asks resolveSite() which ONE site the
+// request acts on. The client only says which of the caller's sites it wants
+// (?siteId= wins over the x-site-id header); the server decides:
+//   no site sent            -> 400 ERR_SITE_REQUIRED
+//   'ALL'                   -> Master Admin (unrestricted) reads only, else 400 ERR_SITE_ALL_NOT_ALLOWED
+//   a site not the caller's -> 403 ERR_SITE_FORBIDDEN + CROSS_SITE_ACCESS_DENIED audit entry
+// SITE_SCOPE_MODE=fallback is an env-only kill-switch that restores the
+// previous behaviour (missing site = first assigned site / every site for a
+// Master Admin) without a rebuild. Default: strict.
+// ---------------------------------------------------------------------------
+const SITE_SCOPE_MODE: 'strict' | 'fallback' = process.env.SITE_SCOPE_MODE === 'fallback' ? 'fallback' : 'strict';
+if (SITE_SCOPE_MODE === 'fallback') {
+  console.warn('[site-scope] SITE_SCOPE_MODE=fallback: requests without a site fall back to the caller\'s first site (legacy behaviour).');
+}
+
+type SiteRef = { siteId?: string | null };
+const recordSite = (x: SiteRef | undefined | null): string => (x && x.siteId) || DEFAULT_SITE_ID;
+
+function sendApiError(res: express.Response, status: number, errorCode: ApiErrorCode, message: string) {
+  res.status(status).json({ success: false, message, errorCode });
+}
+
+// The user whose scope / permissions / masking apply: the Role View Simulator
+// target when a Master Admin is viewing as someone, else the signed-in user.
+function scopeUser(req: express.Request) {
+  return req.effectiveUser || req.user;
+}
+
+function auditDenied(req: express.Request, siteId: string | undefined, details?: string) {
+  logSecurityEvent({
+    action: 'CROSS_SITE_ACCESS_DENIED',
+    actor: req.user?.email || 'unknown',
+    actorRole: req.user?.roleName,
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent'] as string,
+    targetResource: `${req.method} ${req.path}`,
+    status: 'BLOCKED_UNAUTHORIZED',
+    details: details || `${req.user?.email || 'unknown'} tried to act on site ${siteId || 'unknown'} outside their access.`,
+    siteId,
+  });
+}
+
+function denySite(req: express.Request, res: express.Response, siteId: string | undefined, details?: string): null {
+  auditDenied(req, siteId, details);
+  sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You do not have access to this site.');
+  return null;
+}
+
+// Returns the canonical site id (or 'ALL'), or null when an error response has
+// already been sent.
+function resolveSite(req: express.Request, res: express.Response, opts: { allowAll: boolean }): string | null {
+  const user = scopeUser(req);
+  if (!user) {
+    sendApiError(res, 401, 'ERR_SESSION_EXPIRED', 'Not signed in.');
+    return null;
+  }
+
+  if (SITE_SCOPE_MODE === 'fallback') {
+    const legacy = getRequestedSiteId(req);
+    if (legacy === NO_SITE_ACCESS) {
+      if (opts.allowAll) return NO_SITE_ACCESS; // lists: empty result, as before
+      return denySite(req, res, rawClientSiteId(req));
+    }
+    if (!legacy || legacy === 'ALL') return opts.allowAll ? 'ALL' : DEFAULT_SITE_ID;
+    return legacy;
+  }
+
+  const raw = rawClientSiteId(req)?.trim();
+  const allowed = getAllowedSiteIds(user);
+  if (!raw) {
+    sendApiError(res, 400, 'ERR_SITE_REQUIRED', 'Choose a site first.');
+    return null;
+  }
+  if (raw === 'ALL') {
+    if (allowed === null && opts.allowAll) return 'ALL';
+    sendApiError(res, 400, 'ERR_SITE_ALL_NOT_ALLOWED', 'Select one site to make changes.');
+    return null;
+  }
+
+  const match = getSites().find((x) => x.id === raw || x.siteCode === raw);
+  const canonical = match ? match.id : raw;
+  if (allowed !== null) {
+    if (!allowed.includes(raw) && !allowed.includes(canonical)) return denySite(req, res, canonical);
+    return canonical;
+  }
+  // Unrestricted caller: any real site, plus the legacy default site.
+  if (!match && canonical !== DEFAULT_SITE_ID) {
+    sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'This site does not exist.');
+    return null;
+  }
+  return canonical;
+}
+
+// Record-level check: the STORED siteId of the record decides, never the body.
+// Returns false (after sending 403 + audit) when the record belongs elsewhere.
+function assertRecordSite(req: express.Request, res: express.Response, record: SiteRef | undefined | null, resolvedSite: string): boolean {
+  if (!record) return true;
+  const stored = recordSite(record);
+  if (resolvedSite !== 'ALL' && stored === resolvedSite) return true;
+  if (resolvedSite === 'ALL' && siteAllowedFor(scopeUser(req), stored)) return true;
+  denySite(req, res, stored, `${req.user?.email || 'unknown'} (site ${resolvedSite}) tried to act on a record of site ${stored}.`);
+  return false;
+}
+
+// List filter for a resolved site ('ALL' = no filter).
+function filterBySite<T extends SiteRef>(items: T[], site: string): T[] {
+  return site === 'ALL' ? items : items.filter((x) => recordSite(x) === site);
 }
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;

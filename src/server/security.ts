@@ -129,6 +129,7 @@ export function logSecurityEvent(params: {
   targetResource: string;
   status: 'SUCCESS' | 'BLOCKED_UNAUTHORIZED' | 'RATE_LIMITED' | 'VALIDATION_FAILED';
   details: string;
+  siteId?: string;
 }): SecurityAuditLog {
   const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const timestamp = new Date().toISOString();
@@ -150,8 +151,12 @@ export function logSecurityEvent(params: {
   };
 
   const integrityHash = generateIntegrityHash(partialEntry);
+  // siteId is attached after hashing on purpose: it is not part of the
+  // integrity payload (see generateIntegrityHash), so older entries without
+  // it verify exactly as before.
   const fullEntry: SecurityAuditLog = {
     ...partialEntry,
+    ...(params.siteId ? { siteId: params.siteId } : {}),
     integrityHash,
   };
 
@@ -749,6 +754,12 @@ declare global {
   namespace Express {
     interface Request {
       user?: AppUser;
+      // Set only when a Master Admin sends a valid x-view-as header (read-only
+      // Role View Simulator). effectiveUser = viewAs ?? user: scope, module
+      // permissions and PII masking are evaluated against it, while audit
+      // entries keep the real signed-in user as the actor.
+      viewAs?: AppUser;
+      effectiveUser?: AppUser;
     }
   }
 }
@@ -827,6 +838,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   req.user = user;
+  req.effectiveUser = user;
   next();
 }
 

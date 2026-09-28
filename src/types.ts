@@ -326,8 +326,23 @@ export interface SecurityAuditLog {
   targetResource: string;
   status: 'SUCCESS' | 'BLOCKED_UNAUTHORIZED' | 'RATE_LIMITED' | 'VALIDATION_FAILED';
   details: string;
+  // Site the action targeted (absent for platform-level events). Not part of
+  // the integrityHash payload, so entries written before this field existed
+  // still verify.
+  siteId?: string;
   integrityHash: string; // SHA-256 HMAC integrity checksum
 }
+
+// Machine-readable error codes returned as `errorCode` alongside
+// `{ success: false, message }`. Clients that read only `message` keep working.
+export type ApiErrorCode =
+  | 'ERR_SITE_REQUIRED'
+  | 'ERR_SITE_FORBIDDEN'
+  | 'ERR_SITE_ALL_NOT_ALLOWED'
+  | 'ERR_VIEW_AS_READ_ONLY'
+  | 'ERR_MASTER_ONLY'
+  | 'ERR_SESSION_EXPIRED'
+  | 'ERR_ACCOUNT_INACTIVE';
 
 export interface SecurityComplianceSummary {
   encryptionAtRest: boolean;

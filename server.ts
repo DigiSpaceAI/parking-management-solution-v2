@@ -101,7 +101,7 @@ import {
   loadAuditLogsFromFirestore,
   clearAuditLogs
 } from './src/server/security';
-import { VehicleType, EntryType, SlotStatus, ApiErrorCode } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
 import { isMasterAdmin } from './src/utils/rbac';
 
@@ -2199,9 +2199,23 @@ app.post(
     // Module permissions govern feature access, not seniority over a
     // specific target account — this is a separate, vertical-privilege
     // check layered on top.
-    const isMasterAdmin = (u: typeof targetUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
-    if (isMasterAdmin(targetUser) && !isMasterAdmin(req.user!)) {
+    const isMasterAccount = (u: typeof targetUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
+    if (isMasterAccount(targetUser) && !isMasterAccount(req.user!)) {
       return res.status(403).json({ success: false, message: 'Only a Platform Master Admin can generate a reset token for another Platform Master Admin account.' });
+    }
+    // H8: a non-Master can only reset accounts at their own sites, and never
+    // their own (self-service would bypass the out-of-band handover).
+    if (!isMasterAdmin(req.user!) && (targetUser.id === req.user!.id || !userWithinCallerScope(req.user, targetUser))) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: req.user!.email,
+        actorRole: req.user!.roleName,
+        ipAddress: req.ip,
+        targetResource: `auth/reset-token/${targetUser.id}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: 'Reset token refused: target is the caller or outside the caller\'s sites.',
+      });
+      return sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only reset passwords for other accounts at your own sites.');
     }
 
     const token = generatePasswordResetToken(targetUser.id);
@@ -2293,7 +2307,56 @@ app.get('/api/v1/rbac/roles', (req, res) => {
   res.json({ success: true, count: roles.length, roles });
 });
 
+// H8 (001 design B8): USER_MANAGEMENT alone must never let a non-Master
+// raise anyone's privileges, their own included.
+const PRIVILEGED_MODULES: AppModuleId[] = ['MASTER_CONFIG', 'USER_MANAGEMENT', 'SECURITY_AUDIT'];
+
+function grantsPrivilegedRights(perms: unknown): boolean {
+  if (!perms || typeof perms !== 'object') return false;
+  return PRIVILEGED_MODULES.some((m) => {
+    const r = (perms as Record<string, any>)[m];
+    return !!r && typeof r === 'object' && Object.values(r).some((v) => v === true);
+  });
+}
+
+function masterOnly(res: express.Response, message: string) {
+  sendApiError(res, 403, 'ERR_MASTER_ONLY', message);
+}
+
+// Target account is inside the caller's own sites (non-empty, every site
+// covered) and is not a Master Admin / all-sites account.
+function userWithinCallerScope(caller: express.Request['user'], target: { roleId?: string; siteScopeType?: string; assignedSiteIds?: string[] }): boolean {
+  if (!caller) return false;
+  const allowed = getAllowedSiteIds(caller);
+  if (allowed === null) return true;
+  if (isMasterAdmin(target) || target.siteScopeType === 'ALL_SITES') return false;
+  const targetSites = (target.assignedSiteIds || []).map(canonicalSiteId);
+  return targetSites.length > 0 && targetSites.every((sid) => allowed.includes(sid));
+}
+
 app.post('/api/v1/rbac/roles', requirePermission('USER_MANAGEMENT', 'canCreate'), (req, res) => {
+  const caller = req.user!;
+  if (!isMasterAdmin(caller)) {
+    const body = req.body || {};
+    const existing = body.id ? getAppRoles().find((r) => r.id === body.id) : undefined;
+    let refusal = '';
+    if (existing?.isSystemDefault) refusal = 'Only a Platform Master Admin can change a built-in role.';
+    else if (body.id && (body.id === caller.roleId || existing?.roleCode === caller.roleId)) refusal = 'You can\'t change your own role.';
+    else if (grantsPrivilegedRights(body.modulePermissions)) refusal = 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit rights.';
+    else if (body.siteScope === 'ALL_SITES') refusal = 'Only a Platform Master Admin can create an all-sites role.';
+    if (refusal) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `role/${body.id || 'new'}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: refusal,
+      });
+      return masterOnly(res, refusal);
+    }
+  }
   const result = saveAppRole(req.body);
   logSecurityEvent({
     action: 'RBAC_ROLE_SAVED',
@@ -2379,6 +2442,26 @@ app.post('/api/v1/rbac/users/toggle-module', requirePermission('USER_MANAGEMENT'
   const { userId, moduleId, enabled } = req.body;
   if (!userId || !moduleId) {
     return res.status(400).json({ success: false, message: 'Missing userId or moduleId.' });
+  }
+  const caller = req.user!;
+  if (!isMasterAdmin(caller)) {
+    const target = getAppUsers().find((u) => u.id === userId);
+    let refusal = '';
+    if (userId === caller.id) refusal = 'You can\'t change your own module access.';
+    else if (target && !userWithinCallerScope(caller, target)) refusal = 'You can only manage accounts at your own sites.';
+    else if (enabled && PRIVILEGED_MODULES.includes(moduleId)) refusal = 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit access.';
+    if (refusal) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `user/${userId}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: `${refusal} (module ${moduleId})`,
+      });
+      return sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', refusal);
+    }
   }
   const result = toggleUserModuleOverride(userId, moduleId, enabled);
   logSecurityEvent({

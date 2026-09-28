@@ -432,3 +432,40 @@ test('B7/H9 registration fails closed when no domain is whitelisted', async () =
     assert.equal(r.body.message, "Registration isn't open for this site yet.");
   } finally { s2.stop(); }
 });
+
+// ---------------------------------------------------------------- B8
+const FULL = { enabled: true, canCreate: true, canEdit: true, canDelete: true, canExport: true };
+test('B8 setup: a non-Master user at site A with USER_MANAGEMENT', async () => {
+  const r = await post('master', '/rbac/roles', { roleName: 'BE User Admin', roleCode: 'BE_UM', modulePermissions: { HOME: FULL, USER_MANAGEMENT: FULL } });
+  assert.ok(r.body.success, JSON.stringify(r.body));
+  F.umRole = r.body.role;
+  await mkUser('umA', F.umRole.id, [F.A.id]);
+});
+
+test('B8/H8 role edits: own role, built-in roles and privileged rights are Master-only', async () => {
+  const own = await post('umA', '/rbac/roles', { id: F.umRole.id, modulePermissions: { HOME: FULL, USER_MANAGEMENT: FULL, MASTER_CONFIG: FULL } });
+  assert.equal(own.status, 403); assert.equal(own.body.errorCode, 'ERR_MASTER_ONLY');
+  const sys = await post('umA', '/rbac/roles', { id: 'role-gate-attendant', roleName: 'Gate' });
+  assert.equal(sys.status, 403);
+  const priv = await post('umA', '/rbac/roles', { roleName: 'Sneaky', modulePermissions: { SECURITY_AUDIT: { enabled: true } } });
+  assert.equal(priv.status, 403);
+  const roles = (await get('master', '/rbac/roles')).body.roles;
+  assert.equal(roles.find((r) => r.id === F.umRole.id).modulePermissions.MASTER_CONFIG, undefined, 'own role unchanged');
+  const plain = await post('umA', '/rbac/roles', { roleName: 'Plain helper', modulePermissions: { HOME: FULL } });
+  assert.equal(plain.status, 200, 'an ordinary custom role is still allowed');
+});
+
+test('B8/H8 toggle-module and reset tokens respect the target\'s sites and forbid self', async () => {
+  const self = await post('umA', '/rbac/users/toggle-module', { userId: F.umAUser.id, moduleId: 'MASTER_CONFIG', enabled: true });
+  assert.equal(self.status, 403);
+  const foreign = await post('umA', '/rbac/users/toggle-module', { userId: F.attBUser.id, moduleId: 'LOGS', enabled: false });
+  assert.equal(foreign.status, 403);
+  const priv = await post('umA', '/rbac/users/toggle-module', { userId: F.attAUser.id, moduleId: 'USER_MANAGEMENT', enabled: true });
+  assert.equal(priv.status, 403);
+  const ok = await post('umA', '/rbac/users/toggle-module', { userId: F.attAUser.id, moduleId: 'VALET_SERVICE', enabled: false });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attBUser.id })).status, 403);
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.umAUser.id })).status, 403);
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attAUser.id })).status, 200);
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).length >= 5);
+});

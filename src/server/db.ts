@@ -2890,7 +2890,12 @@ export function bulkUploadRegistrations(
 
     const emailDomain = email.split('@')[1]?.toLowerCase();
     const allowedDomains = domainsAllowedForSite(item.siteId || DEFAULT_SITE_ID);
-    if (allowedDomains.length > 0 && emailDomain && !allowedDomains.includes(emailDomain)) {
+    // Fail closed, as single registration does (H9 / m-1).
+    if (allowedDomains.length === 0) {
+      errors.push(`Row ${index + 1} (${email}): Registration isn't open for this site yet.`);
+      return;
+    }
+    if (!emailDomain || !allowedDomains.includes(emailDomain)) {
       errors.push(`Row ${index + 1} (${email}): Domain '@${emailDomain}' is not whitelisted.`);
       return;
     }

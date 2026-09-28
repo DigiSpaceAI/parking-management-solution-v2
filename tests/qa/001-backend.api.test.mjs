@@ -430,6 +430,15 @@ test('B7/H9 registration fails closed when no domain is whitelisted', async () =
     const r = await j('POST', '/registrations/submit', { name: 'X', email: 'x@anything.com', vehicleNumber: 'MH12AB9009' });
     assert.equal(r.status, 400);
     assert.equal(r.body.message, "Registration isn't open for this site yet.");
+    // m-1: bulk upload fails closed too.
+    const site = (await j('POST', '/sites/onboard', { siteName: 'Closed', siteCode: 'BECL', city: 'Pune', totalSlots: 1,
+      pricing: { hourlyRate: 1, dailyMaxRate: 1, monthlyPassRate: 1, currency: 'INR', taxPercentage: 0 } }, t)).body.site;
+    const bulkR = await fetch(s2.base + '/registrations/bulk-upload', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': t, 'x-site-id': site.id },
+      body: JSON.stringify({ requests: [{ name: 'Y', email: 'y@anything.com', vehicleNumber: 'MH12AB9010' }] }) });
+    const bulk = await bulkR.json();
+    assert.equal(bulk.added, 0);
+    assert.match(bulk.errors[0], /Registration isn't open for this site yet/);
   } finally { s2.stop(); }
 });
 

@@ -4,7 +4,7 @@
 - Stack: React 19 + Vite + Tailwind 4 (web console, `src/components`), Capacitor Android build (`src/mobile`, `vite.mobile.config.ts`), Express server (`server.ts`, `src/server/*`), Firestore via firebase-admin, shared types in `src/types.ts`.
 - Roles: Master Admin, Site Admin, Attendant (field transactions), Employee (end user, limited writes).
 - **Golden rule: every piece of data is scoped to a `siteId`.** Any read, write, API route or UI list that is not site-scoped is a bug (see `KNOWN_ISSUES.md`).
-- Checks available today: `bun install --frozen-lockfile`, then `npm run lint` (tsc --noEmit), `npm run build`, `npm run test:qa`. `bun.lock` is the only lockfile. No test runner yet — QA may propose one.
+- Checks available today: `bun install --frozen-lockfile`, then `npm run lint` (tsc --noEmit), `npm run build`, `npm run test:qa`. `bun.lock` is the only lockfile. `test:qa` runs the node:test API suites in `tests/qa/` (no extra dependencies).
 - Reference docs: `ARCHITECTURE.md`, `KNOWN_ISSUES.md`, `README.md`.
 
 ## Development team workflow (use for every feature or non-trivial fix)

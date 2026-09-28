@@ -356,3 +356,44 @@ test('B5/H7 /sites returns only the caller\'s sites, without contact or pricing 
   const my = await get('adminAB', '/my-sites');
   assert.deepEqual(my.body.sites.map((s) => s.id).sort(), [F.A.id, F.B.id].sort());
 });
+
+// ---------------------------------------------------------------- B6
+test('B6 setup: an employee user with a pass at site A', async () => {
+  await mkUser('empA', 'role-gate-attendant', [F.A.id]);
+  const e = await post('master', '/employees/save', { employee: { name: 'Emp A', employeeId: 'BE-A-9', email: F.empAUser.email, vehicleNumber: 'MH12AB6006' } }, { site: F.A.id });
+  assert.equal(e.status, 200, JSON.stringify(e.body));
+  F.empA = e.body.employee;
+});
+
+test('B6/H2 profile: own record only for non-admins; `query` is gone; admins pass the site check', async () => {
+  const own = await get('empA', `/employees/profile?email=${encodeURIComponent(F.empAUser.email)}`);
+  assert.equal(own.status, 200); assert.equal(own.body.employee.id, F.empA.id);
+  assert.equal(own.body.employee.vehicleNumber, 'MH12AB6006', 'own record unmasked');
+  assert.equal((await get('empA', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`)).status, 403);
+  assert.equal((await get('empA', `/employees/profile?employeeId=${F.empB.employeeId}`)).status, 403);
+  assert.equal((await get('empA', `/employees/profile?query=${F.empB.vehicleNumber}`)).status, 400, 'query param removed');
+  const cross = await get('adminAB', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`, { site: F.A.id });
+  assert.equal(cross.status, 403, 'admin: record at another site than the selected one');
+  const ok = await get('adminAB', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`, { site: F.B.id });
+  assert.equal(ok.status, 200); assert.equal(ok.body.employee.id, F.empB.id);
+  const other = await get('adminA', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`, { site: F.A.id });
+  assert.equal(other.status, 403);
+});
+
+test('B6/H3 update-vehicle: {email: mine, employeeId: victim} is refused and the victim is unchanged', async () => {
+  const r = await post('empA', '/employees/update-vehicle', { email: F.empAUser.email, employeeId: F.empB.employeeId, vehicleNumber: 'MH12ZZ9999' });
+  assert.equal(r.status, 403, JSON.stringify(r.body));
+  const b = (await get('master', '/employees', { site: F.B.id })).body.employees.find((x) => x.id === F.empB.id);
+  assert.equal(b.vehicleNumber, F.empB.vehicleNumber);
+});
+
+test('B6/H3 update-vehicle: no auto-create; own update works and audits old + new plate', async () => {
+  const before = (await get('master', '/employees?siteId=ALL')).body.total;
+  const none = await post('attB', '/employees/update-vehicle', { vehicleNumber: 'MH12AB7007' });
+  assert.equal(none.status, 404); assert.equal(none.body.message, 'No pass found — register first.');
+  assert.equal((await get('master', '/employees?siteId=ALL')).body.total, before, 'no employee created');
+  const own = await post('empA', '/employees/update-vehicle', { email: F.empAUser.email, employeeId: 'BE-A-9', vehicleNumber: 'MH12AB6116' });
+  assert.equal(own.status, 200, JSON.stringify(own.body)); assert.equal(own.body.employee.vehicleNumber, 'MH12AB6116');
+  const rows = await auditEntries('VEHICLE_UPDATE_SUCCESS');
+  assert.ok(rows.some((l) => l.details.includes('MH12AB6006') && l.details.includes('MH12AB6116') && l.siteId === F.A.id));
+});

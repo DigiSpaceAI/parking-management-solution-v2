@@ -2098,15 +2098,17 @@ export function getEmployeeByEmailOrId(query: string): Employee | undefined {
   );
 }
 
-// Update Employee Vehicle directly from Mobile App
+// Update an employee's registered vehicle (mobile self-service / admin).
+// The caller (server.ts) has already resolved WHICH record and checked access;
+// this only updates that one record. It never creates an employee (H3): a new
+// pass goes through registration + approval. A linked registration request
+// gets the new vehicle but keeps its own status (no silent approval).
 export function updateEmployeeVehicle(params: {
-  employeeId?: string;
-  email?: string;
+  employeeRecordId: string;
   vehicleNumber: string;
-  vehicleType: VehicleType;
+  vehicleType?: VehicleType;
   vehicleBrand?: string;
-  updateReason?: string;
-}): { success: boolean; message: string; employee?: Employee } {
+}): { success: boolean; message: string; employee?: Employee; oldPlate?: string } {
   const storeData = getStore();
   const cleanPlate = (params.vehicleNumber || '').trim().toUpperCase();
 
@@ -2114,72 +2116,42 @@ export function updateEmployeeVehicle(params: {
     return { success: false, message: 'Valid vehicle license plate number is required.' };
   }
 
-  // Find employee by employeeId or email
-  let emp = storeData.employees.find(e =>
-    (params.employeeId && e.employeeId.toUpperCase() === params.employeeId.toUpperCase()) ||
-    (params.email && e.email.toLowerCase() === params.email.toLowerCase())
-  );
+  const emp = storeData.employees.find(e => e.id === params.employeeRecordId);
+  if (!emp) return { success: false, message: 'Employee record not found.' };
 
   const now = new Date().toISOString();
+  const oldPlate = emp.vehicleNumber;
+  emp.vehicleNumber = cleanPlate;
+  emp.vehicleType = params.vehicleType || emp.vehicleType;
+  if (params.vehicleBrand) {
+    emp.vehicleBrand = params.vehicleBrand;
+  }
+  emp.updatedAt = now;
 
-  if (!emp && params.email) {
-    // Create new active employee on the fly if not in roster
-    emp = saveOrUpdateEmployee({
-      email: params.email,
-      name: params.email.includes('@') ? params.email.split('@')[0].replace('.', ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'Corporate Employee',
-      employeeId: params.employeeId || `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-      vehicleNumber: cleanPlate,
-      vehicleType: params.vehicleType || 'SEDAN',
-      vehicleBrand: params.vehicleBrand || 'Personal Vehicle',
-      status: 'ACTIVE',
-      isActive: true,
-      registrationType: 'EMPLOYEE_SELF',
-    });
-
-    return {
-      success: true,
-      message: `New vehicle ${cleanPlate} registered and whitelisted successfully for ${emp.name}!`,
-      employee: emp,
-    };
+  const targetedSync: { collection: keyof StoreData; ids: string[] }[] = [
+    { collection: 'employees', ids: [emp.id] },
+  ];
+  const empSite = emp.siteId || DEFAULT_SITE_ID;
+  const activeReq = (storeData.registrationRequests || []).find(
+    r => (r.siteId || DEFAULT_SITE_ID) === empSite &&
+      ((r.email || '').toLowerCase() === (emp.email || '').toLowerCase() || r.employeeId === emp.employeeId)
+  );
+  if (activeReq) {
+    activeReq.vehicleNumber = cleanPlate;
+    activeReq.vehicleType = params.vehicleType || activeReq.vehicleType;
+    if (params.vehicleBrand) activeReq.vehicleBrand = params.vehicleBrand;
+    activeReq.updatedAt = now;
+    targetedSync.push({ collection: 'registrationRequests', ids: [activeReq.id] });
   }
 
-  if (emp) {
-    const oldPlate = emp.vehicleNumber;
-    emp.vehicleNumber = cleanPlate;
-    emp.vehicleType = params.vehicleType || emp.vehicleType;
-    if (params.vehicleBrand) {
-      emp.vehicleBrand = params.vehicleBrand;
-    }
-    emp.updatedAt = now;
+  saveDB(targetedSync);
 
-    // Sync any active registration requests for this user
-    const targetedSync: { collection: keyof StoreData; ids: string[] }[] = [
-      { collection: 'employees', ids: [emp.id] },
-    ];
-    if (storeData.registrationRequests) {
-      const activeReq = storeData.registrationRequests.find(
-        r => r.email.toLowerCase() === emp!.email.toLowerCase() || r.employeeId === emp!.employeeId
-      );
-      if (activeReq) {
-        activeReq.vehicleNumber = cleanPlate;
-        activeReq.vehicleType = params.vehicleType || activeReq.vehicleType;
-        if (params.vehicleBrand) activeReq.vehicleBrand = params.vehicleBrand;
-        activeReq.status = 'APPROVED';
-        activeReq.updatedAt = now;
-        targetedSync.push({ collection: 'registrationRequests', ids: [activeReq.id] });
-      }
-    }
-
-    saveDB(targetedSync);
-
-    return {
-      success: true,
-      message: `Vehicle successfully updated from ${oldPlate || 'N/A'} to ${cleanPlate} (${emp.vehicleType} - ${emp.vehicleBrand}). Gate ANPR passes updated!`,
-      employee: emp,
-    };
-  }
-
-  return { success: false, message: 'Employee record not found.' };
+  return {
+    success: true,
+    message: `Vehicle successfully updated from ${oldPlate || 'N/A'} to ${cleanPlate} (${emp.vehicleType} - ${emp.vehicleBrand}). Gate ANPR passes updated!`,
+    employee: emp,
+    oldPlate,
+  };
 }
 
 // Single Slot Save/Update

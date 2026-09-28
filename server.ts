@@ -81,7 +81,6 @@ import {
   sanitizePasswordInput,
   EMAIL_ALLOWLIST_REGEX,
   USERNAME_ALLOWLIST_REGEX,
-  bolaIdentityGuard,
   logSecurityEvent,
   verifyAuditTrailIntegrity,
   getSecurityComplianceSummary,
@@ -782,122 +781,176 @@ app.post('/api/v1/employees/bulk-upload', requirePermission('REGISTRATION', 'can
   }
 });
 
-// 3d. Get Employee Profile & Registered Vehicle Details (Protected with BOLA Guard & Rate Limiter)
-app.get(
-  '/api/v1/employees/profile',
-  rateLimiterMiddleware(30, 60000),
-  bolaIdentityGuard({ allowAdminOverride: true, actionName: 'EMPLOYEE_PROFILE_ACCESS' }),
-  (req, res) => {
-    const { query, email, employeeId } = req.query;
-    const lookupKey = sanitizeInputString((email || employeeId || query) as string);
-    if (!lookupKey) {
-      return res.status(400).json({ success: false, message: 'Email or Employee ID query parameter is required.' });
+// 3d / 3e. Employee self-service: profile and registered vehicle (H2, H3).
+// The target record is resolved ONCE. Self-service: from the signed-in
+// user's own email, never from what the client names. Looking at or changing
+// someone else's record needs an admin permission AND passes the site check
+// on the record that was actually resolved.
+type ProfileTarget = { employee?: ReturnType<typeof getStore>['employees'][number]; handled: boolean };
+
+function resolveEmployeeTarget(
+  req: express.Request,
+  res: express.Response,
+  source: { email?: unknown; employeeId?: unknown },
+  adminCheck: () => boolean,
+  actionName: string
+): ProfileTarget {
+  const me = scopeUser(req)!;
+  const email = typeof source.email === 'string' ? sanitizeInputString(source.email).trim().toLowerCase() : '';
+  const employeeId = typeof source.employeeId === 'string' ? sanitizeInputString(source.employeeId).trim().toUpperCase() : '';
+  const employees = getStore().employees;
+  const myEmail = me.email.toLowerCase();
+  const own = employees.find((e) => (e.email || '').toLowerCase() === myEmail);
+
+  const namesSomeoneElse = (email && email !== myEmail) || (employeeId && (!own || own.employeeId.toUpperCase() !== employeeId));
+  if (!namesSomeoneElse) return { employee: own, handled: false };
+
+  if (!adminCheck()) {
+    logSecurityEvent({
+      action: actionName,
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] as string,
+      targetResource: `targetEmail: ${email || 'N/A'}, targetEmpId: ${employeeId || 'N/A'}`,
+      status: 'BLOCKED_UNAUTHORIZED',
+      details: `${req.user!.email} tried to reach another employee's record. Blocked.`,
+    });
+    res.status(403).json({
+      success: false,
+      message: 'You can only view or change your own pass.',
+      errorCode: 'ERR_BOLA_VIOLATION',
+    });
+    return { handled: true };
+  }
+
+  const site = resolveSite(req, res, { allowAll: req.method === 'GET' });
+  if (site === null) return { handled: true };
+  const matches = (e: { email?: string; employeeId: string }) =>
+    (!email || (e.email || '').toLowerCase() === email) && (!employeeId || e.employeeId.toUpperCase() === employeeId);
+  const candidates = employees.filter(matches);
+  const inScope = candidates.find((e) => (site === 'ALL' ? siteAllowedFor(me, e.siteId) : recordSite(e) === site));
+  if (!inScope && candidates.length > 0) {
+    assertRecordSite(req, res, candidates[0], site); // sends 403 + audit
+    return { handled: true };
+  }
+  return { employee: inScope, handled: false };
+}
+
+app.get('/api/v1/employees/profile', rateLimiterMiddleware(30, 60000), (req, res) => {
+  const { email, employeeId } = req.query;
+  if (!email && !employeeId) {
+    // `query` (free-text match on email, id or plate) was removed (H2).
+    return res.status(400).json({ success: false, message: 'Email or Employee ID query parameter is required.' });
+  }
+  const me = scopeUser(req)!;
+  const target = resolveEmployeeTarget(
+    req, res, { email, employeeId },
+    () => hasModulePermission(me, 'REGISTRATION', 'view') || hasModulePermission(me, 'APPROVALS', 'view'),
+    'EMPLOYEE_PROFILE_ACCESS'
+  );
+  if (target.handled) return;
+  const employee = target.employee;
+  if (!employee) {
+    return res.json({ success: false, message: 'No registered whitelist record found for this employee identifier.', employee: null });
+  }
+
+  // Own record: unmasked. Anyone else's: masked by the caller's role.
+  const isOwn = (employee.email || '').toLowerCase() === me.email.toLowerCase();
+  const { fullyUnmasked, platesUnmasked } = isOwn ? { fullyUnmasked: true, platesUnmasked: true } : piiAccess(req);
+  const shown = {
+    ...sanitizeEmployeeList([employee], fullyUnmasked)[0],
+    vehicleNumber: platesUnmasked ? employee.vehicleNumber : sanitizeEmployeeList([employee], false)[0].vehicleNumber,
+  };
+
+  // Currently parked? Only at the pass's own site.
+  const currentSlot = getStore().slots.find(
+    (s) => s.status === 'OCCUPIED' && recordSite(s) === recordSite(employee) &&
+      (s.currentVehicle || '').toUpperCase() === employee.vehicleNumber.toUpperCase()
+  );
+
+  logSecurityEvent({
+    action: 'EMPLOYEE_PROFILE_LOOKUP',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `employee/${employee.employeeId}`,
+    status: 'SUCCESS',
+    details: `Profile accessed for ${employee.employeeId}`,
+    siteId: recordSite(employee),
+  });
+
+  res.json({
+    success: true,
+    employee: shown,
+    currentSlot: currentSlot ? {
+      slotNumber: currentSlot.slotNumber,
+      basement: currentSlot.basement,
+      floorLocation: currentSlot.floorLocation,
+      slotType: currentSlot.slotType,
+    } : null,
+  });
+});
+
+app.post('/api/v1/employees/update-vehicle', rateLimiterMiddleware(20, 60000), (req, res) => {
+  try {
+    const { employeeId, email, vehicleNumber, vehicleType, vehicleBrand, updateReason } = req.body || {};
+
+    if (!vehicleNumber || typeof vehicleNumber !== 'string' || !vehicleNumber.trim()) {
+      return res.status(400).json({ success: false, message: 'Vehicle license plate number is required.' });
+    }
+    const sanitizedPlate = sanitizeInputString(vehicleNumber).toUpperCase();
+    if (!isValidLicensePlate(sanitizedPlate)) {
+      logSecurityEvent({
+        action: 'INVALID_PLATE_FORMAT_REJECTED',
+        actor: req.user!.email,
+        actorRole: req.user!.roleName,
+        ipAddress: req.ip,
+        targetResource: `vehicleNumber: ${String(vehicleNumber).slice(0, 40)}`,
+        status: 'VALIDATION_FAILED',
+        details: 'Rejected invalid license plate format during vehicle update.',
+      });
+      return res.status(400).json({ success: false, message: 'Invalid license plate format. Must be a valid 4-10 alphanumeric plate code.' });
     }
 
-    const employee = getEmployeeByEmailOrId(lookupKey);
-    if (!employee) {
-      return res.json({ success: false, message: 'No registered whitelist record found for this employee identifier.', employee: null });
+    const target = resolveEmployeeTarget(
+      req, res, { email, employeeId },
+      () => hasModulePermission(scopeUser(req), 'REGISTRATION', 'canEdit'),
+      'VEHICLE_UPDATE_ATTEMPT'
+    );
+    if (target.handled) return;
+    if (!target.employee) {
+      // No auto-create (H3): a new pass goes through registration + approval.
+      return res.status(404).json({ success: false, message: 'No pass found — register first.' });
     }
 
-    // Admins may only look up employees at their own sites; anyone may
-    // always look up their own record (BOLA guard already enforces that).
-    if (employee.email?.toLowerCase() !== req.user!.email.toLowerCase() && denyForeignSite(req, res, employee.siteId)) return;
-
-    // Also check if currently parked
-    const store = getStore();
-    const currentSlot = store.slots.find(s => s.currentVehicle && s.currentVehicle.toUpperCase() === employee.vehicleNumber.toUpperCase() && s.status === 'OCCUPIED');
+    const result = updateEmployeeVehicle({
+      employeeRecordId: target.employee.id,
+      vehicleNumber: sanitizedPlate,
+      vehicleType,
+      vehicleBrand: typeof vehicleBrand === 'string' ? sanitizeInputString(vehicleBrand) : undefined,
+    });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
 
     logSecurityEvent({
-      action: 'EMPLOYEE_PROFILE_LOOKUP',
-      actor: req.user?.email || employee.email,
-      actorRole: req.user?.roleName || 'EMPLOYEE',
+      action: 'VEHICLE_UPDATE_SUCCESS',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
       ipAddress: req.ip,
-      targetResource: `employee/${employee.employeeId}`,
+      targetResource: `employee/${target.employee.employeeId}`,
       status: 'SUCCESS',
-      details: `Profile accessed for ${employee.name} (${employee.employeeId})`,
+      details: `Plate changed from ${result.oldPlate || 'N/A'} to ${sanitizedPlate}. Reason: ${typeof updateReason === 'string' ? sanitizeInputString(updateReason) : 'User Request'}`,
+      siteId: recordSite(target.employee),
     });
 
-    res.json({
-      success: true,
-      employee,
-      currentSlot: currentSlot ? {
-        slotNumber: currentSlot.slotNumber,
-        basement: currentSlot.basement,
-        floorLocation: currentSlot.floorLocation,
-        slotType: currentSlot.slotType,
-      } : null,
-    });
+    const { oldPlate, ...reply } = result;
+    res.json(reply);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to update vehicle record', error: err.message });
   }
-);
-
-// 3e. Employee Mobile App: Update Registered Vehicle (Protected with BOLA Guard & Input Sanitization)
-app.post(
-  '/api/v1/employees/update-vehicle',
-  rateLimiterMiddleware(20, 60000),
-  bolaIdentityGuard({ allowAdminOverride: true, actionName: 'VEHICLE_UPDATE_ATTEMPT' }),
-  (req, res) => {
-    try {
-      const { employeeId, email, vehicleNumber, vehicleType, vehicleBrand, updateReason } = req.body;
-
-      if (!vehicleNumber || !vehicleNumber.trim()) {
-        return res.status(400).json({ success: false, message: 'Vehicle license plate number is required.' });
-      }
-
-      const sanitizedPlate = sanitizeInputString(vehicleNumber).toUpperCase();
-
-      const targetEmployee = getEmployeeByEmailOrId(sanitizeInputString(email || employeeId || ''));
-      if (targetEmployee && targetEmployee.email?.toLowerCase() !== req.user!.email.toLowerCase() && denyForeignSite(req, res, targetEmployee.siteId)) return;
-
-      if (!isValidLicensePlate(sanitizedPlate)) {
-        logSecurityEvent({
-          action: 'INVALID_PLATE_FORMAT_REJECTED',
-          actor: email || employeeId || req.ip || 'Unknown',
-          actorRole: req.user?.roleName || 'EMPLOYEE',
-          ipAddress: req.ip,
-          targetResource: `vehicleNumber: ${vehicleNumber}`,
-          status: 'VALIDATION_FAILED',
-          details: `Rejected invalid license plate string "${vehicleNumber}" due to security format validation.`,
-        });
-
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid license plate format. Must be a valid 4-10 alphanumeric plate code.',
-        });
-      }
-
-      if (!email && !employeeId) {
-        return res.status(400).json({ success: false, message: 'Employee authentication identifier (email or employeeId) is required.' });
-      }
-
-      const result = updateEmployeeVehicle({
-        employeeId: sanitizeInputString(employeeId),
-        email: sanitizeInputString(email),
-        vehicleNumber: sanitizedPlate,
-        vehicleType,
-        vehicleBrand: sanitizeInputString(vehicleBrand),
-        updateReason: sanitizeInputString(updateReason),
-      });
-
-      if (!result.success) {
-        return res.status(400).json(result);
-      }
-
-      logSecurityEvent({
-        action: 'VEHICLE_UPDATE_SUCCESS',
-        actor: email || employeeId || 'Employee',
-        actorRole: req.user?.roleName || 'EMPLOYEE',
-        ipAddress: req.ip,
-        targetResource: `vehicle/${sanitizedPlate}`,
-        status: 'SUCCESS',
-        details: `Successfully updated vehicle license plate to ${sanitizedPlate} (${vehicleType || 'SEDAN'}). Reason: ${updateReason || 'User Request'}`,
-      });
-
-      res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: 'Failed to update vehicle record', error: err.message });
-    }
-  }
-);
+});
 
 // --- Whitelisted Domains Endpoints ---
 app.get('/api/v1/domains', (req, res) => {

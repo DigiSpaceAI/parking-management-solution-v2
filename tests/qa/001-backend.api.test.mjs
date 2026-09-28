@@ -616,3 +616,36 @@ test('C-1 GET /domains/manage: authenticated, REGISTRATION view, full rows scope
   const m = await get('master', '/domains/manage?siteId=ALL');
   assert.ok(m.body.domains.some((d) => d.domain === 'acme-b.com' && d.siteId === F.B.id));
 });
+
+test('M-1 /rbac/users: a non-Master cannot raise their own or anyone\'s privileges', async () => {
+  const me = F.umAUser;
+  // Reviewer repro 1: self-override to privileged modules.
+  const selfOv = await post('umA', '/rbac/users', { ...me, customModuleOverrides: { MASTER_CONFIG: true, SECURITY_AUDIT: true, USER_MANAGEMENT: true } });
+  assert.equal(selfOv.status, 403, JSON.stringify(selfOv.body)); assert.equal(selfOv.body.errorCode, 'ERR_MASTER_ONLY');
+  // Reviewer repro 2: assign themself a stronger (non-privileged) role.
+  const inv = await post('master', '/rbac/roles', { roleName: 'BE Inventory', modulePermissions: { HOME: FULL, INVENTORY: FULL } });
+  assert.ok(inv.body.success);
+  const selfRole = await post('umA', '/rbac/users', { ...me, roleId: inv.body.role.id });
+  assert.equal(selfRole.status, 403);
+  for (const field of [{ assignedSiteIds: [F.A.id, F.B.id] }, { status: 'ACTIVE', siteScopeType: 'ALL_SITES' }]) {
+    const r = await post('umA', '/rbac/users', { ...me, ...field });
+    assert.equal(r.status, 403, JSON.stringify(field));
+  }
+  // Privileged override / privileged or all-sites role for someone else.
+  const ov = await post('umA', '/rbac/users', { ...F.attAUser, customModuleOverrides: { USER_MANAGEMENT: true } });
+  assert.equal(ov.status, 403);
+  const priv = await post('umA', '/rbac/users', { ...F.attAUser, roleId: 'role-master-admin' });
+  assert.equal(priv.status, 403);
+  const allSites = await post('master', '/rbac/roles', { roleName: 'BE All Sites Viewer', siteScope: 'ALL_SITES', modulePermissions: { HOME: FULL } });
+  const asg = await post('umA', '/rbac/users', { ...F.attAUser, roleId: allSites.body.role.id });
+  assert.equal(asg.status, 403);
+  // Unchanged record and ordinary edits still work.
+  const users = (await get('master', '/rbac/users')).body.users;
+  const meNow = users.find((u) => u.id === me.id);
+  assert.equal(meNow.roleId, me.roleId); assert.equal(meNow.customModuleOverrides?.MASTER_CONFIG, undefined);
+  const ok = await post('umA', '/rbac/users', { ...meNow, fullName: 'BE umA renamed' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const other = await post('umA', '/rbac/users', { ...users.find((u) => u.id === F.attAUser.id), roleId: inv.body.role.id });
+  assert.equal(other.status, 200, 'a non-privileged role for someone else at my site is fine');
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `user/${me.id}`));
+});

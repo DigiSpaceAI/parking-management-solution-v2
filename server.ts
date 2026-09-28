@@ -2515,7 +2515,56 @@ app.get('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'view'), (req
   res.json({ success: true, count: visibleUsers.length, users: toPublicUsers(visibleUsers) });
 });
 
+// Why a non-Master may not save this user record (M-1: the H8 rules must
+// hold on the user-save route too), or '' when allowed. Unchanged values
+// are fine, so re-saving a full record the UI loaded doesn't trip it.
+function userSaveRefusal(caller: NonNullable<express.Request['user']>, body: any): string {
+  if (!body || typeof body !== 'object') return '';
+  const existing = body.id ? getAppUsers().find((u) => u.id === body.id) : undefined;
+  const changes = (key: string) =>
+    body[key] !== undefined && JSON.stringify(body[key]) !== JSON.stringify(existing ? (existing as any)[key] : undefined);
+
+  if (existing && existing.id === caller.id) {
+    const own = ['roleId', 'customModuleOverrides', 'siteScopeType', 'assignedSiteIds', 'status'].filter(changes);
+    if (own.length > 0) return `You can't change your own ${own.join(', ')}.`;
+  }
+
+  const overrides = body.customModuleOverrides;
+  if (overrides && typeof overrides === 'object') {
+    const newlyPrivileged = PRIVILEGED_MODULES.filter(
+      (m) => overrides[m] === true && existing?.customModuleOverrides?.[m] !== true
+    );
+    if (newlyPrivileged.length > 0) {
+      return 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit access.';
+    }
+  }
+
+  if (body.roleId !== undefined && body.roleId !== existing?.roleId) {
+    const role = getAppRoles().find((r) => r.id === body.roleId || r.roleCode === body.roleId);
+    if (role && (grantsPrivilegedRights(role.modulePermissions) || role.siteScope === 'ALL_SITES')) {
+      return 'Only a Platform Master Admin can assign a role with Master Config, User Management or Security Audit rights, or an all-sites role.';
+    }
+  }
+  return '';
+}
+
 app.post('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'canCreate'), (req, res) => {
+  const caller = req.user!;
+  if (!isMasterAdmin(caller)) {
+    const refusal = userSaveRefusal(caller, req.body);
+    if (refusal) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `user/${req.body?.id || 'new'}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: refusal,
+      });
+      return masterOnly(res, refusal);
+    }
+  }
   const result = saveAppUser(req.body, req.user!.id);
   logSecurityEvent({
     action: 'RBAC_USER_SAVED',

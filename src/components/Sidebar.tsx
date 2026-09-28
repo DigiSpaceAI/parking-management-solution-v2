@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { ActiveTabType } from './Header';
 import { AppUser, RolePermissionConfig } from '../types';
-import { isModulePermitted } from '../utils/rbac';
+import { canOpenTab } from '../utils/rbac';
 
 interface SidebarProps {
   activeTab: ActiveTabType;
@@ -177,9 +177,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
   ];
 
-  // ONLY display modules permitted by role permissions & user overrides!
+  // ONLY display modules permitted by role permissions & user overrides,
+  // and the Master-only pages (audit, InfoSec tools) to Master Admin only (L-5).
   const navItems = rawNavItems.filter((item) =>
-    isModulePermitted(currentUser, currentRole, item.id)
+    canOpenTab(currentUser, currentRole, item.id)
   );
 
   const handleSelect = (id: ActiveTabType) => {

@@ -272,3 +272,20 @@ export function getUserPrimarySite(
   return permitted.length > 0 ? permitted[0] : null;
 }
 
+
+/**
+ * Console pages only a Master Admin may open in Phase 1 (001 design F5,
+ * AC-52): the audit log and the InfoSec test tools (clear history, data
+ * migration). The server enforces the same rule (requireMasterAdmin).
+ */
+export const MASTER_ONLY_TABS: readonly string[] = ['SECURITY_AUDIT'];
+
+/** One rule for sidebar, Home tiles, header shortcuts and the S-NA page. */
+export function canOpenTab(
+  user: AppUser | null | undefined,
+  roleConfig: RolePermissionConfig | undefined,
+  tabId: ActiveTabType | AppModuleId | string
+): boolean {
+  if (MASTER_ONLY_TABS.includes(tabId) && !isMasterAdmin(user)) return false;
+  return isModulePermitted(user, roleConfig, tabId);
+}

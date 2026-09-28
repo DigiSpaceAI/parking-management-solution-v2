@@ -17,9 +17,11 @@ interface UserManagementModuleProps {
   currentUser: any;
   onSelectSimulatedUser: (user: any) => void;
   onRefreshAll: () => void;
+  /** The Role View Simulator is a Master Admin test tool (L-5, AC-52). */
+  isMaster?: boolean;
 }
 
-export const UserManagementModule: React.FC<UserManagementModuleProps> = ({ onSelectSimulatedUser }) => {
+export const UserManagementModule: React.FC<UserManagementModuleProps> = ({ onSelectSimulatedUser, isMaster = false }) => {
   const [tab, setTab] = useState<SubTab>('USERS');
 
   const tabBtn = (key: SubTab, label: string) => (
@@ -40,12 +42,12 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({ onSe
         {tabBtn('USERS', 'User Directory & Site Scopes')}
         {tabBtn('ROLES', 'Module Permission Matrix')}
         {tabBtn('ALLOCATION', 'Site-Level User Allocation')}
-        {tabBtn('SIMULATOR', 'Role View Simulator')}
+        {isMaster && tabBtn('SIMULATOR', 'Role View Simulator')}
       </div>
       {tab === 'USERS' && <MasterAdminUsers />}
       {tab === 'ROLES' && <MasterAdminRoles />}
       {tab === 'ALLOCATION' && <MasterAdminSiteAllocation />}
-      {tab === 'SIMULATOR' && <MasterAdminRoleSimulator onSelectUser={onSelectSimulatedUser} />}
+      {tab === 'SIMULATOR' && isMaster && <MasterAdminRoleSimulator onSelectUser={onSelectSimulatedUser} />}
     </div>
   );
 };

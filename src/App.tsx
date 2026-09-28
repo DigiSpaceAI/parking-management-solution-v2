@@ -35,7 +35,7 @@ import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
 import { SecurityAuditModule } from './components/SecurityAuditModule';
 import { LoginScreen } from './components/LoginScreen';
-import { isMasterAdmin, getModuleRights } from './utils/rbac';
+import { isMasterAdmin, getModuleRights, canOpenTab } from './utils/rbac';
 import {
   ALL_SITES,
   SiteContext,
@@ -52,6 +52,7 @@ import {
 import { ChooseSite } from './components/ChooseSite';
 import { NoSiteAssigned } from './components/NoSiteAssigned';
 import { ListSkeleton } from './components/ListSkeleton';
+import { NoAccess } from './components/NoAccess';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 
 const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
@@ -452,8 +453,15 @@ export default function App() {
   const currentRole = roles.find((r) => r.id === currentUser.roleId);
   const canManageDomains = getModuleRights(currentUser, currentRole, 'REGISTRATION').canEdit;
 
+  const userCanOpen = (tab: ActiveTabType) => canOpenTab(currentUser, currentRole, tab);
+
   // siteId is the chosen site or 'ALL' (never empty for console users).
-  const renderActiveTab = (siteId: string) => (
+  // A page the role can't open (deep link, stale tab, role changed) shows
+  // S-NA instead of its content (L-5, AC-07). The server enforces it too.
+  const renderActiveTab = (siteId: string) =>
+    !userCanOpen(activeTab) ? (
+      <NoAccess onGoHome={() => setActiveTab('HOME')} />
+    ) : (
     <>
             {activeTab === 'HOME' && (
               isSiteAdmin && siteId !== ALL_SITES ? (
@@ -581,6 +589,7 @@ export default function App() {
             {activeTab === 'USER_MANAGEMENT' && (
               <UserManagementModule
                 currentUser={currentUser}
+                isMaster={isMasterAdmin(currentUser)}
                 onSelectSimulatedUser={(u) => setCurrentUser(u)}
                 onRefreshAll={refreshAll}
               />
@@ -612,6 +621,7 @@ export default function App() {
         currentSiteId={currentSiteId ?? undefined}
         onSelectSite={(siteId) => selectSite(siteId)}
         allowAllSites={isMasterAdmin(currentUser)}
+        canOpenTab={userCanOpen}
         onToggleMobileSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
         onLogout={handleLogout}
       />

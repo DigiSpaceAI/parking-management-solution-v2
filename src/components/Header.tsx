@@ -57,6 +57,8 @@ interface HeaderProps {
   /** Offer "All sites" (Master Admin only, AC-05). */
   allowAllSites?: boolean;
   siteSwitchDisabled?: boolean;
+  /** Whether the user may open a page; shortcuts to other pages are hidden (L-5). */
+  canOpenTab?: (tab: ActiveTabType) => boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -75,6 +77,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectSite,
   allowAllSites = false,
   siteSwitchDisabled = false,
+  canOpenTab = () => true,
 }) => {
   const [showNotificationsMenu, setShowNotificationsMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -113,7 +116,15 @@ export const Header: React.FC<HeaderProps> = ({
 
   const occPct = totalSlots > 0 ? Math.round((occupiedCount / totalSlots) * 100) : 0;
   const vacantCount = totalSlots - occupiedCount;
-  const totalNotifications = alertCount + pendingReqCount;
+  // Shortcuts only to pages this role can open (L-5).
+  const approvalsTab: ActiveTabType | null = canOpenTab('APPROVALS')
+    ? 'APPROVALS'
+    : canOpenTab('REGISTRATION')
+      ? 'REGISTRATION'
+      : null;
+  const shownAlertCount = canOpenTab('ALERTS') ? alertCount : 0;
+  const shownPendingCount = approvalsTab ? pendingReqCount : 0;
+  const totalNotifications = shownAlertCount + shownPendingCount;
 
   // `sites` already holds only the user's permitted sites (server-scoped /my-sites).
   const permittedSites = sites;
@@ -246,7 +257,7 @@ export const Header: React.FC<HeaderProps> = ({
                     </div>
                   ) : (
                     <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                      {alertCount > 0 && (
+                      {shownAlertCount > 0 && (
                         <div
                           onClick={() => {
                             setActiveTab('ALERTS');
@@ -266,10 +277,10 @@ export const Header: React.FC<HeaderProps> = ({
                         </div>
                       )}
 
-                      {pendingReqCount > 0 && (
+                      {shownPendingCount > 0 && approvalsTab && (
                         <div
                           onClick={() => {
-                            setActiveTab('REGISTRATION');
+                            setActiveTab(approvalsTab);
                             setShowNotificationsMenu(false);
                           }}
                           className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl cursor-pointer hover:bg-amber-100 transition-colors flex items-start space-x-2"

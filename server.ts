@@ -285,13 +285,6 @@ function siteAllowedFor(user: express.Request['user'], siteId?: string): boolean
   return allowed === null || allowed.includes(siteId || DEFAULT_SITE_ID);
 }
 
-// Sends a 403 and returns true when the record's site is outside the caller's scope.
-function denyForeignSite(req: express.Request, res: express.Response, siteId?: string): boolean {
-  if (siteAllowedFor(req.user, siteId)) return false;
-  res.status(403).json({ success: false, message: 'You do not have access to this site.' });
-  return true;
-}
-
 function rawClientSiteId(req: express.Request): string | undefined {
   const fromQuery = req.query?.siteId;
   if (fromQuery && typeof fromQuery === 'string') return fromQuery;
@@ -1200,10 +1193,8 @@ app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (re
   if (!vehicleNumberOrSlot || !newSlotNumber) {
     return res.status(400).json({ success: false, message: 'Vehicle number (or current slot) and newSlotNumber are required.' });
   }
-  // Was the one write route in this file that never resolved a site at
-  // all — every other mutation (entry, exit, employee edits, etc.)
-  // already goes through getRequestedSiteId, so this was a real gap: an
-  // attendant could relocate a vehicle using another site's slot numbers.
+  // Relocation acts on one selected site (resolveSite): both the vehicle's
+  // current slot and the target slot are matched within it (B4 / BUG-4).
   const siteId = resolveSite(req, res, { allowAll: false });
   if (siteId === null) return;
   const result = changeVehicleSlot(vehicleNumberOrSlot, newSlotNumber, reason, attendantName, siteId);

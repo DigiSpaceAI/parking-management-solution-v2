@@ -93,6 +93,7 @@ import {
   requireAuth,
   requirePermission,
   requireAnyPermission,
+  hasModulePermission,
   maskPhone,
   createSession,
   generatePasswordResetToken,
@@ -1053,8 +1054,24 @@ app.get(
 // account) is the right bar here, not MASTER_CONFIG specifically. Every
 // write operation below (onboard, status, delete, pricing) correctly
 // stays gated to MASTER_CONFIG — only this read was ever the problem.
+// H7 (001 design B5): only the caller's own sites (every site for a Master
+// Admin / ALL_SITES user), and contact details + pricing only for callers
+// with MASTER_CONFIG view. Evaluated for the effective user, so the Role View
+// Simulator shows exactly what the target user would get.
+function sitesVisibleTo(user: express.Request['user']) {
+  const allSites = getSites();
+  const allowed = user ? getAllowedSiteIds(user) : [];
+  return allowed === null ? allSites : allSites.filter((s) => allowed.includes(s.id) || allowed.includes(s.siteCode));
+}
+
 app.get('/api/v1/sites', (req, res) => {
-  const sites = getSites();
+  const user = scopeUser(req);
+  const canSeeCommercial = hasModulePermission(user, 'MASTER_CONFIG', 'view');
+  const sites = sitesVisibleTo(user).map((site) => {
+    if (canSeeCommercial) return site;
+    const { contactPerson, contactEmail, contactPhone, pricing, ...rest } = site;
+    return rest;
+  });
   res.json({ success: true, count: sites.length, sites });
 });
 
@@ -1068,9 +1085,7 @@ app.get('/api/v1/sites', (req, res) => {
 // own site list here already matches what the rest of the API will let
 // them do.
 app.get('/api/v1/my-sites', (req, res) => {
-  const allSites = getSites();
-  const allowed = req.user ? getAllowedSiteIds(req.user) : null;
-  const sites = allowed === null ? allSites : allSites.filter((s) => allowed.includes(s.id) || allowed.includes(s.siteCode));
+  const sites = sitesVisibleTo(scopeUser(req));
   res.json({ success: true, count: sites.length, sites });
 });
 

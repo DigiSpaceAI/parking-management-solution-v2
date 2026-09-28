@@ -340,3 +340,19 @@ test('B4/BUG-10 scan-plate never returns a mock plate', async () => {
   const noSite = await post('attA', '/vehicles/scan-plate', {});
   assert.equal(noSite.status, 400); assert.equal(noSite.body.errorCode, 'ERR_SITE_REQUIRED');
 });
+
+// ---------------------------------------------------------------- B5
+test('B5/H7 /sites returns only the caller\'s sites, without contact or pricing for non-Master', async () => {
+  const a = await get('adminA', '/sites');
+  assert.equal(a.status, 200);
+  assert.deepEqual(a.body.sites.map((s) => s.id), [F.A.id]);
+  for (const s of a.body.sites) {
+    for (const k of ['contactPerson', 'contactEmail', 'contactPhone', 'pricing']) assert.ok(!(k in s), `${k} stripped`);
+  }
+  const att = await get('attB', '/sites');
+  assert.deepEqual(att.body.sites.map((s) => s.id), [F.B.id]);
+  const m = await get('master', '/sites');
+  assert.ok(m.body.sites.length >= 2 && m.body.sites.every((s) => 'pricing' in s), 'Master keeps the full list and fields');
+  const my = await get('adminAB', '/my-sites');
+  assert.deepEqual(my.body.sites.map((s) => s.id).sort(), [F.A.id, F.B.id].sort());
+});

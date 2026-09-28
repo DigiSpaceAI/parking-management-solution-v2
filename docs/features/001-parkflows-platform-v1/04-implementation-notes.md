@@ -102,8 +102,36 @@ _Scope: C-1, M-1, M-2 (backend parts) and Minors m-1…m-4. One commit per findi
 - Not in this task and left open: M-3 (mobile M1), m-5 (frontend), m-6 (PM/architect decision), m-7/m-8 (frontend/security).
 
 ## Frontend
-_Author: frontend-dev · Date: 2026-09-28 · Status: **DONE: F1–F8 + PRD Addendum C domain labels on `feature/001-parkflows-platform-v1`; ready for code review (step 5)**. Not self-reviewed. `main` untouched, nothing pushed._
+_Author: frontend-dev · Date: 2026-09-28 · Status: **Round 2 frontend fixes done (C-1 c, m-5, m-7, M-2 UI); ready for code review round 3**. F1–F8 + PRD Addendum C done earlier. Not self-reviewed. `main` untouched, nothing pushed._
 _History: blocked on 25 Sep (no approved 02/03). This section replaces that note._
+
+### Round 2 fixes (code review round 2, 2026-09-28)
+_Scope: the frontend parts of round 2: C-1 (c), m-5, m-7, plus the backend hand-off to hide role editing for non-Masters (M-2 UI). One commit per finding. Not self-reviewed; for re-review in round 3._
+
+| Finding | Commit | Change |
+|---|---|---|
+| **C-1 (c)** (Critical) | `17ececd` | **`DomainWhitelistPanel`** reads the authenticated **`GET /domains/manage`**. Its full rows keep the "This site" / "All sites" / site-code labels and Remove working. **`EmployeeRegistration`** and **`EmployeeMobileApp`** call the public `GET /domains?siteId=<chosen site>` and use only `domain`. |
+| **m-5** (Minor) | `5386121` | `UserManagementModule` gets `isMaster={isMasterAdmin(viewer)}`, so the Role View Simulator tab follows the viewed user and is hidden while viewing as a non-Master. |
+| **m-7** (Minor) | `9657b47` | The fetch wrapper adds `x-session-token` only for the page's own origin and the `API_BASE` origin. `API_BASE` moved from `LoginScreen.tsx` to a new shared `src/apiBase.ts`, so the sign-in URL and the token rule can't drift apart. `x-site-id` / `x-view-as` stay same-origin `/api/v1/*` only, as before. |
+| **M-2 UI** (backend hand-off) | `a485dda` | `MasterAdminRoles` is read-only for non-Masters, since the server now refuses role changes from them. Save role, Clone and New custom role are hidden, all toggles are locked, and a note reads "Roles can be changed by a Master Admin only." |
+
+**Behaviour the public route change needs on the page (C-1):**
+- **Registration form:** the public list returns names only, with no `isActive`. The old filter on `isActive` would have marked every email "not whitelisted" and blocked registration, so the form now uses the names as returned.
+- **No single site chosen** (All sites mode, or the Employee preview with no site context): the page doesn't call the public route, which would answer 400. It doesn't pre-judge the email either; the server decides on submit and fails closed. The domains banner says "Checked for the employee's site when the request is submitted."
+- **Approvals Valid / Invalid badge:** now checked against **the request's own site** (its entries plus platform-wide ones) from `/domains/manage`. Before, it used the one list for the chosen site, which was wrong for rows in All sites mode. If that list can't be loaded (no REGISTRATION view), the badge is neutral (just the domain) and makes no claim.
+
+**Gaps found in round 2 inputs (for others):**
+1. **Mobile and console use different override variables.** `src/mobile/api.ts` reads `VITE_API_BASE` while the console reads `VITE_API_BASE_URL`, so one build setting doesn't cover both. Mobile's call (M-3 / M1 owner). I did not change mobile code.
+2. **`EmployeeMobileApp` (the in-console Employee Smart Pass preview) still has a hard-coded fallback domain list** when its list is empty. It was already there, it only affects the preview, and the server enforces domains on submit. Phase 2 (P2-7) replaces this app.
+3. **m-5 and M-2 UI couldn't be checked in the browser.** No seeded account is a non-Master with USER_MANAGEMENT. They were checked in code only; QA should add such an account to the fixtures.
+4. Not frontend, still open: **M-3** (mobile M1), **m-6** (PM/architect decision), **m-8** (security reviewer).
+
+**Checks after each fix** (`17ececd` → `a485dda`): `npm run lint` exit 0 · `npm run build` exit 0 · `npm run test:qa` 97 tests: `001-backend` **49/49**, `001-platform-v1` 0/48 under strict mode (known: QA fixtures send no site, backend gap 5).
+
+**Browser-checked** in headless Chromium against a server built from `a485dda`:
+- **Site Admin:** the panel lists and labels entries from `/domains/manage`, and Remove appears only on "This site" entries. The registration form calls `/domains?siteId=site-1` and lists that site's plus platform-wide domains. A site-1 request from `@alphatech.in` shows "Valid" on Approvals.
+- **Master Admin in All sites mode:** the panel shows site codes, and there is no public `/domains` call anywhere, so no 400s.
+- **m-7:** a fetch to a third-party origin carries no `x-session-token`; same-origin `/api/v1` still does.
 
 ### Gaps found in inputs
 1. **Legacy `site-default` records can't be chosen.** Under strict mode they show only in All sites mode, which is read-only. `/my-sites` never lists `site-default`, so no one can select it or edit those records. In the local seed, all 1,080 slots are `site-default`. **Devops/QA:** the R11 check must confirm Alphatech has no strays, or run `/admin/migrate-site-data` first.
@@ -202,8 +230,9 @@ Build with `VITE_API_BASE_URL=http://localhost:<port> npm run build` (see gap 2)
 I ran steps 1–8 in headless Chromium against a local server built from this branch. The scripts are ad hoc and not committed; a browser test harness is QA's call.
 ## Mobile
 ## Build/lint results
-Not run for frontend. No frontend changes were made.
 
 **Backend (2026-09-28, on `0180e3e`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `tests/qa/001-backend.api.test.mjs` **43/43 pass** (incl. domain whitelist) · QA suite `001-platform-v1` with `SITE_SCOPE_MODE=fallback`: **32/48 pass** (was 21/48 on 25 Sep; 0 new failures; the 16 left are Phase 2 ACs plus PERM-02, which now fails by design and is to be rewritten by QA; see Backend gap 4). QA suite under strict mode: fixtures need a site (Backend gap 5).
 
 **Frontend (2026-09-28, on `0dd8643`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `npm run test:qa` after every task F1–F8: `001-backend` **43/43 pass** (unchanged); `001-platform-v1` **0/48** under strict mode, unchanged from before F1: its `before()` hook sends no site (Backend gap 5; QA-owned fixtures). No frontend change touches the server, so these suites can't move with F1–F8.
+
+**Frontend round 2 (2026-09-28, on `a485dda`):** `npm run lint` exit 0 · `npm run build` exit 0 · `npm run test:qa`: `001-backend` **49/49**; `001-platform-v1` 0/48 under strict mode (unchanged, QA fixtures).

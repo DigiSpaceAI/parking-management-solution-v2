@@ -1823,9 +1823,12 @@ export function processVehicleExit(vehicleNumberOrSlot: string, siteId?: string)
 }
 
 // Predictive Analytics Hourly Time-Series Forecast Generator
-export function generate24HourPredictiveForecast(): PredictiveAnalyticsReport {
+export function generate24HourPredictiveForecast(siteId: string): PredictiveAnalyticsReport {
   const storeData = getStore();
-  const totalSlots = storeData.slots.length; // 1080
+  // Scoped to one site (001 design B2): slot counts and floor breakdown come
+  // from that site's own inventory, never the whole platform.
+  const siteSlots = storeData.slots.filter(s => (s.siteId || DEFAULT_SITE_ID) === siteId);
+  const totalSlots = siteSlots.length;
 
   const hours = [
     '00:00', '01:00', '02:00', '03:00', '04:00', '05:00',
@@ -1890,17 +1893,27 @@ export function generate24HourPredictiveForecast(): PredictiveAnalyticsReport {
     projectedPeakOccupied,
     hourlyForecast,
     aiRecommendations: [
-      'Morning Peak Notice: High demand expected between 09:15 AM - 10:00 AM reaching 96% occupancy (1,036 slots).',
+      `Morning Peak Notice: High demand expected between 09:15 AM - 10:00 AM reaching ${peakOccupancyPct}% occupancy (${projectedPeakOccupied.toLocaleString('en-IN')} slots).`,
       'EV Charging Demand Alert: B1 EV Hub projected at 100% capacity by 10:15 AM. Recommend 3-hour dwell time limit rule.',
       'Puzzle Stacker Optimization: B1 & B2 Puzzle stackers should pre-sequence lower pallets before 08:30 AM arrival wave.',
       'Non-Parked Roster Verification: Schedule FCM cutoff alert scan at 10:30 AM for off-site or unregistered employee vehicles.',
     ],
-    floorBreakdown: [
-      { floor: 'Basement B1', totalSlots: 320, projectedPeakOccupied: 314, peakPct: 98 },
-      { floor: 'Basement B2', totalSlots: 360, projectedPeakOccupied: 345, peakPct: 96 },
-      { floor: 'Basement B3', totalSlots: 320, projectedPeakOccupied: 288, peakPct: 90 },
-      { floor: 'Ground & Driveway', totalSlots: 80, projectedPeakOccupied: 72, peakPct: 90 },
-    ],
+    floorBreakdown: (() => {
+      // Same peak profile per floor as before, applied to this site's
+      // real per-floor slot counts; floors the site doesn't have are omitted.
+      const floors: { floor: string; match: (b: string) => boolean; peakPct: number }[] = [
+        { floor: 'Basement B1', match: b => b === 'B1', peakPct: 98 },
+        { floor: 'Basement B2', match: b => b === 'B2', peakPct: 96 },
+        { floor: 'Basement B3', match: b => b === 'B3', peakPct: 90 },
+        { floor: 'Ground & Driveway', match: b => b === 'Ground' || b === 'Driveway', peakPct: 90 },
+      ];
+      return floors
+        .map(f => {
+          const count = siteSlots.filter(s => f.match(s.basement)).length;
+          return { floor: f.floor, totalSlots: count, projectedPeakOccupied: Math.round(count * (f.peakPct / 100)), peakPct: f.peakPct };
+        })
+        .filter(f => f.totalSlots > 0);
+    })(),
   };
 }
 

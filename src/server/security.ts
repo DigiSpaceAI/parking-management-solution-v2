@@ -847,38 +847,49 @@ export type PermissionAction = 'view' | 'canCreate' | 'canEdit' | 'canDelete' | 
 /**
  * Validates role and module permissions for the authenticated user.
  */
+// Why a user may not perform `action` in `moduleId`, or null when allowed.
+// Shared by requirePermission / requireAnyPermission and by routes that need
+// a permission check inline.
+export function modulePermissionDenial(user: AppUser, moduleId: AppModuleId, action: PermissionAction): string | null {
+  const store = getStore();
+  const role = store.appRoles.find((r) => r.id === user.roleId || r.roleCode === user.roleId);
+  if (!role) return 'No role assigned to this account.';
+
+  const rights = role.modulePermissions?.[moduleId];
+  const override = user.customModuleOverrides?.[moduleId];
+  const moduleEnabled = override !== undefined ? override : rights?.enabled;
+
+  if (!moduleEnabled) return `You don't have access to ${moduleId.replace(/_/g, ' ')}.`;
+  if (action !== 'view' && !rights?.[action]) return `Your role can't perform this action in ${moduleId.replace(/_/g, ' ')}.`;
+  return null;
+}
+
+export function hasModulePermission(user: AppUser | undefined, moduleId: AppModuleId, action: PermissionAction): boolean {
+  return !!user && modulePermissionDenial(user, moduleId, action) === null;
+}
+
 export function requirePermission(moduleId: AppModuleId, action: PermissionAction) {
+  return requireAnyPermission([[moduleId, action]]);
+}
+
+/**
+ * Passes when the user holds at least one of the given (module, action)
+ * rights. Evaluated against req.effectiveUser, so a Master Admin viewing as
+ * another user sees exactly what that user can see.
+ */
+export function requireAnyPermission(options: [AppModuleId, PermissionAction][]) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const user = req.user;
+    const user = req.effectiveUser || req.user;
     if (!user) {
-      return res.status(401).json({ success: false, message: 'Not signed in.' });
+      return res.status(401).json({ success: false, message: 'Not signed in.', errorCode: 'ERR_SESSION_EXPIRED' });
     }
-
-    const store = getStore();
-    const role = store.appRoles.find((r) => r.id === user.roleId || r.roleCode === user.roleId);
-    if (!role) {
-      return res.status(403).json({ success: false, message: 'No role assigned to this account.' });
+    let firstDenial: string | null = null;
+    for (const [moduleId, action] of options) {
+      const denial = modulePermissionDenial(user, moduleId, action);
+      if (denial === null) return next();
+      firstDenial = firstDenial || denial;
     }
-
-    const rights = role.modulePermissions?.[moduleId];
-    const override = user.customModuleOverrides?.[moduleId];
-    const moduleEnabled = override !== undefined ? override : rights?.enabled;
-
-    if (!moduleEnabled) {
-      return res.status(403).json({
-        success: false,
-        message: `You don't have access to ${moduleId.replace(/_/g, ' ')}.`,
-      });
-    }
-
-    if (action !== 'view' && !rights?.[action]) {
-      return res.status(403).json({
-        success: false,
-        message: `Your role can't perform this action in ${moduleId.replace(/_/g, ' ')}.`,
-      });
-    }
-
-    next();
+    return res.status(403).json({ success: false, message: firstDenial });
   };
 }
 

@@ -92,6 +92,8 @@ import {
   isValidLicensePlate,
   requireAuth,
   requirePermission,
+  requireAnyPermission,
+  maskPhone,
   createSession,
   generatePasswordResetToken,
   consumePasswordResetToken,
@@ -505,16 +507,13 @@ app.get('/api/v1/health', (req, res) => {
 app.get('/api/v1/slots', (req, res) => {
   const store = getStore();
   const { basement, status, allocation, slotType, search } = req.query;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
 
   // Records written before site-scoping existed have no siteId at all —
-  // treated as DEFAULT_SITE_ID here too, matching the same fallback
-  // used when creating them in db.ts, so existing data keeps working
-  // without needing an active migration write.
-  const resolveSiteId = (s: { siteId?: string }) => s.siteId || DEFAULT_SITE_ID;
-  const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.slots.filter(s => resolveSiteId(s) === siteId)
-    : store.slots;
+  // treated as DEFAULT_SITE_ID (see recordSite), so existing data keeps
+  // working without an active migration write.
+  const siteScoped = filterBySite(store.slots, siteId);
 
   let slots = siteScoped;
 
@@ -579,15 +578,22 @@ app.get('/api/v1/slots', (req, res) => {
 const FULL_PII_ROLES = new Set(['Platform Master Admin', 'Site Facility Manager', 'MIS Auditor']);
 const PLATE_VISIBLE_ROLES = new Set(['Gate Security Attendant', 'ValetX Operations Lead']);
 
+// PII visibility for the caller, from their server-side role only (the
+// Role View Simulator target when viewing as someone). Never from a query
+// parameter.
+function piiAccess(req: express.Request): { fullyUnmasked: boolean; platesUnmasked: boolean } {
+  const role = scopeUser(req)?.roleName || '';
+  const fullyUnmasked = FULL_PII_ROLES.has(role);
+  return { fullyUnmasked, platesUnmasked: fullyUnmasked || PLATE_VISIBLE_ROLES.has(role) };
+}
+
 app.get('/api/v1/employees', (req, res) => {
   const store = getStore();
   const { search, department } = req.query;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
 
-  const resolveSiteId = (e: { siteId?: string }) => e.siteId || DEFAULT_SITE_ID;
-  let employees = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.employees.filter(e => resolveSiteId(e) === siteId)
-    : store.employees;
+  let employees = filterBySite(store.employees, siteId);
 
   if (department && typeof department === 'string' && department !== 'ALL') {
     employees = employees.filter(e => e.department === department);
@@ -610,9 +616,7 @@ app.get('/api/v1/employees', (req, res) => {
   // adding ?userRole=MASTER_ADMIN&maskPII=false to the request, regardless
   // of their actual role. That's a privilege-escalation bug, not a
   // legitimate override, so it's been removed entirely.
-  const callerRole = req.user!.roleName;
-  const fullyUnmasked = FULL_PII_ROLES.has(callerRole);
-  const platesUnmasked = fullyUnmasked || PLATE_VISIBLE_ROLES.has(callerRole);
+  const { fullyUnmasked, platesUnmasked } = piiAccess(req);
 
   const sanitized = employees.map((emp) => ({
     ...sanitizeEmployeeList([emp], fullyUnmasked)[0],
@@ -848,11 +852,9 @@ app.post('/api/v1/domains/remove', requirePermission('REGISTRATION', 'canEdit'),
 
 // --- Employee Self-Registration & Admin Approval Endpoints ---
 app.get('/api/v1/registrations', (req, res) => {
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
-  const requests = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? getRegistrationRequests().filter(r => resolveSiteId(r) === siteId)
-    : getRegistrationRequests();
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const requests = filterBySite(getRegistrationRequests(), siteId);
   const pendingCount = requests.filter(r => r.status === 'PENDING').length;
   res.json({ requests, pendingCount });
 });
@@ -923,7 +925,8 @@ app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (re
   // all — every other mutation (entry, exit, employee edits, etc.)
   // already goes through getRequestedSiteId, so this was a real gap: an
   // attendant could relocate a vehicle using another site's slot numbers.
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const result = changeVehicleSlot(vehicleNumberOrSlot, newSlotNumber, reason, attendantName, siteId);
   if (!result.success) {
     return res.status(400).json(result);
@@ -931,10 +934,19 @@ app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (re
   res.json(result);
 });
 
-app.get('/api/v1/slots/change-notifications', (req, res) => {
-  const notifications = getSlotChangeNotifications();
-  res.json({ notifications });
-});
+app.get(
+  '/api/v1/slots/change-notifications',
+  requireAnyPermission([['FLOOR_PLAN', 'view'], ['MOBILE_APP', 'view']]),
+  (req, res) => {
+    const siteId = resolveSite(req, res, { allowAll: true });
+    if (siteId === null) return;
+    const { fullyUnmasked } = piiAccess(req);
+    const notifications = filterBySite(getSlotChangeNotifications(), siteId).map((n) =>
+      fullyUnmasked ? n : { ...n, mobile: n.mobile ? maskPhone(n.mobile, false) : n.mobile }
+    );
+    res.json({ notifications });
+  }
+);
 
 // --- Platform Master Site Configuration Endpoints ---
 // SECURITY-CONSCIOUS FIX: this used to require MASTER_CONFIG permission,
@@ -1132,7 +1144,8 @@ app.post('/api/v1/sites/pricing', requirePermission('MASTER_CONFIG', 'canEdit'),
 
 // --- Site Invoicing Endpoints ---
 app.get('/api/v1/invoices', requirePermission('MASTER_CONFIG', 'view'), (req, res) => {
-  const siteId = req.query.siteId as string;
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
   const invoices = getInvoices(siteId);
   res.json({ success: true, count: invoices.length, invoices });
 });
@@ -1411,15 +1424,15 @@ Respond strictly in JSON format with:
 });
 
 // 7. Parking Logs Endpoint (with PII Privacy Masking & Pagination)
-app.get('/api/v1/logs', (req, res) => {
+app.get('/api/v1/logs', requirePermission('LOGS', 'view'), (req, res) => {
   const store = getStore();
-  const { status, basement, search, limit = '100', maskPII, userRole } = req.query;
-  const siteId = getRequestedSiteId(req);
+  // maskPII / userRole query params are deliberately ignored (H1): masking
+  // comes from the caller's server-side role only, as on /employees.
+  const { status, basement, search, limit = '100' } = req.query;
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
 
-  const resolveSiteId = (l: { siteId?: string }) => l.siteId || DEFAULT_SITE_ID;
-  const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.logs.filter(l => resolveSiteId(l) === siteId)
-    : store.logs;
+  const siteScoped = filterBySite(store.logs, siteId);
 
   let logs = siteScoped;
 
@@ -1440,10 +1453,13 @@ app.get('/api/v1/logs', (req, res) => {
   }
 
   const parsedLimit = parseInt(limit as string, 10) || 100;
-  const isPrivileged = userRole === 'MASTER_ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'SITE_MANAGER';
-  const shouldMask = maskPII === 'true' || (!isPrivileged && maskPII !== 'false');
+  const { fullyUnmasked, platesUnmasked } = piiAccess(req);
+  const shouldMask = !fullyUnmasked;
 
-  const sanitizedLogs = sanitizeParkingLogs(logs.slice(0, parsedLimit), !shouldMask);
+  const sanitizedLogs = logs.slice(0, parsedLimit).map((l) => ({
+    ...sanitizeParkingLogs([l], fullyUnmasked)[0],
+    vehicleNumber: platesUnmasked ? l.vehicleNumber : sanitizeParkingLogs([l], false)[0].vehicleNumber,
+  }));
 
   res.json({
     total: logs.length,
@@ -1456,18 +1472,18 @@ app.get('/api/v1/logs', (req, res) => {
 
 // 8. Predictive Analytics 24-Hour Forecast Endpoint
 app.get('/api/v1/analytics/prediction', (req, res) => {
-  const forecast = generate24HourPredictiveForecast();
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const forecast = generate24HourPredictiveForecast(siteId);
   res.json(forecast);
 });
 
 // 9. Non-Parked Employee Alerts Endpoint
 app.get('/api/v1/alerts/non-parked', (req, res) => {
   const store = getStore();
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (a: { siteId?: string }) => a.siteId || DEFAULT_SITE_ID;
-  const alerts = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.alerts.filter(a => resolveSiteId(a) === siteId)
-    : store.alerts;
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const alerts = filterBySite(store.alerts, siteId);
   res.json({
     cutoffTime: '10:30 AM',
     totalAlerts: alerts.length,
@@ -1498,6 +1514,8 @@ app.post('/api/v1/alerts/trigger-cron', requirePermission('ALERTS', 'canEdit'), 
 
 // 11. AI Slot & PMS Recommendation Assistant (Gemini AI)
 app.post('/api/v1/ai/recommend', requirePermission('ANALYTICS', 'view'), async (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   try {
     // Free text goes into an LLM prompt: cap the length and drop control
     // characters / quotes so it can't break out of the quoted query.
@@ -1516,17 +1534,21 @@ app.post('/api/v1/ai/recommend', requirePermission('ANALYTICS', 'view'), async (
       return res.status(429).json({ success: false, message: 'Daily AI assistant limit reached. Try again tomorrow.' });
     }
 
+    // Context comes from the selected site only, never the whole platform.
     const store = getStore();
-    const occupiedCount = store.slots.filter(s => s.status === 'OCCUPIED').length;
+    const siteSlots = filterBySite(store.slots, siteId);
+    const siteAlerts = filterBySite(store.alerts, siteId);
+    const occupiedCount = siteSlots.filter(s => s.status === 'OCCUPIED').length;
+    const occupiedPct = siteSlots.length ? Math.round((occupiedCount / siteSlots.length) * 100) : 0;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: `You are the Lead Smart Parking AI Advisor for a 1,080-slot corporate parking complex (Basements B1, B2, B3, Ground Driveways, Puzzle Stackers, EV Hub).
+      contents: `You are the Lead Smart Parking AI Advisor for a ${siteSlots.length}-slot corporate parking site.
 Current Inventory Context:
-- Total Slots: ${store.slots.length}
-- Occupied Slots: ${occupiedCount} (${Math.round((occupiedCount / store.slots.length) * 100)}%)
-- Available Vacant Slots: ${store.slots.length - occupiedCount}
-- Active Alerts: ${store.alerts.length} non-parked registered vehicles.
+- Total Slots: ${siteSlots.length}
+- Occupied Slots: ${occupiedCount} (${occupiedPct}%)
+- Available Vacant Slots: ${siteSlots.length - occupiedCount}
+- Active Alerts: ${siteAlerts.length} non-parked registered vehicles.
 
 User Prompt / Query: "${prompt || 'Suggest optimal parking allocation strategy for peak morning rush.'}"
 
@@ -1591,10 +1613,9 @@ const csvCell = (v: unknown): string => {
 app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (req, res) => {
   const store = getStore();
   const { type = 'logs' } = req.query;
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
-  const siteFilter = <T extends { siteId?: string }>(items: T[]) =>
-    siteId && siteId !== 'ALL' ? items.filter(x => resolveSiteId(x) === siteId) : items;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const siteFilter = <T extends SiteRef>(items: T[]) => filterBySite(items, siteId);
 
   logSecurityEvent({
     action: 'DATA_EXPORT_CSV',
@@ -1604,6 +1625,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
     targetResource: `export/${type}`,
     status: 'SUCCESS',
     details: `Exported ${type} dataset as CSV.`,
+    siteId,
   });
 
   if (type === 'slots') {
@@ -1627,11 +1649,9 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
 
 // 14. VALETX SERVICE API ENDPOINTS
 app.get('/api/v1/valet/tickets', (req, res) => {
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (t: { siteId?: string }) => t.siteId || DEFAULT_SITE_ID;
-  const tickets = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? getValetTickets().filter(t => resolveSiteId(t) === siteId)
-    : getValetTickets();
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const tickets = filterBySite(getValetTickets(), siteId);
   res.json({ success: true, count: tickets.length, tickets });
 });
 
@@ -1665,20 +1685,23 @@ app.post('/api/v1/valet/request-retrieval', requirePermission('VALET_SERVICE', '
 // overnight-request review action (matches the existing
 // registration-request approval pattern).
 app.get('/api/v1/reports/mix', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json(getEntryMix(siteId, from, to));
 });
 
 app.get('/api/v1/reports/violations', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const cutoffHour = req.query.cutoffHour ? Number(req.query.cutoffHour) : 22;
   res.json({ violations: getOvernightViolations(siteId, cutoffHour) });
 });
 
 app.get('/api/v1/reports/utilization', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ slots: getSlotUtilization(siteId, from, to) });
@@ -1689,20 +1712,27 @@ app.get('/api/v1/reports/slot-daily-vehicles', requirePermission('REPORTS', 'vie
   if (!slotId || typeof slotId !== 'string') {
     return res.status(400).json({ success: false, message: 'slotId is required.' });
   }
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const reportSlot = getStore().slots.find((sl) => sl.id === slotId);
+  if (!reportSlot) return res.status(404).json({ success: false, message: 'Slot not found.' });
+  if (!assertRecordSite(req, res, reportSlot, siteId)) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ success: true, days: getSlotDailyVehicleCounts(slotId, from, to) });
 });
 
 app.get('/api/v1/reports/occupancy-trend', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ days: getOccupancyTrend(siteId, from, to) });
 });
 
 app.get('/api/v1/reports/peak-hours', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ hours: getPeakHours(siteId, from, to) });
@@ -1710,10 +1740,10 @@ app.get('/api/v1/reports/peak-hours', requirePermission('REPORTS', 'view'), (req
 
 app.get('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'view'), (req, res) => {
   const store = getStore();
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const status = req.query.status as string | undefined;
-  const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
-  let requests = (store.overnightRequests || []).filter(r => resolveSiteId(r) === siteId);
+  let requests = filterBySite(store.overnightRequests || [], siteId);
   if (status && status !== 'ALL') requests = requests.filter(r => r.status === status);
   res.json({ requests });
 });

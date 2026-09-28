@@ -166,7 +166,7 @@ app.use((req, res, next) => {
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-site-id, x-session-token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-site-id, x-session-token, x-view-as');
   }
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -216,8 +216,35 @@ const PUBLIC_API_PATHS = new Set([
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/v1/') && req.path !== '/login') return next();
   if (PUBLIC_API_PATHS.has(req.path)) return next();
-  return requireAuth(req, res, (err?: any) => (err ? next(err) : enforceSiteScope(req, res, next)));
+  return requireAuth(req, res, (err?: any) =>
+    err ? next(err) : applyViewAs(req, res, () => enforceSiteScope(req, res, next))
+  );
 });
+
+// ROLE VIEW SIMULATOR, server-enforced (001 design B10, AC-55).
+// x-view-as: <userId> is honoured only for a Master Admin session. It is
+// read-only: any non-GET is refused. Scope, module permissions and PII
+// masking are evaluated as the target (req.effectiveUser); audit entries
+// keep the real Master Admin as the actor. Ignored on /auth/* so signing out
+// or checking the session always acts on the real account.
+function applyViewAs(req: express.Request, res: express.Response, next: () => void) {
+  const raw = req.headers['x-view-as'];
+  const targetId = typeof raw === 'string' ? raw.trim() : '';
+  if (!targetId || req.path.startsWith('/api/v1/auth/')) return next();
+  if (!req.user || !isMasterAdmin(req.user)) {
+    return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can view as another user.');
+  }
+  const target = getAppUsers().find((u) => u.id === targetId);
+  if (!target) {
+    return res.status(404).json({ success: false, message: 'The user you are viewing as no longer exists.' });
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return sendApiError(res, 403, 'ERR_VIEW_AS_READ_ONLY', 'View-as is read-only. Exit view to make changes.');
+  }
+  req.viewAs = target;
+  req.effectiveUser = target;
+  next();
+}
 
 
 // ---------------------------------------------------------------------------
@@ -313,7 +340,8 @@ function enforceSiteScope(req: express.Request, res: express.Response, next: exp
 // For scoped users the result is always one of their own sites.
 function getRequestedSiteId(req: express.Request): string | undefined {
   const raw = rawClientSiteId(req);
-  const allowed = req.user ? getAllowedSiteIds(req.user) : null;
+  const who = req.effectiveUser || req.user;
+  const allowed = who ? getAllowedSiteIds(who) : null;
   if (allowed === null) return raw;
   if (!raw || raw === 'ALL') return allowed[0] ?? NO_SITE_ACCESS;
   return allowed.includes(raw) ? raw : NO_SITE_ACCESS;
@@ -2385,7 +2413,7 @@ app.delete('/api/v1/rbac/roles/:id', requirePermission('USER_MANAGEMENT', 'canDe
 
 app.get('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'view'), (req, res) => {
   const users = getAppUsers();
-  const requester = req.user!;
+  const requester = scopeUser(req)!; // the view-as target when simulating
   const requesterIsMasterAdmin = requester.roleId === 'role-master-admin' || (requester.roleName && requester.roleName.toLowerCase().includes('master admin'));
 
   // Real, confirmed gap closed here: this previously returned every

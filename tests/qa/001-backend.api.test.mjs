@@ -493,3 +493,33 @@ test('B9/M1 security audit logs can no longer be cleared', async () => {
   assert.equal(r.status, 400);
   assert.ok((await get('master', '/security/audit-logs')).body.logs.length > 0);
 });
+
+// ---------------------------------------------------------------- B10
+test('B10/AC-55 view-as: Master sees exactly what the target sees, read-only, audit actor stays Master', async () => {
+  const va = { 'x-view-as': F.adminAUser.id };
+  const a = await get('master', '/slots', { site: F.A.id, headers: va });
+  assert.equal(a.status, 200); assert.ok(onlySite(a.body.slots, F.A.id));
+  const b = await get('master', `/slots?siteId=${F.B.id}`, { headers: va });
+  assert.equal(b.status, 403, 'scope is the target\'s');
+  const all = await get('master', '/slots?siteId=ALL', { headers: va });
+  assert.equal(all.status, 400, 'ALL is not available to the target');
+  const my = await get('master', '/my-sites', { headers: va });
+  assert.deepEqual(my.body.sites.map((s) => s.id), [F.A.id]);
+  const write = await post('master', '/slots/update-status', { slotId: a.body.slots[0].id, newStatus: 'MAINTENANCE' }, { site: F.A.id, headers: va });
+  assert.equal(write.status, 403); assert.equal(write.body.errorCode, 'ERR_VIEW_AS_READ_ONLY');
+  const denied = (await auditEntries('CROSS_SITE_ACCESS_DENIED')).filter((l) => l.siteId === F.B.id);
+  assert.ok(denied.some((l) => l.actor === MASTER_EMAIL), 'audit actor is the real Master Admin');
+  const att = await get('master', '/logs', { site: F.A.id, headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(att.body.piiMasked, true, 'masking follows the target role');
+  const noPerm = await get('master', '/export/reports', { site: F.A.id, headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(noPerm.status, 403, 'module permissions follow the target role');
+});
+
+test('B10 view-as is refused for non-Masters and unknown users; ignored on /auth', async () => {
+  const r = await get('adminAB', '/slots', { site: F.A.id, headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(r.status, 403); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY');
+  const u = await get('master', '/slots', { site: F.A.id, headers: { 'x-view-as': 'usr-nope' } });
+  assert.equal(u.status, 404);
+  const me = await get('master', '/auth/me', { headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(me.body.user.email, MASTER_EMAIL);
+});

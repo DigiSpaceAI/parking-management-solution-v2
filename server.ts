@@ -2439,29 +2439,27 @@ function userWithinCallerScope(caller: express.Request['user'], target: { roleId
   return targetSites.length > 0 && targetSites.every((sid) => allowed.includes(sid));
 }
 
+// Roles are shared by every site, so editing one changes other tenants'
+// staff (M-2). For Phase 1, creating, editing and deleting roles is Master
+// Admin only.
+function refuseRoleChange(req: express.Request, res: express.Response, target: string): boolean {
+  if (req.user && isMasterAdmin(req.user)) return false;
+  const refusal = 'Only a Platform Master Admin can create, change or delete roles.';
+  logSecurityEvent({
+    action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: target,
+    status: 'BLOCKED_UNAUTHORIZED',
+    details: refusal,
+  });
+  masterOnly(res, refusal);
+  return true;
+}
+
 app.post('/api/v1/rbac/roles', requirePermission('USER_MANAGEMENT', 'canCreate'), (req, res) => {
-  const caller = req.user!;
-  if (!isMasterAdmin(caller)) {
-    const body = req.body || {};
-    const existing = body.id ? getAppRoles().find((r) => r.id === body.id) : undefined;
-    let refusal = '';
-    if (existing?.isSystemDefault) refusal = 'Only a Platform Master Admin can change a built-in role.';
-    else if (body.id && (body.id === caller.roleId || existing?.roleCode === caller.roleId)) refusal = 'You can\'t change your own role.';
-    else if (grantsPrivilegedRights(body.modulePermissions)) refusal = 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit rights.';
-    else if (body.siteScope === 'ALL_SITES') refusal = 'Only a Platform Master Admin can create an all-sites role.';
-    if (refusal) {
-      logSecurityEvent({
-        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
-        actor: caller.email,
-        actorRole: caller.roleName,
-        ipAddress: req.ip,
-        targetResource: `role/${body.id || 'new'}`,
-        status: 'BLOCKED_UNAUTHORIZED',
-        details: refusal,
-      });
-      return masterOnly(res, refusal);
-    }
-  }
+  if (refuseRoleChange(req, res, `role/${req.body?.id || 'new'}`)) return;
   const result = saveAppRole(req.body);
   logSecurityEvent({
     action: 'RBAC_ROLE_SAVED',
@@ -2476,6 +2474,7 @@ app.post('/api/v1/rbac/roles', requirePermission('USER_MANAGEMENT', 'canCreate')
 });
 
 app.delete('/api/v1/rbac/roles/:id', requirePermission('USER_MANAGEMENT', 'canDelete'), (req, res) => {
+  if (refuseRoleChange(req, res, `role/${req.params.id}`)) return;
   const result = deleteAppRole(req.params.id);
   logSecurityEvent({
     action: 'RBAC_ROLE_DELETED',

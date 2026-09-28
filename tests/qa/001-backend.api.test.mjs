@@ -451,8 +451,7 @@ test('B8/H8 role edits: own role, built-in roles and privileged rights are Maste
   assert.equal(priv.status, 403);
   const roles = (await get('master', '/rbac/roles')).body.roles;
   assert.equal(roles.find((r) => r.id === F.umRole.id).modulePermissions.MASTER_CONFIG, undefined, 'own role unchanged');
-  const plain = await post('umA', '/rbac/roles', { roleName: 'Plain helper', modulePermissions: { HOME: FULL } });
-  assert.equal(plain.status, 200, 'an ordinary custom role is still allowed');
+  // Since round 2 (M-2) every role change is Master-only; see the M-2 test.
 });
 
 test('B8/H8 toggle-module and reset tokens respect the target\'s sites and forbid self', async () => {
@@ -648,4 +647,20 @@ test('M-1 /rbac/users: a non-Master cannot raise their own or anyone\'s privileg
   const other = await post('umA', '/rbac/users', { ...users.find((u) => u.id === F.attAUser.id), roleId: inv.body.role.id });
   assert.equal(other.status, 200, 'a non-privileged role for someone else at my site is fine');
   assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `user/${me.id}`));
+});
+
+test('M-2 creating, editing and deleting roles is Master-only (roles are shared by every site)', async () => {
+  const mk = await post('master', '/rbac/roles', { roleName: 'BE Shared Role', modulePermissions: { HOME: FULL } });
+  assert.ok(mk.body.success);
+  const id = mk.body.role.id;
+  const create = await post('umA', '/rbac/roles', { roleName: 'Plain helper', modulePermissions: { HOME: FULL } });
+  assert.equal(create.status, 403); assert.equal(create.body.errorCode, 'ERR_MASTER_ONLY');
+  const edit = await post('umA', '/rbac/roles', { id, roleName: 'Renamed by site admin' });
+  assert.equal(edit.status, 403);
+  const del = await call('umA', 'DELETE', `/rbac/roles/${id}`);
+  assert.equal(del.status, 403, JSON.stringify(del.body)); assert.equal(del.body.errorCode, 'ERR_MASTER_ONLY');
+  const roles = (await get('master', '/rbac/roles')).body.roles;
+  assert.equal(roles.find((r) => r.id === id).roleName, 'BE Shared Role', 'role unchanged and not deleted');
+  const mDel = await call('master', 'DELETE', `/rbac/roles/${id}`);
+  assert.equal(mDel.status, 200, 'Master can still delete');
 });

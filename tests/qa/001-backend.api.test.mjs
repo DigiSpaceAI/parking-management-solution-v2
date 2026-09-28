@@ -201,3 +201,94 @@ test('B2 prediction is computed from the selected site only', async () => {
   assert.equal(r.status, 200);
   assert.equal(r.body.totalSlots, 3, 'Site A has 3 slots');
 });
+
+// ---------------------------------------------------------------- B3
+const slotsAt = async (siteId) => (await get('master', '/slots', { site: siteId })).body.slots;
+
+test('B3/H4 slot save by id of another site -> 403, record unchanged, audit-logged', async () => {
+  const bSlot = (await slotsAt(F.B.id))[0];
+  const r = await post('adminAB', '/slots/save', { slot: { id: bSlot.id, slotNumber: bSlot.slotNumber, siteId: F.A.id, status: 'MAINTENANCE' } }, { site: F.A.id });
+  assert.equal(r.status, 403, JSON.stringify(r.body)); assert.equal(r.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  const after = (await slotsAt(F.B.id)).find((s) => s.id === bSlot.id);
+  assert.equal(after.status, bSlot.status); assert.equal(after.siteId, F.B.id);
+  assert.ok((await auditEntries('CROSS_SITE_ACCESS_DENIED')).some((l) => l.siteId === F.B.id && l.targetResource.includes('/slots/save')));
+});
+
+test('B3/H4 non-Master cannot move a record with body siteId; Master can and it is audit-logged', async () => {
+  const mk = await post('master', '/slots/save', { slot: { slotNumber: 'B-MOVE-1', basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN' } }, { site: F.B.id });
+  assert.equal(mk.status, 200); assert.equal(mk.body.slot.siteId, F.B.id, 'create takes the resolved site');
+  const id = mk.body.slot.id;
+  const na = await post('adminAB', '/slots/save', { slot: { id, slotNumber: 'B-MOVE-1', siteId: F.A.id } }, { site: F.B.id });
+  assert.equal(na.status, 200); assert.equal(na.body.slot.siteId, F.B.id, 'non-Master: stored site wins');
+  const m = await post('master', '/slots/save', { slot: { id, slotNumber: 'B-MOVE-1', siteId: F.A.id } }, { site: F.B.id });
+  assert.equal(m.status, 200); assert.equal(m.body.slot.siteId, F.A.id, 'Master may move');
+  assert.ok((await auditEntries('RECORD_SITE_MOVED')).some((l) => l.targetResource === `slot/${id}` && l.siteId === F.A.id));
+  await post('master', '/slots/delete', { slotId: id }, { site: F.A.id });
+});
+
+test('B3 create in a site other than the selected one is refused', async () => {
+  const r = await post('adminAB', '/slots/save', { slot: { slotNumber: 'X-1', siteId: F.B.id } }, { site: F.A.id });
+  assert.equal(r.status, 403);
+});
+
+test('B3/H4 bulk upload: one foreign row rejects the whole batch and nothing is written', async () => {
+  const bSlot = (await slotsAt(F.B.id))[0];
+  const before = (await slotsAt(F.A.id)).length;
+  const byId = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }, { id: bSlot.id, slotNumber: bSlot.slotNumber }] }, { site: F.A.id });
+  assert.equal(byId.status, 403, JSON.stringify(byId.body));
+  const bySite = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }, { slotNumber: 'A-NEW-2', siteId: F.B.id }] }, { site: F.A.id });
+  assert.equal(bySite.status, 403);
+  assert.equal((await slotsAt(F.A.id)).length, before, 'no row of a refused batch was written');
+  const noSite = await post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }] });
+  assert.equal(noSite.status, 400);
+  const ok = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }] }, { site: F.A.id });
+  assert.equal(ok.status, 200);
+  assert.ok((await slotsAt(F.A.id)).some((s) => s.slotNumber === 'A-NEW-1'), 'rows without siteId get the selected site');
+});
+
+test('B3/H4 employee save by id of another site -> 403 and record unchanged', async () => {
+  const e = await post('master', '/employees/save', { employee: { name: 'B Emp', employeeId: 'BE-B-1', email: 'b.emp@be-b.test', vehicleNumber: 'MH12AB1001' } }, { site: F.B.id });
+  assert.equal(e.status, 200, JSON.stringify(e.body)); assert.equal(e.body.employee.siteId, F.B.id);
+  F.empB = e.body.employee;
+  const r = await post('adminAB', '/employees/save', { employee: { id: F.empB.id, name: 'Hijacked', vehicleNumber: 'MH12AB1001' } }, { site: F.A.id });
+  assert.equal(r.status, 403);
+  const bulk = await post('adminAB', '/employees/bulk-upload', { employees: [{ id: F.empB.id, name: 'Hijacked', vehicleNumber: 'MH12AB1001' }] }, { site: F.A.id });
+  assert.equal(bulk.status, 403);
+  const list = (await get('master', '/employees', { site: F.B.id })).body.employees;
+  assert.equal(list.find((x) => x.id === F.empB.id).name, 'B Emp');
+});
+
+test('B3/L3 update-status validates the status and checks the slot site; delete checks the site', async () => {
+  const aSlot = (await slotsAt(F.A.id))[0];
+  const bad = await post('adminA', '/slots/update-status', { slotId: aSlot.id, newStatus: 'HACKED' }, { site: F.A.id });
+  assert.equal(bad.status, 400);
+  const bSlot = (await slotsAt(F.B.id))[0];
+  const foreign = await post('adminAB', '/slots/update-status', { slotId: bSlot.id, newStatus: 'MAINTENANCE' }, { site: F.A.id });
+  assert.equal(foreign.status, 403);
+  const byNumber = await post('adminAB', '/slots/update-status', { slotId: bSlot.slotNumber, newStatus: 'MAINTENANCE' }, { site: F.A.id });
+  assert.equal(byNumber.status, 404, 'slot number is looked up within the selected site only');
+  const del = await post('adminAB', '/slots/delete', { slotId: bSlot.id }, { site: F.A.id });
+  assert.equal(del.status, 403);
+  assert.ok((await slotsAt(F.B.id)).some((s) => s.id === bSlot.id && s.status === bSlot.status));
+});
+
+test('B3 approve / reject / registration bulk of another site -> 403', async () => {
+  const sub = await post(null, '/registrations/submit', { name: 'Reg B', email: 'reg.b@company.com', vehicleNumber: 'MH12AB2002', siteId: F.B.id });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  F.regB = sub.body.request;
+  assert.equal((await post('adminAB', '/registrations/approve', { requestId: F.regB.id }, { site: F.A.id })).status, 403);
+  assert.equal((await post('adminAB', '/registrations/reject', { requestId: F.regB.id, reason: 'x' }, { site: F.A.id })).status, 403);
+  const bulk = await post('adminAB', '/registrations/bulk-upload', { requests: [{ name: 'Overwrite', email: 'reg.b@company.com', vehicleNumber: 'MH12AB2002' }] }, { site: F.A.id });
+  assert.equal(bulk.status, 403, 'a row matching another site\'s request by email/plate is refused');
+});
+
+test('B3 valet: status and retrieval never touch another site\'s ticket', async () => {
+  const t = await post('master', '/valet/checkin', { vehicleNumber: 'MH12AB3003', guestName: 'Guest B', guestPhone: '9800011111', keyTagNumber: 'K-777' }, { site: F.B.id });
+  assert.ok(t.body.success, JSON.stringify(t.body)); assert.equal(t.body.ticket.siteId, F.B.id);
+  const st = await post('adminAB', '/valet/status', { ticketId: t.body.ticket.id, status: 'PARKED' }, { site: F.A.id });
+  assert.equal(st.status, 403);
+  const rr = await post('adminAB', '/valet/request-retrieval', { query: 'K-777' }, { site: F.A.id });
+  assert.equal(rr.body.success, false, 'site A query finds no site B ticket');
+  const tickets = (await get('master', '/valet/tickets', { site: F.B.id })).body.tickets;
+  assert.notEqual(tickets.find((x) => x.id === t.body.ticket.id).status, 'RETRIEVAL_REQUESTED');
+});

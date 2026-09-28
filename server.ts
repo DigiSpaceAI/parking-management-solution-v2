@@ -103,6 +103,7 @@ import {
 } from './src/server/security';
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
+import { isMasterAdmin } from './src/utils/rbac';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
@@ -281,15 +282,6 @@ function siteCarryingObjects(body: any): any[] {
   return out.filter((o) => o && typeof o === 'object');
 }
 
-const SITE_INJECT_PATHS = new Set([
-  '/api/v1/employees/save',
-  '/api/v1/employees/bulk-upload',
-  '/api/v1/slots/save',
-  '/api/v1/slots/bulk-upload',
-  '/api/v1/registrations/bulk-upload',
-  '/api/v1/valet/checkin',
-]);
-
 function enforceSiteScope(req: express.Request, res: express.Response, next: express.NextFunction) {
   const user = req.user;
   if (!user) return next();
@@ -311,15 +303,9 @@ function enforceSiteScope(req: express.Request, res: express.Response, next: exp
     }
   }
 
-  // Records created by a scoped user belong to that user's site, never to the
-  // legacy default site by omission.
-  if (req.method === 'POST' && SITE_INJECT_PATHS.has(req.path) && allowed.length > 0) {
-    const fallback = claimed && claimed !== 'ALL' ? claimed : allowed[0];
-    const targets = req.path.endsWith('/bulk-upload') ? objs.filter((o) => o !== req.body) : [req.body.employee || req.body.slot || req.body];
-    for (const o of targets) {
-      if (!o.siteId || o.siteId === 'ALL') o.siteId = fallback;
-    }
-  }
+  // Create routes now take their site from resolveSite() explicitly (001 B3),
+  // so there is one source of truth; this middleware only rejects foreign
+  // claims as defence in depth.
   next();
 }
 
@@ -443,6 +429,87 @@ function assertRecordSite(req: express.Request, res: express.Response, record: S
 // List filter for a resolved site ('ALL' = no filter).
 function filterBySite<T extends SiteRef>(items: T[], site: string): T[] {
   return site === 'ALL' ? items : items.filter((x) => recordSite(x) === site);
+}
+
+function canonicalSiteId(raw: string): string {
+  const m = getSites().find((x) => x.id === raw || x.siteCode === raw);
+  return m ? m.id : raw;
+}
+
+// Site a NEW record (or a bulk row) is written to. Normally the resolved
+// site; a body siteId that differs is refused (null). In SITE_SCOPE_MODE=
+// fallback, when the client sent no site at all, the legacy behaviour is kept:
+// the row's own siteId is used if the caller may access it.
+function writeSiteFor(req: express.Request, resolvedSite: string, bodySiteId: unknown): string | null {
+  if (bodySiteId === undefined || bodySiteId === null || bodySiteId === '' || bodySiteId === 'ALL') return resolvedSite;
+  const wanted = canonicalSiteId(String(bodySiteId));
+  if (wanted === resolvedSite) return resolvedSite;
+  if (SITE_SCOPE_MODE === 'fallback' && !rawClientSiteId(req) && siteAllowedFor(scopeUser(req), wanted)) return wanted;
+  return null;
+}
+
+// Validates a single-record save by id (H4). Returns the siteId to store, or
+// null after sending a 403. Non-Master callers can never move a record: the
+// stored site wins. A Master Admin may move it; that move is audit-logged.
+function siteForSave(
+  req: express.Request,
+  res: express.Response,
+  resolvedSite: string,
+  stored: SiteRef | undefined,
+  bodySiteId: unknown,
+  resource: string
+): string | null {
+  if (stored) {
+    if (!assertRecordSite(req, res, stored, resolvedSite)) return null;
+    const wanted = bodySiteId ? canonicalSiteId(String(bodySiteId)) : resolvedSite;
+    if (wanted !== resolvedSite && req.user && isMasterAdmin(req.user) && !req.viewAs) {
+      logSecurityEvent({
+        action: 'RECORD_SITE_MOVED',
+        actor: req.user.email,
+        actorRole: req.user.roleName,
+        ipAddress: req.ip,
+        targetResource: resource,
+        status: 'SUCCESS',
+        details: `${req.user.fullName} moved ${resource} from site ${resolvedSite} to ${wanted}.`,
+        siteId: wanted,
+      });
+      return wanted;
+    }
+    return resolvedSite;
+  }
+  const site = writeSiteFor(req, resolvedSite, bodySiteId);
+  if (site === null) return denySite(req, res, canonicalSiteId(String(bodySiteId)), `${req.user?.email || 'unknown'} tried to create ${resource} in site ${bodySiteId} while working in site ${resolvedSite}.`);
+  return site;
+}
+
+// Bulk uploads (H4): the WHOLE batch is refused when any row targets another
+// site's record or carries a foreign siteId; nothing is written. Otherwise
+// every row is stamped with its write site.
+function stampBulkRows<T extends { id?: string; siteId?: string }>(
+  req: express.Request,
+  res: express.Response,
+  resolvedSite: string,
+  rows: T[],
+  findExisting: (row: T) => SiteRef | undefined
+): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || typeof row !== 'object') continue;
+    const site = writeSiteFor(req, resolvedSite, row.siteId);
+    if (site === null) {
+      denySite(req, res, canonicalSiteId(String(row.siteId)), `Bulk upload row ${i + 1} targets site ${row.siteId}; batch refused (working in ${resolvedSite}).`);
+      return false;
+    }
+    const existing = findExisting({ ...row, siteId: site });
+    if (existing && recordSite(existing) !== site) {
+      denySite(req, res, recordSite(existing), `Bulk upload row ${i + 1} targets a record of site ${recordSite(existing)}; batch refused.`);
+      return false;
+    }
+  }
+  for (const row of rows) {
+    if (row && typeof row === 'object') row.siteId = writeSiteFor(req, resolvedSite, row.siteId) as string;
+  }
+  return true;
 }
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -637,6 +704,12 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
     if (!employeeData || !employeeData.name || !employeeData.vehicleNumber) {
       return res.status(400).json({ success: false, message: 'Name and Vehicle License Plate Number are required.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const storedEmp = employeeData.id ? getStore().employees.find((e) => e.id === employeeData.id) : undefined;
+    const writeSite = siteForSave(req, res, site, storedEmp, employeeData.siteId, `employee/${employeeData.id || employeeData.employeeId || 'new'}`);
+    if (writeSite === null) return;
+    employeeData.siteId = writeSite;
 
     if (!isValidLicensePlate(employeeData.vehicleNumber)) {
       logSecurityEvent({
@@ -661,6 +734,7 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
       targetResource: `employee/${saved.employeeId}`,
       status: 'SUCCESS',
       details: `Saved employee ${saved.name} (${saved.employeeId}) with plate ${saved.vehicleNumber}`,
+      siteId: saved.siteId,
     });
 
     res.json({
@@ -680,6 +754,10 @@ app.post('/api/v1/employees/bulk-upload', requirePermission('REGISTRATION', 'can
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty employees array for bulk upload.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const store = getStore();
+    if (!stampBulkRows(req, res, site, list, (row: any) => (row.id ? store.employees.find((e) => e.id === row.id) : undefined))) return;
 
     const result = bulkUploadEmployees(list);
 
@@ -879,8 +957,10 @@ app.post('/api/v1/registrations/approve', requirePermission('APPROVALS', 'canEdi
   if (!requestId) {
     return res.status(400).json({ success: false, message: 'requestId is required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const regReq = getRegistrationRequests().find((r) => r.id === requestId);
-  if (regReq && denyForeignSite(req, res, regReq.siteId)) return;
+  if (!assertRecordSite(req, res, regReq, site)) return;
   const result = approveRegistrationRequest(requestId);
   if (!result.success) {
     return res.status(400).json(result);
@@ -893,8 +973,10 @@ app.post('/api/v1/registrations/reject', requirePermission('APPROVALS', 'canEdit
   if (!requestId) {
     return res.status(400).json({ success: false, message: 'requestId is required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const regReq = getRegistrationRequests().find((r) => r.id === requestId);
-  if (regReq && denyForeignSite(req, res, regReq.siteId)) return;
+  if (!assertRecordSite(req, res, regReq, site)) return;
   const result = rejectRegistrationRequest(requestId, reason);
   if (!result.success) {
     return res.status(400).json(result);
@@ -908,6 +990,17 @@ app.post('/api/v1/registrations/bulk-upload', requirePermission('REGISTRATION', 
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty registration requests list.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    // bulkUploadRegistrations updates an existing request matched by plate or
+    // email, so a row matching another site's request is a cross-site write.
+    const existingRequests = getRegistrationRequests();
+    const matchRequest = (row: any) => {
+      const plate = String(row.vehicleNumber || '').trim().toUpperCase();
+      const email = String(row.email || '').trim().toLowerCase();
+      return existingRequests.find((r) => (plate && r.vehicleNumber.toUpperCase() === plate) || (email && r.email.toLowerCase() === email));
+    };
+    if (!stampBulkRows(req, res, site, list, matchRequest)) return;
     const result = bulkUploadRegistrations(list, !!autoApprove);
     res.json(result);
   } catch (err: any) {
@@ -1205,8 +1298,15 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
       return res.status(400).json({ success: false, message: 'Slot Number is required.' });
     }
 
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const storedSlot = rawData.id ? getStore().slots.find((sl) => sl.id === rawData.id) : undefined;
+    const writeSite = siteForSave(req, res, site, storedSlot, rawData.siteId, `slot/${rawData.id || slotNumber}`);
+    if (writeSite === null) return;
+
     const slotData = {
       ...rawData,
+      siteId: writeSite,
       slotNumber: slotNumber.trim().toUpperCase(),
     };
 
@@ -1226,8 +1326,10 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
   if (!slotId) {
     return res.status(400).json({ success: false, message: 'slotId is required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const targetSlot = getStore().slots.find((sl) => sl.id === slotId);
-  if (targetSlot && denyForeignSite(req, res, targetSlot.siteId)) return;
+  if (!assertRecordSite(req, res, targetSlot, site)) return;
   const result = deleteSlot(slotId, force === true);
   if (!result.success) {
     return res.status(400).json(result);
@@ -1240,6 +1342,7 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
     targetResource: `slot/${slotId}`,
     status: 'SUCCESS',
     details: `${req.user!.fullName} deleted slot ${slotId}${force ? ' (forced, was occupied)' : ''}.`,
+    siteId: site,
   });
   res.json(result);
 });
@@ -1251,6 +1354,10 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty slots array for bulk upload.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const store = getStore();
+    if (!stampBulkRows(req, res, site, list, (row: any) => (row.id ? store.slots.find((sl) => sl.id === row.id) : undefined))) return;
 
     const result = bulkUploadSlots(list);
     res.json({
@@ -1565,19 +1672,25 @@ Provide concise, highly actionable architectural, spatial, and traffic optimizat
 });
 
 // 12. Toggle Slot Maintenance / Status
+const SLOT_STATUSES: SlotStatus[] = ['VACANT', 'OCCUPIED', 'RESERVED', 'MAINTENANCE'];
 app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'), (req, res) => {
   const { slotId, newStatus } = req.body;
+  if (!SLOT_STATUSES.includes(newStatus)) {
+    return res.status(400).json({ success: false, message: `newStatus must be one of ${SLOT_STATUSES.join(', ')}.` });
+  }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const store = getStore();
-  // Slot numbers repeat across sites, so prefer an exact id match, and
-  // otherwise only consider slots the caller's sites actually own.
+  // Slot numbers repeat across sites: an exact id match first, else the slot
+  // number within the selected site only.
   const slot =
     store.slots.find(s => s.id === slotId) ||
-    store.slots.find(s => s.slotNumber === slotId && siteAllowedFor(req.user, s.siteId));
+    store.slots.find(s => s.slotNumber === slotId && recordSite(s) === site);
 
   if (!slot) {
     return res.status(404).json({ success: false, message: 'Slot not found' });
   }
-  if (denyForeignSite(req, res, slot.siteId)) return;
+  if (!assertRecordSite(req, res, slot, site)) return;
 
   slot.status = newStatus;
   slot.updatedAt = new Date().toISOString();
@@ -1591,6 +1704,7 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
     targetResource: `slot/${slot.slotNumber}`,
     status: 'SUCCESS',
     details: `Slot ${slot.slotNumber} (${slot.basement}) status altered to ${newStatus}`,
+    siteId: site,
   });
 
   res.json({
@@ -1656,15 +1770,24 @@ app.get('/api/v1/valet/tickets', (req, res) => {
 });
 
 app.post('/api/v1/valet/checkin', requirePermission('VALET_SERVICE', 'canCreate'), (req, res) => {
-  const result = createValetTicket(req.body);
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
+  const writeSite = siteForSave(req, res, site, undefined, req.body?.siteId, 'valet/new');
+  if (writeSite === null) return;
+  const result = createValetTicket({ ...req.body, siteId: writeSite });
   res.json(result);
 });
 
 app.post('/api/v1/valet/status', requirePermission('VALET_SERVICE', 'canEdit'), (req, res) => {
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const ticketRef = req.body?.ticketId;
-  const valetTicket = getValetTickets().find((t) => t.id === ticketRef || t.ticketNumber === ticketRef || t.keyTagNumber === ticketRef);
-  if (valetTicket && denyForeignSite(req, res, valetTicket.siteId)) return;
-  const result = updateValetStatus(req.body);
+  const matches = (t: { id: string; ticketNumber: string; keyTagNumber: string }) =>
+    t.id === ticketRef || t.ticketNumber === ticketRef || t.keyTagNumber === ticketRef;
+  // Key tags can repeat across sites: prefer the selected site's ticket.
+  const valetTicket = getValetTickets().find((t) => matches(t) && recordSite(t) === site) || getValetTickets().find(matches);
+  if (!assertRecordSite(req, res, valetTicket, site)) return;
+  const result = updateValetStatus({ ...req.body, ticketId: valetTicket ? valetTicket.id : ticketRef });
   res.json(result);
 });
 
@@ -1673,7 +1796,9 @@ app.post('/api/v1/valet/request-retrieval', requirePermission('VALET_SERVICE', '
   if (!query) {
     return res.status(400).json({ success: false, message: 'Please provide ticket number, key tag, or phone number.' });
   }
-  const result = requestValetRetrieval(query);
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
+  const result = requestValetRetrieval(query, site);
   res.json(result);
 });
 
@@ -1750,7 +1875,8 @@ app.get('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'view
 
 app.post('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'canCreate'), (req, res) => {
   const { vehicleNumber, requestedBy, nights, reason } = req.body;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const result = submitOvernightRequest({ siteId, vehicleNumber, requestedBy, nights, reason });
   if (!result.success) return res.status(400).json(result);
   res.json(result);
@@ -1761,8 +1887,10 @@ app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVA
   if (!requestId || !decision) {
     return res.status(400).json({ success: false, message: 'requestId and decision are required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const overnightReq = (getStore().overnightRequests || []).find((r) => r.id === requestId);
-  if (overnightReq && denyForeignSite(req, res, overnightReq.siteId)) return;
+  if (!assertRecordSite(req, res, overnightReq, site)) return;
   const result = reviewOvernightRequest(requestId, decision, req.user!.fullName, rejectionReason);
   if (!result.success) return res.status(400).json(result);
 
@@ -1774,6 +1902,7 @@ app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVA
     targetResource: `overnightRequest/${requestId}`,
     status: 'SUCCESS',
     details: result.message,
+    siteId: site,
   });
 
   res.json(result);

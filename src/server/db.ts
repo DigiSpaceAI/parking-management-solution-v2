@@ -3495,17 +3495,20 @@ export function updateValetStatus(data: {
   };
 }
 
-export function requestValetRetrieval(query: string): { success: boolean; message: string; ticket?: ValetTicket } {
+export function requestValetRetrieval(query: string, siteId?: string): { success: boolean; message: string; ticket?: ValetTicket } {
   const storeData = getStore();
   if (!storeData.valetTickets) return { success: false, message: 'No tickets found.' };
 
   const cleanQuery = query.toUpperCase().trim();
+  // Scoped to the requesting site when given, so a query can never match
+  // (and flip) another site's ticket.
   const ticket = storeData.valetTickets.find(
     (t) =>
+      (!siteId || (t.siteId || DEFAULT_SITE_ID) === siteId) && (
       t.ticketNumber.toUpperCase() === cleanQuery ||
       t.keyTagNumber.toUpperCase() === cleanQuery ||
       t.vehicleNumber.replace(/\s+/g, '').includes(cleanQuery.replace(/\s+/g, '')) ||
-      t.guestPhone.includes(cleanQuery)
+      t.guestPhone.includes(cleanQuery))
   );
 
   if (!ticket) {

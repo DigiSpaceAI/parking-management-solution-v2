@@ -1,5 +1,11 @@
 import { AppUser, RolePermissionConfig, AppModuleId, ModuleAccessRights, SiteConfig } from '../types';
-import { ActiveTabType } from '../components/Header';
+import type { ActiveTabType } from '../components/Header';
+
+// The one Master Admin rule, shared by client and server (001 design B9):
+// the same rule the server's getAllowedSiteIds uses for unrestricted scope.
+export function isMasterAdmin(user: { roleId?: string } | null | undefined): boolean {
+  return !!user && user.roleId === 'role-master-admin';
+}
 
 // Default rights
 export const FULL_ACCESS_RIGHTS: ModuleAccessRights = {

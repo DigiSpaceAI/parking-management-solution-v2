@@ -426,7 +426,7 @@ test('B7/H9 registration fails closed when no domain is whitelisted', async () =
       return { status: r.status, body: await r.json() };
     };
     const t = (await j('POST', '/auth/login', { identifier: MASTER_EMAIL, password: PW })).body.token;
-    for (const d of (await j('GET', '/domains')).body.domains) await j('POST', '/domains/remove', { domainId: d.id }, t);
+    for (const d of (await j('GET', '/domains/manage?siteId=ALL', null, t)).body.domains) await j('POST', '/domains/remove', { domainId: d.id }, t);
     const r = await j('POST', '/registrations/submit', { name: 'X', email: 'x@anything.com', vehicleNumber: 'MH12AB9009' });
     assert.equal(r.status, 400);
     assert.equal(r.body.message, "Registration isn't open for this site yet.");
@@ -576,7 +576,7 @@ test('Domains: Site Admin allows a domain for their own site only; registration 
 });
 
 test('Domains: platform-wide entries are Master-only; another site\'s entry cannot be removed', async () => {
-  const company = (await get(null, '/domains')).body.domains.find((d) => d.domain === 'company.com' && !d.siteId);
+  const company = (await get('adminA', '/domains/manage', { site: F.A.id })).body.domains.find((d) => d.domain === 'company.com' && !d.siteId);
   const g = await post('adminA', '/domains/remove', { domainId: company.id }, { site: F.A.id });
   assert.equal(g.status, 403); assert.equal(g.body.errorCode, 'ERR_MASTER_ONLY');
   const x = await post('adminAB', '/domains/remove', { domainId: F.domA.id }, { site: F.B.id });
@@ -585,4 +585,34 @@ test('Domains: platform-wide entries are Master-only; another site\'s entry cann
   assert.equal(m.status, 200); assert.equal(m.body.domain.siteId, undefined, 'Master without a site = all sites');
   const own = await post('adminA', '/domains/remove', { domainId: 'alpha-a.com' }, { site: F.A.id });
   assert.equal(own.status, 200, JSON.stringify(own.body));
+});
+
+// ---------------------------------------------------------------- Round 2
+test('C-1 public GET /domains needs a site and returns only domain names for that site + platform-wide', async () => {
+  const add = await post('master', '/domains/add', { domain: 'acme-b.com' }, { site: F.B.id });
+  assert.equal(add.status, 200, JSON.stringify(add.body));
+  const none = await get(null, '/domains');
+  assert.equal(none.status, 400); assert.equal(none.body.errorCode, 'ERR_SITE_REQUIRED');
+  const allQ = await get(null, '/domains?siteId=ALL');
+  assert.equal(allQ.status, 400);
+  const atA = await get(null, `/domains?siteId=${F.A.id}`);
+  assert.equal(atA.status, 200);
+  assert.ok(!atA.body.domains.some((d) => d.domain === 'acme-b.com'), 'no other site\'s domains');
+  assert.ok(atA.body.domains.some((d) => d.domain === 'company.com'), 'platform-wide listed');
+  for (const d of atA.body.domains) assert.deepEqual(Object.keys(d), ['domain'], 'only { domain }: no id, siteId, addedBy, createdAt');
+  const atB = await get(null, `/domains?siteId=${F.B.id}`);
+  assert.ok(atB.body.domains.some((d) => d.domain === 'acme-b.com'));
+});
+
+test('C-1 GET /domains/manage: authenticated, REGISTRATION view, full rows scoped to the site', async () => {
+  assert.equal((await get(null, '/domains/manage', { site: F.A.id })).status, 401);
+  const a = await get('adminA', '/domains/manage', { site: F.A.id });
+  assert.equal(a.status, 200);
+  assert.ok(a.body.domains.every((d) => !d.siteId || d.siteId === F.A.id));
+  assert.ok(a.body.domains.some((d) => 'addedBy' in d && 'id' in d), 'full rows for admins');
+  assert.equal((await get('adminA', `/domains/manage?siteId=${F.B.id}`)).status, 403);
+  assert.equal((await get('adminA', '/domains/manage?siteId=ALL')).status, 400);
+  assert.equal((await get('attA', '/domains/manage', { site: F.A.id })).status, 403, 'attendant has no REGISTRATION');
+  const m = await get('master', '/domains/manage?siteId=ALL');
+  assert.ok(m.body.domains.some((d) => d.domain === 'acme-b.com' && d.siteId === F.B.id));
 });

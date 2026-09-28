@@ -994,15 +994,33 @@ app.post('/api/v1/employees/update-vehicle', rateLimiterMiddleware(20, 60000), (
 // in; platform-wide entries (no siteId) are Master Admin only. Registration
 // at a site accepts that site's domains plus platform-wide ones.
 
-// Public (the registration form). With a site (?siteId= or x-site-id) it
-// returns that site's domains plus platform-wide ones; without, all of them.
+// Public (the registration form), so it discloses nothing but domain names
+// (C-1): a site is required (400 without), and only { domain } is returned
+// for that site's active entries plus platform-wide ones. No ids, site ids,
+// admin names or dates. Admin screens use GET /domains/manage below.
 app.get('/api/v1/domains', (req, res) => {
-  const raw = rawClientSiteId(req);
+  const raw = rawClientSiteId(req)?.trim();
+  if (!raw || raw === 'ALL') {
+    return sendApiError(res, 400, 'ERR_SITE_REQUIRED', 'Choose a site first.');
+  }
+  const siteId = canonicalSiteId(raw);
+  const names = new Set(
+    getWhitelistedDomains()
+      .filter((d) => d.isActive && (!d.siteId || d.siteId === siteId))
+      .map((d) => d.domain.toLowerCase())
+  );
+  res.json({ domains: Array.from(names).map((domain) => ({ domain })) });
+});
+
+// Authenticated full list for the admin panels (C-1): REGISTRATION view.
+// A site: its own entries plus platform-wide ones. ALL (Master Admin only):
+// every entry.
+app.get('/api/v1/domains/manage', requirePermission('REGISTRATION', 'view'), (req, res) => {
+  const site = resolveSite(req, res, { allowAll: true });
+  if (site === null) return;
   const all = getWhitelistedDomains();
-  const domains = raw && raw !== 'ALL'
-    ? all.filter((d) => !d.siteId || d.siteId === canonicalSiteId(raw))
-    : all;
-  res.json({ domains });
+  const domains = site === 'ALL' ? all : all.filter((d) => !d.siteId || d.siteId === site);
+  res.json({ success: true, domains });
 });
 
 // Which whitelist scope a domain write targets: a site id, or undefined for

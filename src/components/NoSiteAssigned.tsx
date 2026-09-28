@@ -3,17 +3,20 @@ import { Building2 } from 'lucide-react';
 
 interface NoSiteAssignedProps {
   onSignOut: () => void;
+  /** Inside the console shell (view-as a user with no site): no full-screen wrapper, no Sign out. */
+  embedded?: boolean;
 }
 
 /** S-0 "No site assigned" (02-ux-design §3.2, L-4, AC-44). No modules and no data calls. */
-export const NoSiteAssigned: React.FC<NoSiteAssignedProps> = ({ onSignOut }) => (
-  <div className="h-screen w-screen flex items-center justify-center bg-slate-50 p-4">
+export const NoSiteAssigned: React.FC<NoSiteAssignedProps> = ({ onSignOut, embedded = false }) => (
+  <div className={embedded ? 'flex items-center justify-center py-12' : 'h-screen w-screen flex items-center justify-center bg-slate-50 p-4'}>
     <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-sm p-8 text-center">
       <div className="w-12 h-12 mx-auto rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center mb-3">
         <Building2 className="w-6 h-6" aria-hidden="true" />
       </div>
       <h1 className="text-lg font-bold text-slate-900">No site assigned</h1>
       <p className="mt-2 text-sm text-slate-600">Your account isn't linked to a site yet. Contact your administrator.</p>
+      {!embedded && (
       <button
         type="button"
         onClick={onSignOut}
@@ -21,6 +24,7 @@ export const NoSiteAssigned: React.FC<NoSiteAssignedProps> = ({ onSignOut }) => 
       >
         Sign out
       </button>
+      )}
     </div>
   </div>
 );

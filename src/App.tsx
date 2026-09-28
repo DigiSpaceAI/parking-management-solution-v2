@@ -50,6 +50,9 @@ import {
   recallSite,
   rememberReturnTo,
   takeReturnTo,
+  setViewAsId,
+  rememberViewAs,
+  recallViewAs,
   saveErrorMessage,
   COPY_SAVE_ERROR,
   COPY_SESSION_ENDED,
@@ -62,6 +65,7 @@ import { NoSiteAssigned } from './components/NoSiteAssigned';
 import { ListSkeleton } from './components/ListSkeleton';
 import { NoAccess } from './components/NoAccess';
 import { ErrorCard } from './components/ErrorCard';
+import { ViewAsBanner } from './components/ViewAsBanner';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 
 const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
@@ -111,6 +115,13 @@ export default function App() {
   const [listError, setListError] = useState<boolean>(false);
   // Shown on the sign-in screen after the server ended the session (AC-45, AC-10).
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
+  // Role View Simulator (AC-55): a Master Admin viewing the console as this
+  // user. Server-enforced and read-only (x-view-as, sent by the fetch wrapper).
+  const [viewAsUser, setViewAsUser] = useState<AppUser | null>(null);
+  // False until a view-as remembered from before a reload has been checked.
+  const [viewAsChecked, setViewAsChecked] = useState<boolean>(() => !recallViewAs());
+  // The Master Admin's own page and site, restored by Exit view.
+  const beforeViewAs = useRef<{ tab: ActiveTabType; siteId: string | null } | null>(null);
   // Bumped by "Try again" when the site list couldn't load.
   const [siteResolveAttempt, setSiteResolveAttempt] = useState<number>(0);
   const [alertCount, setAlertCount] = useState<number>(0);
@@ -243,6 +254,10 @@ export default function App() {
     fetch('/api/v1/auth/logout', { method: 'POST' }).catch(() => {});
     setLoginNotice(opts.notice ?? null);
     setListError(false);
+    rememberViewAs(null);
+    setViewAsUser(null);
+    setViewAsChecked(true);
+    beforeViewAs.current = null;
     setCurrentUser(null);
     // Drop the previous user's data and site context so the next person
     // to sign in never sees it, even briefly.
@@ -343,27 +358,93 @@ export default function App() {
       setAlertCount(0);
       setPendingReqCount(0);
       setListsLoading(!!siteId);
-      if (siteId && currentUser) rememberSite(currentUser.id, siteId);
+      if (siteId && currentUser && !viewAsIdRef.current) rememberSite(currentUser.id, siteId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentUser?.id]
   );
+
+  const viewAsIdRef = useRef<string | null>(null);
+  viewAsIdRef.current = viewAsUser?.id ?? null;
+
+  // Start viewing as another user (Master Admin only; the server checks too).
+  const startViewAs = (target: AppUser) => {
+    if (!isMasterAdmin(currentUser) || target.id === currentUser?.id) return;
+    if (!viewAsUser) beforeViewAs.current = { tab: activeTab, siteId: currentSiteId };
+    selectSite(null);
+    setViewAsId(target.id);
+    rememberViewAs(target.id);
+    setViewAsUser(target);
+    setActiveTab('HOME');
+  };
+
+  // Exit view: back to the Master Admin's own profile, page and site in one click.
+  const exitViewAs = () => {
+    const back = beforeViewAs.current;
+    beforeViewAs.current = null;
+    selectSite(null);
+    setViewAsId(null);
+    rememberViewAs(null);
+    setViewAsUser(null);
+    restoreAfterViewAs.current = back;
+    setActiveTab(back?.tab ?? 'HOME');
+  };
+  const restoreAfterViewAs = useRef<{ tab: ActiveTabType; siteId: string | null } | null>(null);
+
+  // After a reload, pick the remembered view-as back up, but only for a
+  // Master Admin and only if that user still exists (validated server-side).
+  useEffect(() => {
+    if (viewAsChecked || !currentUser) return;
+    const targetId = recallViewAs();
+    if (!targetId || !isMasterAdmin(currentUser) || isEmployeeUser(currentUser)) {
+      rememberViewAs(null);
+      setViewAsChecked(true);
+      return;
+    }
+    (async () => {
+      try {
+        const { ok, body } = await getJson<{ users?: AppUser[] }>('/api/v1/rbac/users');
+        const target = ok ? body?.users?.find((u) => u.id === targetId) : undefined;
+        if (target) {
+          setViewAsId(target.id);
+          setViewAsUser(target);
+        } else {
+          rememberViewAs(null);
+          showToast('error', "Couldn't start the view. Try again.");
+        }
+      } catch {
+        rememberViewAs(null);
+        showToast('error', "Couldn't start the view. Try again.");
+      } finally {
+        setViewAsChecked(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, viewAsChecked]);
 
   // Resolve the user's permitted sites once per signed-in user (AC-44, AC-47):
   //  0 sites        → S-0 "No site assigned" (a Master Admin can still choose All sites)
   //  1 site         → selected automatically
   //  2+ or Master   → the remembered site if still permitted, else "Choose a site"
   useEffect(() => {
-    if (!currentUser || isEmployeeUser(currentUser)) return;
+    if (!currentUser || isEmployeeUser(currentUser) || !viewAsChecked) return;
     const userId = currentUser.id;
-    const master = isMasterAdmin(currentUser);
+    // Under view-as the server answers /my-sites for the viewed user.
+    const viewing = viewAsUser;
+    const master = isMasterAdmin(viewing ?? currentUser);
     const generation = bumpGeneration();
     setSitePhase('resolving');
     fetchRoles();
     (async () => {
       try {
-        const { ok, body } = await getJson<{ sites?: SiteConfig[] }>('/api/v1/my-sites');
+        const { ok, status, body } = await getJson<{ sites?: SiteConfig[] }>('/api/v1/my-sites');
         if (!isCurrentGeneration(generation)) return;
+        if (!ok && viewing && status === 404) {
+          // The viewed user no longer exists.
+          showToast('error', "Couldn't start the view. Try again.");
+          exitViewAs();
+          return;
+        }
         if (!ok) {
           setSitePhase('error');
           return;
@@ -375,10 +456,19 @@ export default function App() {
           setSitePhase('no-site');
           return;
         }
-        // After a session ended, return to the same page and site (AC-47).
+        if (viewing) {
+          // View-as: the viewed user's only site, else let the Master Admin choose.
+          selectSite(permitted.length === 1 && !master ? permitted[0].id : null);
+          setSitePhase('ready');
+          return;
+        }
+        // After a session ended, return to the same page and site (AC-47);
+        // after Exit view, to the Master Admin's own site.
         const back = takeReturnTo();
         const returnTo = back && back.userId === userId ? back : null;
-        const remembered = returnTo?.siteId || recallSite(userId);
+        const afterView = restoreAfterViewAs.current;
+        restoreAfterViewAs.current = null;
+        const remembered = returnTo?.siteId || afterView?.siteId || recallSite(userId);
         let next: string | null = null;
         if (!master && permitted.length === 1) next = permitted[0].id;
         else if (remembered === ALL_SITES && master) next = ALL_SITES;
@@ -392,7 +482,7 @@ export default function App() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id, siteResolveAttempt]);
+  }, [currentUser?.id, siteResolveAttempt, viewAsChecked, viewAsUser?.id]);
 
   // The server ended the session (expired, or the account was suspended):
   // remember where the user was, send them to sign-in with a notice, and
@@ -423,14 +513,16 @@ export default function App() {
     if (!currentUser || !currentSiteId || isEmployeeUser(currentUser)) return;
     loadSiteLists();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id, currentSiteId]);
+  }, [currentUser?.id, currentSiteId, viewAsUser?.id]);
 
   // Same role check used in the bolaIdentityGuard security fix, kept
   // consistent — a real Site Admin, matched by roleId first (stable)
   // with roleName as a fallback (matches the display name shown
   // throughout the UI).
+  // Under view-as, the console renders as the viewed user (modules, sites, home).
+  const uiUser = viewAsUser ?? currentUser;
   const isSiteAdmin =
-    currentUser?.roleId === 'role-site-manager' || currentUser?.roleName === 'Site Facility Manager';
+    uiUser?.roleId === 'role-site-manager' || uiUser?.roleName === 'Site Facility Manager';
 
   const handleVehicleEntry = async (
     vehicleNumber: string,
@@ -509,19 +601,23 @@ export default function App() {
   // The Employee app preview has no console session (see isEmployeeUser).
   const needsSite = !isEmployeeUser(currentUser);
 
-  if (needsSite && sitePhase === 'no-site') {
+  if (needsSite && sitePhase === 'no-site' && !viewAsUser) {
     return <NoSiteAssigned onSignOut={handleLogout} />;
   }
 
-  const baseSiteContext = buildSiteContextValue(currentSiteId, sites, false, isMasterAdmin(currentUser));
+  const viewer = uiUser ?? currentUser;
+  const baseSiteContext = buildSiteContextValue(currentSiteId, sites, !!viewAsUser, isMasterAdmin(viewer));
   // The Employee app preview has no site context; its own flows stay writable.
   const siteContextValue = needsSite
     ? baseSiteContext
     : { ...baseSiteContext, canWrite: true, writeDisabledReason: null };
-  const currentRole = roles.find((r) => r.id === currentUser.roleId);
-  const canManageDomains = getModuleRights(currentUser, currentRole, 'REGISTRATION').canEdit;
+  const currentRole = roles.find((r) => r.id === viewer.roleId);
+  const canManageDomains = getModuleRights(viewer, currentRole, 'REGISTRATION').canEdit;
 
-  const userCanOpen = (tab: ActiveTabType) => canOpenTab(currentUser, currentRole, tab);
+  const userCanOpen = (tab: ActiveTabType) => canOpenTab(viewer, currentRole, tab);
+  const viewSiteLabel = siteContextValue.isAllSites
+    ? 'All sites'
+    : siteContextValue.activeSite?.siteName || 'No site chosen';
 
   // siteId is the chosen site or 'ALL' (never empty for console users).
   // A page the role can't open (deep link, stale tab, role changed) shows
@@ -547,7 +643,7 @@ export default function App() {
                 />
               ) : (
                 <RoleHomePage
-                  currentUser={currentUser}
+                  currentUser={viewer}
                   roles={roles}
                   slots={slots}
                   employees={employees}
@@ -658,7 +754,7 @@ export default function App() {
               <UserManagementModule
                 currentUser={currentUser}
                 isMaster={isMasterAdmin(currentUser)}
-                onSelectSimulatedUser={(u) => setCurrentUser(u)}
+                onSelectSimulatedUser={(u) => startViewAs(u)}
                 onRefreshAll={refreshAll}
               />
             )}
@@ -675,6 +771,15 @@ export default function App() {
   return (
     <SiteContext.Provider value={siteContextValue}>
     <div className="h-screen w-screen overflow-hidden bg-slate-100 text-slate-900 font-sans antialiased selection:bg-blue-600 selection:text-white flex flex-col">
+      {viewAsUser && (
+        <ViewAsBanner
+          userName={viewAsUser.fullName}
+          roleName={viewAsUser.roleName}
+          siteLabel={viewSiteLabel}
+          onExit={exitViewAs}
+        />
+      )}
+
       {/* Top Header Bar */}
       <Header
         activeTab={activeTab}
@@ -688,7 +793,7 @@ export default function App() {
         sites={sites}
         currentSiteId={currentSiteId ?? undefined}
         onSelectSite={(siteId) => selectSite(siteId)}
-        allowAllSites={isMasterAdmin(currentUser)}
+        allowAllSites={isMasterAdmin(viewer)}
         canOpenTab={userCanOpen}
         onToggleMobileSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
         onLogout={handleLogout}
@@ -724,7 +829,7 @@ export default function App() {
           pendingReqCount={pendingReqCount}
           mobileOpen={mobileSidebarOpen}
           setMobileOpen={setMobileSidebarOpen}
-          currentUser={currentUser}
+          currentUser={viewer}
           roles={roles}
         />
 
@@ -746,8 +851,11 @@ export default function App() {
                   Try again
                 </button>
               </div>
+            ) : sitePhase === 'no-site' ? (
+              // Only reachable while viewing as a user with no site.
+              <NoSiteAssigned embedded onSignOut={handleLogout} />
             ) : !currentSiteId ? (
-              <ChooseSite sites={sites} allowAllSites={isMasterAdmin(currentUser)} onChoose={selectSite} />
+              <ChooseSite sites={sites} allowAllSites={isMasterAdmin(viewer)} onChoose={selectSite} />
             ) : listsLoading ? (
               <ListSkeleton />
             ) : (

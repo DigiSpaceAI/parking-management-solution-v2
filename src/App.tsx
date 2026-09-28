@@ -753,7 +753,7 @@ export default function App() {
             {activeTab === 'USER_MANAGEMENT' && (
               <UserManagementModule
                 currentUser={currentUser}
-                isMaster={isMasterAdmin(currentUser)}
+                isMaster={isMasterAdmin(viewer)}
                 onSelectSimulatedUser={(u) => startViewAs(u)}
                 onRefreshAll={refreshAll}
               />

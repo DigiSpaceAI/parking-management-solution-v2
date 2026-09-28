@@ -78,31 +78,108 @@ Shared errors are as in 03: `ERR_SITE_REQUIRED` 400, `ERR_SITE_FORBIDDEN` 403 (a
 - D1 (docs refresh) is scheduled after launch; not done.
 
 ## Frontend
-_Author: frontend-dev · Date: 2026-09-25 · Status: **BLOCKED — no code changed**_
+_Author: frontend-dev · Date: 2026-09-28 · Status: **DONE: F1–F8 + PRD Addendum C domain labels on `feature/001-parkflows-platform-v1`; ready for code review (step 5)**. Not self-reviewed. `main` untouched, nothing pushed._
+_History: blocked on 25 Sep (no approved 02/03). This section replaces that note._
 
 ### Gaps found in inputs
-1. `03-tech-design.md` does not exist, so there are no `[frontend]` tasks to implement. My role implements ONLY those tasks.
-2. `02-ux-design.md` does not exist, so there is no approved layout, set of states or copy to follow.
-3. `01-prd.md` is still marked "Awaiting user approval" in `docs/team/review-log.md`. Its gate (STOP: user approves PRD) and the tech-design gate have not been passed. 12 open questions are unresolved, including OQ-3 (server- vs client-enforced site scope), which decides how the frontend passes and refetches site context.
+1. **Legacy `site-default` records can't be chosen.** Under strict mode they show only in All sites mode, which is read-only. `/my-sites` never lists `site-default`, so no one can select it or edit those records. In the local seed, all 1,080 slots are `site-default`. **Devops/QA:** the R11 check must confirm Alphatech has no strays, or run `/admin/migrate-site-data` first.
+2. **Sign-in goes to an absolute Cloud Run URL.** `LoginScreen.tsx` and `src/mobile/api.ts` post to the `run.app` URL unless `VITE_API_BASE_URL` is set, so sign-in is cross-origin. That is correct for the wrapper, which only adds `x-site-id` / `x-view-as` to same-origin `/api/v1/*` calls. For local testing, build with `VITE_API_BASE_URL=http://localhost:<port>`, otherwise sign-in tries production.
+3. **Addendum C has no UX spec for a Site Admin domain screen.** It was built as a small panel on Approvals → Registration Requests, reusing UX §5 copy where it exists (for example "Enter a domain like company.com"). **UX to review these new strings:** "Allowed email domains", "Employees can self-register only with an email from these domains.", "This site" / "All sites", "New domains apply to {site} only." / "…to every site.", "To allow a domain for every site, switch to All sites.", "Domains marked All sites are managed by your Master Admin.", "No domains allowed yet. Registration stays closed until one is added."
+4. **F1 changed what "Add domain" does for Master Admin.** With one site chosen, Add creates a domain for that site only; before, it was always platform-wide. In All sites mode it adds a platform-wide domain. The panel says which one will happen.
+5. **The suspended message only appears for an existing session.** The server answers sign-in for a suspended account with the generic "Invalid credentials." to prevent account enumeration. So "Your account is suspended…" shows only when an existing session is rejected (`ERR_ACCOUNT_INACTIVE`, AC-10). Sign-in is still refused, as AC-10 requires.
+6. **Two exports can't send headers.** The Logs CSV export used `window.open` with no site or token, so strict mode would reject it with 400. It now passes `siteId` and the token in the query, the same pattern Reports already uses. It is disabled while viewing as another user, because `x-view-as` can't be sent. The Reports export (`SiteAdminReports`) is not in F4's list and is unchanged. Under view-as it would export with Master Admin's masking. Low risk; flag for security review.
+7. **F8 went slightly wider than asked.** The same made-up "1,080" figure was also removed from the Inventory tab label, the Logs subtitle and the Inventory Home tile description.
+8. **The header needed room for the chip at every width (L-1).** Below 640 px it hides the PF logo tile (Home stays in the sidebar), the refresh button and the profile chevron. Below 1024 px it hides the version badge and the tagline. UX §6's "⋯ menu" for header actions is Phase 2.
+9. **UX copy for save errors is only on the shared handlers.** "Couldn't save. Nothing was changed.", the cross-site message and the read-only messages apply to the App-level entry, exit and slot-status actions. Pages that save on their own still show the server's `message` (Phase 2, P2-9).
+
+### What was built (per task)
+- **F1** — `src/utils/withSite.ts` (new):
+  - The site / view-as store and the request-generation counter.
+  - `withSite(url)` and a `SiteContext` + `useSiteContext()` React context.
+  - `useWriteGuard()`, the `ReturnTo` storage helpers and the UX error copy.
+
+  `src/sessionTokenFallback.ts`: the global fetch wrapper adds `x-site-id` / `x-view-as` to same-origin `/api/v1/*` calls. It never overrides a header or a `?siteId=` the caller set. A 401 `ERR_SESSION_EXPIRED` or 403 `ERR_ACCOUNT_INACTIVE` raises `parkflows:session-ended`; sign-in, set-password and logout calls are excluded.
+- **F2** — `App.tsx`:
+  - Site is `string | null`. Permitted sites come from `/my-sites`: 0 → S-0; 1 → auto-select; 2+ or Master Admin → the remembered site if still permitted, else Choose-a-site, with **no data calls** before a choice.
+  - Switching bumps the generation, clears lists straight away and shows skeletons. The page content is keyed by site, so pages that fetch their own data remount.
+  - Every fetcher drops stale results. `/rbac/users` no longer refreshes the current user; `/auth/me` does, and it can't sign a previous user back in (the `05` Major).
+  - No unauthenticated mount fetch. Loading runs from effects keyed on the user id and the site (the `05` Minors).
+  - The Employee sign-in path skips admin calls.
+  - Sign-out now also calls `POST /auth/logout`, so the server destroys the session.
+- **F3** — `SiteSwitcher.tsx` (new) + `Header.tsx`:
+  - The chip is visible at every width: "{Site name} · {CODE}" at ≥ 1024 px, the code alone below that, and "All sites" or "Choose a site" when relevant. Below 1024 px the list opens as a bottom sheet.
+  - The list is a real listbox (↑/↓, Home/End, Enter, Esc returns focus to the chip, 44 px rows). Options come from `/my-sites`, with "All sites" for Master Admin only.
+  - The page eyebrow shows the site name or "ALL SITES · n sites".
+  - The unused `allUsers` / `onSelectUser` props are removed.
+- **F4** — `SiteCodeChip.tsx` (new) on rows in Inventory, Live Floor Plan, Logs, Registration/Approvals (requests and employees), Alerts, Valet and Relocation Logs. `useWriteGuard()` is spread on every write action in those pages (38 buttons):
+  - In All sites mode they are disabled with the tooltip "Select one site to make changes".
+  - Under view-as the tooltip reads "Read-only while viewing as another user".
+  - Where a button already had its own `disabled`, the two conditions are combined.
+
+  In All sites mode the eyebrow also says "· Select one site to make changes", because tooltips on disabled buttons can't be reached from the keyboard.
+- **PRD Addendum C** — `DomainWhitelistPanel.tsx` (new):
+  - Every domain carries a scope label: "This site", a site code (in All sites mode) or "All sites".
+  - Add targets the chosen site (or, for Master Admin in All sites mode, every site).
+  - Remove appears only where the server will accept it: a Site Admin sees it only on their own site's entries. Nothing is editable under view-as.
+  - The panel replaces the old domain section in Master Site Config, which read `d.active` although the API sends `isActive`, so every domain showed as "inactive". It was also added to Approvals for Site Admins.
+- **F5** — `rbac.ts` gets `canOpenTab()` and `MASTER_ONLY_TABS` (InfoSec & audit). They are used by the Sidebar, Home tiles and header shortcuts (bell items appear only for pages the role can open; pending approvals now opens Approvals). A page the role can't open renders `NoAccess.tsx` (S-NA) with Go to Home. The Role View Simulator tab is Master Admin only. Clear-history no longer offers the Security Audit Log, which the server refuses since B9.
+- **F6** — `ErrorCard.tsx` (new):
+  - A list failure (network or 5xx) shows "We couldn't load this…" + **Try again**, and the old rows are greyed out.
+  - A list 403 `ERR_SITE_FORBIDDEN` means the user's site assignment changed, so the site is resolved again.
+  - `saveErrorMessage()` maps error codes to the UX copy.
+  - When a session ends, `{tab, siteId, userId}` is stored, the user goes to sign-in with the notice ("Your session ended. Sign in to continue." or the suspended message), and after sign-in the same account returns to the same page and site.
+- **F7** — `ViewAsBanner.tsx` (new):
+  - "View as" (no longer `setCurrentUser`) sets the view-as target. The purple banner (`role=status`) reads "Viewing as {user} · {role} · {site} — read-only" with **Exit view**.
+  - The console renders as the viewed user: their modules, sites and Home. The header profile stays the real Master Admin, and all writes are disabled.
+  - `localStorage['parkflows.viewAs']` is checked again against `/rbac/users` on reload; if the user no longer exists, the view ends with "Couldn't start the view. Try again."
+  - Exit view restores the Master Admin's own site, and their page too unless the browser was reloaded (then Home).
+  - Viewing a user with no site shows S-0 inside the shell, with no Sign out button.
+- **F8** — The Sidebar footer no longer shows "System healthy / 100% ANPR & sensor uptime". The Inventory description is now "Slots, levels & bulk upload" (plus gap 7).
 
 ### Files changed
-None.
+New: `src/utils/withSite.ts`, `src/components/{ChooseSite,NoSiteAssigned,ListSkeleton,SiteSwitcher,SiteCodeChip,DomainWhitelistPanel,NoAccess,ErrorCard,ViewAsBanner}.tsx`.
+Changed: `src/App.tsx`, `src/sessionTokenFallback.ts`, `src/utils/rbac.ts` (additive: `canOpenTab`, `MASTER_ONLY_TABS`), `src/index.css` (disabled style for guarded buttons), `src/components/{Header,Sidebar,RoleHomePage,InventoryMaster,LiveFloorPlan,ParkingLogs,EmployeeRegistration,NonParkedAlerts,ValetXModule,MasterAdminRelocationLogs,MasterAdminSites,MasterAdminData,MasterAdminRoleSimulator,UserManagementModule,LoginScreen}.tsx`.
+No new dependencies. No server, Firestore rules or deploy config changes.
+
+### Commits (on the branch, oldest first)
+`164d67e` F1 · `a5fc0e7` F2 · `ee823e7` F3 · `b54fb02` F4 + Addendum C · `1dcff00` F5 · `d397523` F6 · `b75265f` F7 · `0dd8643` F8.
 
 ### Screens affected
-None.
+The app shell (header chip and bottom sheet, eyebrow, banner, S-0, Choose-a-site, S-NA, error card, skeletons), the sign-in notice, Home (tiles), Live Parking Status, Inventory Master, Entry/Exit Logs, Employee Registration, Approvals (plus the domain panel), Non-Parked Alerts, ValetX, Relocation Logs, Master Site Config (domain panel), User & RBAC (simulator), and InfoSec (Data & Retention).
 
 ### How to test manually
-N/A. Nothing was implemented.
+Build with `VITE_API_BASE_URL=http://localhost:<port> npm run build` (see gap 2). Then run `npm start` with `SEED_DEMO_USERS=true DEMO_USER_PASSWORD=… BOOTSTRAP_ADMIN_PASSWORD=…`. Accounts: `digisolutions` (Master Admin), `ananya.site` (Site Admin, 1 site), `suresh.valet` (2 sites, not Master), `rajesh.audit` (all sites, not Master), `ramesh.gate` (Attendant).
+1. **Site resolution (AC-02/04/05/44/47).**
+   - Master Admin: "Choose a site" appears, and the Network tab shows only `/my-sites` + `/rbac/roles` until a choice is made. After choosing, every list call carries `x-site-id`.
+   - ananya: her site is auto-selected and the chip has no chevron.
+   - suresh: gets the prompt without an "All sites" option.
+   - Sign out and back in: the last site is remembered.
+2. **Chip (L-1).** At 375, 768 and 1280 px the chip shows the site code or name, with no horizontal scroll. Below 1024 px it opens as a bottom sheet. Keyboard: ↑/↓/Enter/Esc work.
+3. **All sites (L-3).**
+   - Master Admin → All sites: rows carry a site-code chip, and every write button is disabled with "Select one site to make changes" (checked: 0 enabled across the 6 pages).
+   - Choose one site: the buttons are enabled again.
+4. **Race (MAN-02).**
+   - With 1.5 s latency, switch sites quickly: skeletons show at once, and there are never old rows under the new name.
+   - Sign out during a slow refresh: you stay signed out, and the stored session stays empty.
+5. **S-NA / L-5.**
+   - InfoSec and the Role View Simulator show only for Master Admin; other roles' sidebars and Home tiles hide them.
+   - Stale-tab S-NA check: set sessionStorage `parkflows.returnTo` to `{"tab":"SECURITY_AUDIT","siteId":null,"userId":"usr-102"}`, then sign in as ananya. S-NA appears, and Go to Home works.
+6. **Errors / session (L-6, AC-45/47).**
+   - Stop the server and press refresh: the error card appears with Try again, and old rows are greyed out.
+   - Kill a session with `POST /auth/logout` using its token, then refresh: sign-in shows "Your session ended…", and after sign-in you're back on the same page and site.
+7. **View as (L-8, AC-55).**
+   - Master Admin → User & RBAC → Role View Simulator → View as ananya: the purple banner appears, with her site and modules, and every call carries `x-view-as`. Writes are disabled with "Read-only while viewing as another user".
+   - A direct POST gets 403 `ERR_VIEW_AS_READ_ONLY`.
+   - Reload: the banner stays. Exit view: your own site comes back and the header is gone from later calls.
+8. **Domains (Addendum C, AC-57).**
+   - ananya → Approvals: an invalid domain shows "Enter a domain like company.com"; adding `alphatech.in` labels it "This site" with a Remove button. Platform-wide entries say "All sites" and have no Remove.
+   - Master Admin → All sites → Master Site Config: site entries show site codes, and the hint reads "New domains apply to every site."
 
-### Needed to unblock
-- User approves `01-prd.md` (step 1), or amends it.
-- ux-designer writes `02-ux-design.md` (step 2).
-- architect writes `03-tech-design.md` with `[frontend]` tasks, and the user approves it (step 3).
-- Then re-run frontend-dev on this feature.
-
-Frontend-side notes for the architect: the PRD points at P0 frontend-heavy work. That covers site-scoped lists via `withSite()` with a refetch on site change (US-01, AC-01..06), role-based hiding of entry points (AC-07, AC-08), and the floor plan, pass approval and log export screens (US-06, US-10, US-12). Please break these into explicit `[frontend]` tasks with file-level scope.
+I ran steps 1–8 in headless Chromium against a local server built from this branch. The scripts are ad hoc and not committed; a browser test harness is QA's call.
 ## Mobile
 ## Build/lint results
 Not run for frontend. No frontend changes were made.
 
 **Backend (2026-09-28, on `0180e3e`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `tests/qa/001-backend.api.test.mjs` **43/43 pass** (incl. domain whitelist) · QA suite `001-platform-v1` with `SITE_SCOPE_MODE=fallback`: **32/48 pass** (was 21/48 on 25 Sep; 0 new failures; the 16 left are Phase 2 ACs plus PERM-02, which now fails by design and is to be rewritten by QA; see Backend gap 4). QA suite under strict mode: fixtures need a site (Backend gap 5).
+
+**Frontend (2026-09-28, on `0dd8643`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `npm run test:qa` after every task F1–F8: `001-backend` **43/43 pass** (unchanged); `001-platform-v1` **0/48** under strict mode, unchanged from before F1: its `before()` hook sends no site (Backend gap 5; QA-owned fixtures). No frontend change touches the server, so these suites can't move with F1–F8.

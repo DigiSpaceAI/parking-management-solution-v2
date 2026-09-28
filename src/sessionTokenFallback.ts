@@ -34,6 +34,7 @@ import {
   SESSION_ENDED_EVENT,
   type SessionEndedDetail,
 } from './utils/withSite';
+import { isTrustedApiOrigin } from './apiBase';
 
 const TOKEN_KEY = 'parkflow_session_token_fallback';
 
@@ -67,7 +68,8 @@ export function getSessionToken(): string | null {
  * Call once, early (from main.tsx), before any other app code runs.
  * Wraps the global fetch so every request — no matter which of the 70+
  * existing call sites made it — automatically carries:
- *  - the fallback session header, when a token is stored;
+ *  - the fallback session header, when a token is stored, on requests to
+ *    this page's origin or the API_BASE origin only (never third parties);
  *  - on same-origin `/api/v1/*` calls only, the active site (`x-site-id`)
  *    and the Role View Simulator target (`x-view-as`) from the client site
  *    context (001 design F1). A value the caller set explicitly (header or
@@ -82,7 +84,9 @@ export function installSessionTokenFallback(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const isApi = isSameOriginApiCall(rawUrl);
-    const token = getSessionToken();
+    // The session token goes only to our own origin and the configured API
+    // origin, never to a third party (code review m-7).
+    const token = isTrustedApiOrigin(rawUrl) ? getSessionToken() : null;
     const siteId = isApi ? getActiveSiteId() : null;
     const viewAsId = isApi ? getViewAsId() : null;
 

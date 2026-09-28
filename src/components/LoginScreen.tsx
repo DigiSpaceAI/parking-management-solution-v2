@@ -10,6 +10,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { AppUser } from '../types';
+import { API_BASE } from '../apiBase';
 
 interface LoginScreenProps {
   allUsers: AppUser[];
@@ -22,14 +23,7 @@ interface LoginScreenProps {
 const EMAIL_ALLOWLIST_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 const USERNAME_ALLOWLIST_REGEX = /^[a-zA-Z0-9._-]{3,50}$/;
 
-// Absolute API base. Relative '/api/...' paths cannot work inside the Capacitor
-// APK: the page origin is https://localhost, where no server runs. The web
-// dashboard is unaffected — it is served by the same host as the API, so this
-// resolves to the same URL it always used.
-const API_BASE = (
-  import.meta.env.VITE_API_BASE_URL ||
-  'https://parking-management-solution-v2-git-430896008903.asia-south1.run.app'
-).replace(/\/$/, '');
+// Absolute API base (shared with the fetch wrapper; see src/apiBase.ts).
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   allUsers,

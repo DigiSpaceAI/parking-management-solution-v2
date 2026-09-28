@@ -20,7 +20,7 @@ import {
   Globe
 } from 'lucide-react';
 import { AppUser, SiteConfig } from '../types';
-import { getUserPermittedSites } from '../utils/rbac';
+import { SiteSwitcher } from './SiteSwitcher';
 
 export type ActiveTabType =
   | 'HOME'
@@ -48,13 +48,15 @@ interface HeaderProps {
   pendingReqCount?: number;
   onRefresh: () => void;
   currentUser?: AppUser | null;
-  allUsers?: AppUser[];
-  onSelectUser?: (user: AppUser) => void;
   onToggleMobileSidebar?: () => void;
   onLogout?: () => void;
+  /** Sites the (effective) user may choose from (/my-sites). */
   sites?: SiteConfig[];
   currentSiteId?: string;
   onSelectSite?: (siteId: string) => void;
+  /** Offer "All sites" (Master Admin only, AC-05). */
+  allowAllSites?: boolean;
+  siteSwitchDisabled?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -66,21 +68,19 @@ export const Header: React.FC<HeaderProps> = ({
   pendingReqCount = 0,
   onRefresh,
   currentUser,
-  allUsers = [],
-  onSelectUser,
   onToggleMobileSidebar,
   onLogout,
   sites = [],
   currentSiteId,
   onSelectSite,
+  allowAllSites = false,
+  siteSwitchDisabled = false,
 }) => {
   const [showNotificationsMenu, setShowNotificationsMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [showSiteMenu, setShowSiteMenu] = useState(false);
 
   // DOM Refs for outside click handling
   const profileMenuRef = useRef<HTMLDivElement>(null);
-  const siteMenuRef = useRef<HTMLDivElement>(null);
   const notificationsMenuRef = useRef<HTMLDivElement>(null);
 
   // Outside click and Escape key listeners for dropdown menus
@@ -90,9 +90,6 @@ export const Header: React.FC<HeaderProps> = ({
       if (profileMenuRef.current && !profileMenuRef.current.contains(target)) {
         setShowProfileMenu(false);
       }
-      if (siteMenuRef.current && !siteMenuRef.current.contains(target)) {
-        setShowSiteMenu(false);
-      }
       if (notificationsMenuRef.current && !notificationsMenuRef.current.contains(target)) {
         setShowNotificationsMenu(false);
       }
@@ -101,7 +98,6 @@ export const Header: React.FC<HeaderProps> = ({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setShowProfileMenu(false);
-        setShowSiteMenu(false);
         setShowNotificationsMenu(false);
       }
     };
@@ -119,15 +115,8 @@ export const Header: React.FC<HeaderProps> = ({
   const vacantCount = totalSlots - occupiedCount;
   const totalNotifications = alertCount + pendingReqCount;
 
-  // Calculate permitted sites for the current authenticated user
-  const permittedSites = React.useMemo(() => {
-    return getUserPermittedSites(currentUser, sites);
-  }, [currentUser, sites]);
-
-  const activeSite = React.useMemo(() => {
-    if (!currentSiteId || currentSiteId === 'ALL') return null;
-    return sites.find((s) => s.id === currentSiteId || s.siteCode === currentSiteId) || permittedSites[0] || null;
-  }, [currentSiteId, sites, permittedSites]);
+  // `sites` already holds only the user's permitted sites (server-scoped /my-sites).
+  const permittedSites = sites;
 
   // Format last login time cleanly
   const formattedLastLogin = React.useMemo(() => {
@@ -147,10 +136,10 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="bg-white border-b border-slate-200 text-slate-900 sticky top-0 z-30 shadow-sm">
       <div className="px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-20 gap-4">
+        <div className="flex items-center justify-between h-20 gap-2 sm:gap-4">
           
           {/* LEFT: Mobile Menu Button & ParkFlows Branding */}
-          <div className="flex items-center space-x-3 shrink-0">
+          <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
             {onToggleMobileSidebar && (
               <button
                 onClick={onToggleMobileSidebar}
@@ -164,7 +153,7 @@ export const Header: React.FC<HeaderProps> = ({
             {/* ParkFlows Logo */}
             <div
               onClick={() => setActiveTab('HOME')}
-              className="flex items-center space-x-3.5 cursor-pointer group hover:opacity-95 transition-opacity"
+              className="hidden sm:flex items-center space-x-3.5 cursor-pointer group hover:opacity-95 transition-opacity"
               title="Go to Role Home Dashboard"
             >
               <div className="w-10 h-10 bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 rounded-xl flex items-center justify-center shadow-md shadow-blue-600/20 text-white font-bold text-lg font-mono group-hover:scale-105 transition-transform shrink-0">
@@ -172,135 +161,32 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
               <div className="flex flex-col justify-center">
                 <div className="flex items-center space-x-2">
-                  <span className="font-extrabold text-xl tracking-tight text-slate-900 font-sans group-hover:text-blue-600 transition-colors leading-none">
+                  <span className="hidden sm:inline font-extrabold text-xl tracking-tight text-slate-900 font-sans group-hover:text-blue-600 transition-colors leading-none">
                     ParkFlows
                   </span>
                   <span
-                    className="hidden sm:inline-flex items-center px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-[10px] font-mono font-bold uppercase leading-tight cursor-help"
+                    className="hidden lg:inline-flex items-center px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-[10px] font-mono font-bold uppercase leading-tight cursor-help"
                     title={`Build deployed: ${new Date(__BUILD_TIMESTAMP__).toLocaleString()}`}
                   >
                     v4.2 Enterprise
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-500 font-sans hidden md:block mt-1 leading-normal font-normal">
+                <p className="text-[11px] text-slate-500 font-sans hidden lg:block mt-1 leading-normal font-normal">
                   Centrally Managed Smart Parking & Mobility Infrastructure
                 </p>
               </div>
             </div>
           </div>
 
-          {/* CENTER-LEFT: Active Site Scope & Context Switcher */}
-          <div className="hidden lg:flex items-center space-x-2" ref={siteMenuRef}>
-            <div className="relative">
-              <button
-                onClick={() => {
-                  if (permittedSites.length > 1 || currentUser?.siteScopeType === 'ALL_SITES') {
-                    setShowSiteMenu(!showSiteMenu);
-                    setShowNotificationsMenu(false);
-                    setShowProfileMenu(false);
-                  }
-                }}
-                className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
-                  permittedSites.length > 1 || currentUser?.siteScopeType === 'ALL_SITES'
-                    ? 'bg-slate-50 hover:bg-slate-100 border-slate-300 text-slate-800 cursor-pointer shadow-sm'
-                    : 'bg-slate-50 border-slate-200 text-slate-700 cursor-default'
-                }`}
-                title={
-                  currentUser?.siteScopeType === 'ALL_SITES'
-                    ? 'Master Scope: Switch Active Enterprise Site Context'
-                    : `Assigned Site Scope (${permittedSites.length} sites)`
-                }
-              >
-                <div className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-                  <Building2 className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-left">
-                  <div className="flex items-center space-x-1.5">
-                    <span className="font-bold text-slate-900 leading-tight max-w-[150px] truncate">
-                      {activeSite ? activeSite.siteName : 'All Enterprise Sites'}
-                    </span>
-                    {activeSite && (
-                      <span className="px-1.5 py-0.2 bg-blue-50 text-blue-700 font-mono font-bold text-[9px] rounded border border-blue-200">
-                        {activeSite.siteCode}
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[10px] text-slate-400 font-mono block">
-                    {currentUser?.siteScopeType === 'ALL_SITES'
-                      ? 'Master Multi-Site Scope'
-                      : `${permittedSites.length} Assigned Site${permittedSites.length > 1 ? 's' : ''}`}
-                  </span>
-                </div>
-                {(permittedSites.length > 1 || currentUser?.siteScopeType === 'ALL_SITES') && (
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" />
-                )}
-              </button>
-
-              {/* Site Selection Popover */}
-              {showSiteMenu && (
-                <div className="absolute left-0 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-200 p-2.5 z-50 text-xs animate-in fade-in slide-in-from-top-2">
-                  <div className="px-2 py-1.5 border-b border-slate-100 mb-1 flex items-center justify-between">
-                    <span className="font-bold text-slate-900 font-mono text-[10px] uppercase tracking-wider">
-                      Switch Active Site Context
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-mono font-bold">
-                      {currentUser?.siteScopeType === 'ALL_SITES' ? 'Global Access' : 'Assigned Only'}
-                    </span>
-                  </div>
-
-                  {currentUser?.siteScopeType === 'ALL_SITES' && (
-                    <button
-                      onClick={() => {
-                        if (onSelectSite) onSelectSite('ALL');
-                        setShowSiteMenu(false);
-                      }}
-                      className={`w-full p-2 rounded-xl text-left flex items-center space-x-2.5 transition-colors mb-1 ${
-                        !currentSiteId || currentSiteId === 'ALL'
-                          ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200'
-                          : 'hover:bg-slate-50 text-slate-700'
-                      }`}
-                    >
-                      <Globe className="w-4 h-4 text-blue-600" />
-                      <div>
-                        <span className="font-bold block text-xs">All Enterprise Sites (Overview)</span>
-                        <span className="text-[10px] text-slate-400 block font-mono">Consolidated enterprise view</span>
-                      </div>
-                    </button>
-                  )}
-
-                  <div className="space-y-1 max-h-56 overflow-y-auto">
-                    {permittedSites.map((s) => {
-                      const isSelected = activeSite?.id === s.id;
-                      return (
-                        <button
-                          key={s.id}
-                          onClick={() => {
-                            if (onSelectSite) onSelectSite(s.id);
-                            setShowSiteMenu(false);
-                          }}
-                          className={`w-full p-2 rounded-xl text-left flex items-center justify-between transition-colors ${
-                            isSelected
-                              ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200'
-                              : 'hover:bg-slate-50 text-slate-700 border border-transparent'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-2 truncate">
-                            <MapPin className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-blue-600' : 'text-slate-400'}`} />
-                            <div className="truncate">
-                              <span className="font-bold block text-xs truncate">{s.siteName}</span>
-                              <span className="text-[10px] text-slate-400 block font-mono">
-                                {s.siteCode} • {s.city} • {s.totalSlots} Slots
-                              </span>
-                            </div>
-                          </div>
-                          {isSelected && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 ml-1" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
+          {/* CENTER-LEFT: Active site chip, visible at every width (L-1) */}
+          <div className="flex items-center shrink-0">
+            <SiteSwitcher
+              sites={sites}
+              currentSiteId={currentSiteId}
+              allowAllSites={allowAllSites}
+              disabled={siteSwitchDisabled}
+              onSelect={(siteId) => onSelectSite?.(siteId)}
+            />
           </div>
 
           {/* RIGHT: System Utilities (Power Status, Notifications, User Profile) */}
@@ -309,7 +195,7 @@ export const Header: React.FC<HeaderProps> = ({
             {/* 1. Quick Refresh Button */}
             <button
               onClick={onRefresh}
-              className="h-10 w-10 flex items-center justify-center text-slate-500 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors border border-slate-200 cursor-pointer shrink-0"
+              className="hidden sm:flex h-10 w-10 items-center justify-center text-slate-500 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors border border-slate-200 cursor-pointer shrink-0"
               title="Refresh System Data"
             >
               <RefreshCw className="w-4 h-4" />
@@ -413,7 +299,7 @@ export const Header: React.FC<HeaderProps> = ({
                     setShowProfileMenu(!showProfileMenu);
                     setShowNotificationsMenu(false);
                   }}
-                  className="h-10 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 rounded-xl px-3 flex items-center space-x-2.5 shadow-sm transition-colors cursor-pointer"
+                  className="h-10 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 rounded-xl px-2 sm:px-3 flex items-center space-x-2.5 shadow-sm transition-colors cursor-pointer"
                   title="Logged-in User Profile"
                 >
                   <div className="w-6 h-6 rounded-lg bg-blue-600 font-mono font-bold flex items-center justify-center text-xs text-white shadow-sm shrink-0">
@@ -427,7 +313,7 @@ export const Header: React.FC<HeaderProps> = ({
                       {currentUser.roleName}
                     </span>
                   </div>
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <ChevronDown className="hidden sm:block w-3.5 h-3.5 text-slate-400 shrink-0" />
                 </button>
               )}
 

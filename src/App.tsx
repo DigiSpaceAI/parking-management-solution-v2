@@ -595,6 +595,7 @@ export default function App() {
         sites={sites}
         currentSiteId={currentSiteId ?? undefined}
         onSelectSite={(siteId) => selectSite(siteId)}
+        allowAllSites={isMasterAdmin(currentUser)}
         onToggleMobileSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
         onLogout={handleLogout}
       />
@@ -658,7 +659,17 @@ export default function App() {
             ) : (
               // Keyed by site: pages that fetch their own data remount on a
               // switch, so they drop the old site's rows and load afresh (L-2).
-              <div key={currentSiteId}>{renderActiveTab(currentSiteId)}</div>
+              <div key={currentSiteId}>
+                <p
+                  className="mb-3 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500"
+                  style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif" }}
+                >
+                  {siteContextValue.isAllSites
+                    ? `All sites · ${sites.length} sites`
+                    : siteContextValue.activeSite?.siteName || currentSiteId}
+                </p>
+                {renderActiveTab(currentSiteId)}
+              </div>
             )}
           </div>
         </main>

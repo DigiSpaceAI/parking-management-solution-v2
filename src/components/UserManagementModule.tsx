@@ -45,7 +45,7 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({ onSe
         {isMaster && tabBtn('SIMULATOR', 'Role View Simulator')}
       </div>
       {tab === 'USERS' && <MasterAdminUsers />}
-      {tab === 'ROLES' && <MasterAdminRoles />}
+      {tab === 'ROLES' && <MasterAdminRoles canEditRoles={isMaster} />}
       {tab === 'ALLOCATION' && <MasterAdminSiteAllocation />}
       {tab === 'SIMULATOR' && isMaster && <MasterAdminRoleSimulator onSelectUser={onSelectSimulatedUser} />}
     </div>

@@ -1622,7 +1622,7 @@ export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2
   // at one site could get auto-assigned a vacant slot that actually
   // belongs to a different site entirely. Same reasoning as the
   // identical fix already applied to the valet auto-assignment path.
-  const vacantSlots = storeData.slots.filter(s => s.status === 'VACANT' && (!siteId || s.siteId === siteId));
+  const vacantSlots = storeData.slots.filter(s => s.status === 'VACANT' && (!siteId || (s.siteId || DEFAULT_SITE_ID) === siteId));
 
   if (vacantSlots.length === 0) return null;
 
@@ -1667,13 +1667,19 @@ export function processVehicleEntry(params: {
   targetSlotNumber?: string;
   remarks?: string;
   siteId?: string;
-}): { success: boolean; message: string; slot?: ParkingSlot; log?: ParkingLog } {
+}): { success: boolean; message: string; slot?: ParkingSlot; log?: ParkingLog; activeAtOtherSiteId?: string } {
   const storeData = getStore();
   const cleanVehicleNum = params.vehicleNumber.trim().toUpperCase();
   const requestSiteId = params.siteId || DEFAULT_SITE_ID;
+  const atThisSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === requestSiteId;
 
-  // Check if already parked
-  const alreadyParked = storeData.slots.find(s => s.currentVehicle === cleanVehicleNum && s.status === 'OCCUPIED');
+  // "Already parked" is checked at THIS site only (H5): the reply must never
+  // reveal a slot at another site. A plate also occupied elsewhere is
+  // reported back to the caller as activeAtOtherSiteId, for the audit log
+  // only (the route strips it from the response).
+  const occupiedBy = (s: ParkingSlot) => s.status === 'OCCUPIED' && (s.currentVehicle || '').toUpperCase() === cleanVehicleNum;
+  const alreadyParked = storeData.slots.find(s => occupiedBy(s) && atThisSite(s));
+  const parkedElsewhere = alreadyParked ? undefined : storeData.slots.find(s => occupiedBy(s) && !atThisSite(s));
   if (alreadyParked) {
     return {
       success: false,
@@ -1682,8 +1688,9 @@ export function processVehicleEntry(params: {
     };
   }
 
-  // Look up employee record
-  const employee = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === cleanVehicleNum);
+  // Look up the employee record at this site only (a pass at another site
+  // is not a pass here).
+  const employee = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === cleanVehicleNum && atThisSite(e));
   const detectedType = params.vehicleType || (employee ? employee.vehicleType : 'SEDAN');
 
   let targetSlot: ParkingSlot | null = null;
@@ -1754,6 +1761,7 @@ export function processVehicleEntry(params: {
     message: `Entry Granted! Assigned Slot: ${targetSlot.slotNumber} (${targetSlot.floorLocation})`,
     slot: targetSlot,
     log: newLog,
+    ...(parkedElsewhere ? { activeAtOtherSiteId: parkedElsewhere.siteId || DEFAULT_SITE_ID } : {}),
   };
 }
 
@@ -1763,13 +1771,12 @@ export function processVehicleExit(vehicleNumberOrSlot: string, siteId?: string)
   const searchKey = vehicleNumberOrSlot.trim().toUpperCase();
   const requestSiteId = siteId || DEFAULT_SITE_ID;
 
-  // Vehicle number is safe to match globally (genuinely unique regardless
-  // of site), but slotNumber alone isn't — scoped to the requesting site
-  // for that part of the match, same reasoning as everywhere else this
-  // session.
+  // Both the plate and the slot number are matched within the requesting
+  // site only (H5 / BUG-3): an attendant at one site can never check out a
+  // vehicle parked at another.
   const slot = storeData.slots.find(
-    s => (s.currentVehicle && s.currentVehicle.toUpperCase() === searchKey) ||
-      (s.slotNumber.toUpperCase() === searchKey && (s.siteId || DEFAULT_SITE_ID) === requestSiteId)
+    s => (s.siteId || DEFAULT_SITE_ID) === requestSiteId &&
+      ((s.currentVehicle && s.currentVehicle.toUpperCase() === searchKey) || s.slotNumber.toUpperCase() === searchKey)
   );
 
   if (!slot || slot.status !== 'OCCUPIED' || !slot.currentVehicle) {
@@ -2993,14 +3000,12 @@ export function changeVehicleSlot(
     return { success: false, message: 'Vehicle number (or current slot) and Target Slot Number are required.' };
   }
 
-  // 1. Find the current slot and vehicle number. Vehicle number is
-  // matched globally, same as processVehicleExit (genuinely unique
-  // regardless of site); slot number alone is scoped to the requesting
-  // site — this route previously scoped neither, so an attendant could
-  // relocate a vehicle using another site's slot numbers.
+  // 1. Find the current slot and vehicle number, both within the
+  // requesting site only (BUG-4), same as processVehicleExit.
+  const atThisSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === requestSiteId;
   let currentSlot = storeData.slots.find(
-    (s) => (s.currentVehicle && s.currentVehicle.toUpperCase() === query) ||
-      (s.slotNumber.toUpperCase() === query && (s.siteId || DEFAULT_SITE_ID) === requestSiteId)
+    (s) => atThisSite(s) &&
+      ((s.currentVehicle && s.currentVehicle.toUpperCase() === query) || s.slotNumber.toUpperCase() === query)
   );
 
   let vehicleNum = query;
@@ -3046,7 +3051,7 @@ export function changeVehicleSlot(
 
   // 4. Update active Parking Log
   const activeLog = storeData.logs.find(
-    (l) => l.vehicleNumber.toUpperCase() === vehicleNum && (l.status === 'ACTIVE' || !l.exitTime)
+    (l) => l.vehicleNumber.toUpperCase() === vehicleNum && (l.status === 'ACTIVE' || !l.exitTime) && atThisSite(l)
   );
 
   if (activeLog) {
@@ -3057,7 +3062,7 @@ export function changeVehicleSlot(
   }
 
   // 5. Check if vehicle belongs to a registered employee for mobile SMS dispatch
-  const emp = storeData.employees.find((e) => e.vehicleNumber.toUpperCase() === vehicleNum);
+  const emp = storeData.employees.find((e) => e.vehicleNumber.toUpperCase() === vehicleNum && atThisSite(e));
   const smsText = `PARKFLOW DRIVER ALERT: Vehicle ${vehicleNum} slot updated from ${oldSlotNumber} to ${newSlot.slotNumber} (${newSlot.basement}, ${newSlot.parkingType} Level, ${newSlot.height}). Reason: ${reason}. Attendant: ${attendantName}.`;
 
   const notification: SlotChangeNotification = {
@@ -3417,7 +3422,7 @@ export function createValetTicket(data: {
     // otherwise a valet ticket for one site could get handed a vacant
     // slot that actually belongs to a different site.
     const vacantSlot = storeData.slots.find(
-      (s) => s.status === 'VACANT' && (!data.siteId || s.siteId === data.siteId)
+      (s) => s.status === 'VACANT' && (!data.siteId || (s.siteId || DEFAULT_SITE_ID) === data.siteId)
     );
     slotNumber = vacantSlot ? vacantSlot.slotNumber : 'B1-VIP-VALET';
     derivedSiteId = vacantSlot?.siteId;

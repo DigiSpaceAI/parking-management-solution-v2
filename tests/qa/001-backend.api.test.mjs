@@ -292,3 +292,51 @@ test('B3 valet: status and retrieval never touch another site\'s ticket', async 
   const tickets = (await get('master', '/valet/tickets', { site: F.B.id })).body.tickets;
   assert.notEqual(tickets.find((x) => x.id === t.body.ticket.id).status, 'RETRIEVAL_REQUESTED');
 });
+
+// ---------------------------------------------------------------- B4
+test('B4/H5 exit and relocation match plates within the selected site only', async () => {
+  const inB = await post('attB', '/vehicles/entry', { vehicleNumber: 'MH12AB4004' }, { site: F.B.id });
+  assert.equal(inB.status, 200, JSON.stringify(inB.body));
+  const exitA = await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB4004' }, { site: F.A.id });
+  assert.equal(exitA.status, 404);
+  assert.ok(!JSON.stringify(exitA.body).includes(inB.body.slot.slotNumber), 'no foreign slot data echoed');
+  const aSlot = (await slotsAt(F.A.id)).find((s) => s.status === 'VACANT');
+  const move = await post('attA', '/slots/change', { vehicleNumberOrSlot: 'MH12AB4004', newSlotNumber: aSlot.slotNumber }, { site: F.A.id });
+  assert.equal(move.status, 400);
+  const still = (await slotsAt(F.B.id)).find((s) => s.id === inB.body.slot.id);
+  assert.equal(still.status, 'OCCUPIED'); assert.equal(still.currentVehicle, 'MH12AB4004');
+  const exitB = await post('attB', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB4004' }, { site: F.B.id });
+  assert.equal(exitB.status, 200);
+});
+
+test('B4/H5 entry: dup check is per site; a plate parked elsewhere enters here, reply hides the other site, audit-logged', async () => {
+  const inB = await post('attB', '/vehicles/entry', { vehicleNumber: 'MH12AB5005' }, { site: F.B.id });
+  assert.equal(inB.status, 200);
+  const inA = await post('attA', '/vehicles/entry', { vehicleNumber: 'MH12AB5005' }, { site: F.A.id });
+  assert.equal(inA.status, 200, JSON.stringify(inA.body));
+  assert.equal(inA.body.slot.siteId, F.A.id);
+  assert.ok(!('activeAtOtherSiteId' in inA.body));
+  assert.ok(!JSON.stringify(inA.body).includes(F.B.id), 'reply never mentions site B');
+  assert.ok((await auditEntries('VEHICLE_ACTIVE_AT_OTHER_SITE')).some((l) => l.siteId === F.A.id && l.targetResource === 'vehicle/MH12AB5005'));
+  const dupA = await post('attA', '/vehicles/entry', { vehicleNumber: 'MH12AB5005' }, { site: F.A.id });
+  assert.equal(dupA.status, 400, 'same-site duplicate is still refused');
+  await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB5005' }, { site: F.A.id });
+  await post('attB', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB5005' }, { site: F.B.id });
+});
+
+test('B4/AC-06 gate employee lookup is per site: site B\'s pass is not an employee at site A', async () => {
+  const inA = await post('attA', '/vehicles/entry', { vehicleNumber: F.empB.vehicleNumber }, { site: F.A.id });
+  assert.equal(inA.status, 200);
+  assert.notEqual(inA.body.log.employeeName, F.empB.name, 'no site B employee data at site A');
+  await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: F.empB.vehicleNumber }, { site: F.A.id });
+});
+
+test('B4/BUG-10 scan-plate never returns a mock plate', async () => {
+  const r = await post('attA', '/vehicles/scan-plate', {}, { site: F.A.id });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.message, 'No plate detected. Type it in.');
+  const img = await post('attA', '/vehicles/scan-plate', { imageBase64: 'data:image/jpeg;base64,AAAA' }, { site: F.A.id });
+  assert.equal(img.status, 400, 'no GEMINI_API_KEY -> type it in, not a random plate');
+  const noSite = await post('attA', '/vehicles/scan-plate', {});
+  assert.equal(noSite.status, 400); assert.equal(noSite.body.errorCode, 'ERR_SITE_REQUIRED');
+});

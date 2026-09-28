@@ -1373,7 +1373,8 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
 // 4. Vehicle Entry Endpoint
 app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumber, vehicleType, entryType, targetSlotNumber, remarks } = req.body;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
 
   if (!vehicleNumber) {
     return res.status(400).json({ success: false, message: 'vehicleNumber is required' });
@@ -1382,8 +1383,8 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
   if (!isValidLicensePlate(String(vehicleNumber))) {
     logSecurityEvent({
       action: 'INVALID_PLATE_FORMAT_REJECTED',
-      actor: (req.headers['x-user-email'] as string) || req.ip || 'Unknown',
-      actorRole: (req.headers['x-user-role'] as string) || 'ATTENDANT',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
       ipAddress: req.ip,
       targetResource: `vehicleNumber: ${String(vehicleNumber).slice(0, 40)}`,
       status: 'VALIDATION_FAILED',
@@ -1408,13 +1409,30 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
     return res.status(400).json(result);
   }
 
-  res.json(result);
+  // The plate is also occupied at another site: entry proceeds here, the
+  // reply never mentions the other site, and the event is audit-logged.
+  const { activeAtOtherSiteId, ...reply } = result;
+  if (activeAtOtherSiteId) {
+    logSecurityEvent({
+      action: 'VEHICLE_ACTIVE_AT_OTHER_SITE',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `vehicle/${String(vehicleNumber).trim().toUpperCase()}`,
+      status: 'SUCCESS',
+      details: `Entry at site ${siteId} for a plate still marked parked at site ${activeAtOtherSiteId}.`,
+      siteId,
+    });
+  }
+
+  res.json(reply);
 });
 
 // 5. Vehicle Exit Endpoint
 app.post('/api/v1/vehicles/exit', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumberOrSlot } = req.body;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
 
   if (!vehicleNumberOrSlot) {
     return res.status(400).json({ success: false, message: 'vehicleNumberOrSlot is required' });
@@ -1434,6 +1452,11 @@ app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCrea
   try {
     const { imageBase64 } = req.body;
     const store = getStore();
+    const siteId = resolveSite(req, res, { allowAll: false });
+    if (siteId === null) return;
+    // Never a random or mock plate (BUG-10 / R8): without an image, an AI
+    // key or a readable plate, the attendant types it in.
+    const noPlate = () => res.status(400).json({ success: false, message: 'No plate detected. Type it in.' });
 
     // ~4.5 MB of image is plenty for a plate photo; anything bigger is abuse
     // (or a cost-inflation attempt) rather than a real camera frame.
@@ -1441,21 +1464,10 @@ app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCrea
       return res.status(413).json({ success: false, message: 'Image too large or invalid.' });
     }
 
-    if (!imageBase64) {
-      // Pick random sample employee plate for simulation
-      const sampleEmp = store.employees[Math.floor(Math.random() * store.employees.length)];
-      return res.json({
-        success: true,
-        plateNumber: sampleEmp.vehicleNumber,
-        confidence: 0.98,
-        vehicleType: sampleEmp.vehicleType,
-        vehicleBrand: sampleEmp.vehicleBrand,
-        matchedEmployee: sampleEmp,
-        rawAnalysis: 'Simulated High-Accuracy ANPR Scan',
-      });
-    }
+    if (!imageBase64) return noPlate();
 
     const ai = getGeminiClient();
+    if (!ai) return noPlate();
     let plateNumber = '';
     let detectedType: VehicleType = 'SEDAN';
     let brand = 'Toyota';
@@ -1501,19 +1513,15 @@ Respond strictly in JSON format with:
       } catch (e) {
         console.warn('Failed to parse Gemini JSON, extracting plate with regex:', rawText);
         const match = rawText.match(/[A-Z]{2}[-\s]?\d{2}[-\s]?[A-Z]{1,2}[-\s]?\d{3,4}/i);
-        plateNumber = match ? match[0].toUpperCase() : 'KA-01-EX-8890';
+        plateNumber = match ? match[0].toUpperCase() : '';
       }
-    } else {
-      // Fallback plate extraction simulation
-      const sampleEmp = store.employees[Math.floor(Math.random() * store.employees.length)];
-      plateNumber = sampleEmp.vehicleNumber;
-      detectedType = sampleEmp.vehicleType;
-      brand = sampleEmp.vehicleBrand;
-      rawText = 'Fallback ANPR OCR Engine';
     }
+    if (!plateNumber) return noPlate();
 
-    // Match with registered employee
-    const matchedEmployee = store.employees.find(e => e.vehicleNumber.toUpperCase() === plateNumber.toUpperCase()) || null;
+    // Match with a registered employee at THIS site only (AC-06).
+    const matchedEmployee = store.employees.find(
+      e => e.vehicleNumber.toUpperCase() === plateNumber.toUpperCase() && recordSite(e) === siteId
+    ) || null;
 
     res.json({
       success: true,

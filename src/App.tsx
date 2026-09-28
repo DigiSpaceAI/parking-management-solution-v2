@@ -35,7 +35,7 @@ import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
 import { SecurityAuditModule } from './components/SecurityAuditModule';
 import { LoginScreen } from './components/LoginScreen';
-import { isMasterAdmin } from './utils/rbac';
+import { isMasterAdmin, getModuleRights } from './utils/rbac';
 import {
   ALL_SITES,
   SiteContext,
@@ -444,7 +444,13 @@ export default function App() {
     return <NoSiteAssigned onSignOut={handleLogout} />;
   }
 
-  const siteContextValue = buildSiteContextValue(currentSiteId, sites, false);
+  const baseSiteContext = buildSiteContextValue(currentSiteId, sites, false, isMasterAdmin(currentUser));
+  // The Employee app preview has no site context; its own flows stay writable.
+  const siteContextValue = needsSite
+    ? baseSiteContext
+    : { ...baseSiteContext, canWrite: true, writeDisabledReason: null };
+  const currentRole = roles.find((r) => r.id === currentUser.roleId);
+  const canManageDomains = getModuleRights(currentUser, currentRole, 'REGISTRATION').canEdit;
 
   // siteId is the chosen site or 'ALL' (never empty for console users).
   const renderActiveTab = (siteId: string) => (
@@ -551,11 +557,21 @@ export default function App() {
             )}
 
             {activeTab === 'REGISTRATION' && (
-              <EmployeeRegistration mode="REGISTRATION" onRefreshAll={refreshAll} currentSiteId={siteId} />
+              <EmployeeRegistration
+                mode="REGISTRATION"
+                onRefreshAll={refreshAll}
+                currentSiteId={siteId}
+                canManageDomains={canManageDomains}
+              />
             )}
 
             {activeTab === 'APPROVALS' && (
-              <EmployeeRegistration mode="APPROVALS" onRefreshAll={refreshAll} currentSiteId={siteId} />
+              <EmployeeRegistration
+                mode="APPROVALS"
+                onRefreshAll={refreshAll}
+                currentSiteId={siteId}
+                canManageDomains={canManageDomains}
+              />
             )}
 
             {activeTab === 'MASTER_CONFIG' && <MasterConfigModule onRefresh={refreshAll} />}
@@ -667,6 +683,11 @@ export default function App() {
                   {siteContextValue.isAllSites
                     ? `All sites · ${sites.length} sites`
                     : siteContextValue.activeSite?.siteName || currentSiteId}
+                  {siteContextValue.isAllSites && (
+                    <span className="ml-2 normal-case tracking-normal font-semibold text-slate-600">
+                      · Select one site to make changes
+                    </span>
+                  )}
                 </p>
                 {renderActiveTab(currentSiteId)}
               </div>

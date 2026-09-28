@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { DomainWhitelistPanel } from './DomainWhitelistPanel';
 
 /**
  * Master Admin — Sites & Tenants page
@@ -43,12 +44,6 @@ interface Site {
   };
 }
 
-interface WhitelistedDomain {
-  id: string;
-  domain: string;
-  active: boolean;
-}
-
 const statusPillStyle = (status: string) => {
   const s = status.toUpperCase();
   if (s === 'ACTIVE') return { bg: '#e7f8f0', bd: '#a7e3c8', fg: '#065f46' };
@@ -59,11 +54,8 @@ const statusPillStyle = (status: string) => {
 
 export const MasterAdminSites: React.FC = () => {
   const [sites, setSites] = useState<Site[]>([]);
-  const [domains, setDomains] = useState<WhitelistedDomain[]>([]);
   const [search, setSearch] = useState('');
-  const [newDomain, setNewDomain] = useState('');
   const [loading, setLoading] = useState(true);
-  const [domainBusy, setDomainBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
 
   const loadSites = useCallback(async () => {
@@ -83,21 +75,9 @@ export const MasterAdminSites: React.FC = () => {
     }
   }, []);
 
-  const loadDomains = useCallback(async () => {
-    try {
-      const res = await fetch('/api/v1/domains');
-      if (!res.ok) return;
-      const data = await res.json();
-      setDomains(Array.isArray(data?.domains) ? data.domains : []);
-    } catch {
-      // Non-fatal — the domains panel just shows empty if this fails.
-    }
-  }, []);
-
   useEffect(() => {
     loadSites();
-    loadDomains();
-  }, [loadSites, loadDomains]);
+  }, [loadSites]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -109,25 +89,6 @@ export const MasterAdminSites: React.FC = () => {
         (s.city || '').toLowerCase().includes(q)
     );
   }, [sites, search]);
-
-  const addDomain = async () => {
-    const d = newDomain.trim().toLowerCase();
-    if (!d) return;
-    setDomainBusy(true);
-    try {
-      const res = await fetch('/api/v1/domains/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain: d }),
-      });
-      if (res.ok) {
-        setNewDomain('');
-        loadDomains();
-      }
-    } finally {
-      setDomainBusy(false);
-    }
-  };
 
   const [onboardOpen, setOnboardOpen] = useState(false);
   const [onboardBusy, setOnboardBusy] = useState(false);
@@ -319,43 +280,8 @@ export const MasterAdminSites: React.FC = () => {
           </div>
         </section>
 
-        <section style={{ border: '1px solid #e2e6ee', borderRadius: 8, padding: 18 }}>
-          <h5 style={{ margin: 0, fontSize: 15 }}>Whitelisted corporate domains</h5>
-          <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 12px' }}>Employees may self-register a pass only from these domains.</div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
-            {domains.length === 0 ? (
-              <span style={{ fontSize: 12, color: '#94a3b8' }}>No domains added yet.</span>
-            ) : (
-              domains.map((d) => (
-                <span
-                  key={d.id}
-                  style={{
-                    fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11.5, padding: '4px 10px', borderRadius: 6,
-                    background: d.active ? '#eef6ff' : '#f1f5f9', color: d.active ? '#1e40af' : '#64748b',
-                    border: `1px solid ${d.active ? '#bfdbfe' : '#cbd5e1'}`,
-                  }}
-                >
-                  {d.domain}{!d.active ? ' — inactive' : ''}
-                </span>
-              ))
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              value={newDomain}
-              onChange={(e) => setNewDomain(e.target.value)}
-              placeholder="add-domain.com"
-              style={{ flex: 1, padding: '8px 12px', border: '1px solid #cbd3e0', borderRadius: 8, fontSize: 13 }}
-            />
-            <button
-              onClick={addDomain}
-              disabled={domainBusy || !newDomain.trim()}
-              style={{ padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#eef1f6', color: '#334155', fontWeight: 600, fontSize: 13, cursor: 'pointer', opacity: domainBusy ? 0.6 : 1 }}
-            >
-              {domainBusy ? 'Adding…' : 'Add'}
-            </button>
-          </div>
-        </section>
+        {/* Per-site and platform-wide allowed domains (PRD Addendum C) */}
+        <DomainWhitelistPanel canEdit />
       </div>
     </div>
   );

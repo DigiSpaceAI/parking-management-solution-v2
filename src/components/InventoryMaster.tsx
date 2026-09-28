@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { ParkingSlot, SlotStatus, SlotType, ParkingType, Allocation } from '../types';
+import { useWriteGuard } from '../utils/withSite';
+import { SiteCodeChip } from './SiteCodeChip';
 import {
   Cpu,
   Search,
@@ -37,6 +39,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   onRefresh,
   currentSiteId,
 }) => {
+  const guard = useWriteGuard();
   const [activeTab, setActiveTab] = useState<'SLOTS'>('SLOTS');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [basementFilter, setBasementFilter] = useState<string>('ALL');
@@ -383,6 +386,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
           {activeTab === 'SLOTS' && (
             <div className="flex items-center space-x-2">
               <button
+                {...guard()}
                 onClick={() => handleOpenSlotEditModal()}
                 className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-sm transition-colors flex items-center space-x-1.5"
               >
@@ -391,6 +395,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
               </button>
 
               <button
+                {...guard()}
                 onClick={() => {
                   setSlotBulkCsvText('');
                   setParsedBulkSlots([]);
@@ -466,7 +471,10 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
               <tbody className="divide-y divide-slate-100">
                 {paginatedSlots.map((slot) => (
                   <tr key={slot.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="p-3.5 font-mono font-bold text-slate-900">{slot.slotNumber}</td>
+                    <td className="p-3.5 font-mono font-bold text-slate-900">
+                      <SiteCodeChip siteId={slot.siteId} />
+                      {slot.slotNumber}
+                    </td>
                     <td className="p-3.5 font-medium">{slot.basement}</td>
                     <td className="p-3.5 text-slate-500 max-w-xs truncate">{slot.floorLocation}</td>
                     <td className="p-3.5 font-semibold text-blue-600">
@@ -494,9 +502,9 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                     <td className="p-3.5 text-right space-x-1">
                       {slot.status === 'OCCUPIED' && onVehicleExit && (
                         <button
+                          {...guard('Mark Vehicle Exit from Pallet / Slot')}
                           onClick={() => onVehicleExit(slot.currentVehicle || slot.slotNumber)}
                           className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded border border-rose-300 text-[10px] font-bold transition-colors inline-flex items-center space-x-1"
-                          title="Mark Vehicle Exit from Pallet / Slot"
                         >
                           <XCircle className="w-3 h-3 text-rose-600" />
                           <span>Mark Exit</span>
@@ -504,6 +512,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                       )}
 
                       <button
+                        {...guard()}
                         onClick={() => handleOpenSlotEditModal(slot)}
                         className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded border border-blue-300 text-[10px] font-bold transition-colors inline-flex items-center space-x-1"
                       >
@@ -513,6 +522,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
 
                       {slot.status === 'MAINTENANCE' ? (
                         <button
+                          {...guard()}
                           onClick={() => onUpdateSlotStatus(slot.id, 'VACANT')}
                           className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded border border-emerald-300 text-[10px] font-bold transition-colors"
                         >
@@ -520,6 +530,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                         </button>
                       ) : (
                         <button
+                          {...guard()}
                           onClick={() => onUpdateSlotStatus(slot.id, 'MAINTENANCE')}
                           className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded border border-slate-300 text-[10px] font-bold transition-colors"
                         >
@@ -528,9 +539,9 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                       )}
 
                       <button
+                        {...guard('Delete this slot permanently')}
                         onClick={() => handleDeleteSlot(slot)}
                         className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded border border-rose-300 text-[10px] font-bold transition-colors inline-flex items-center space-x-1"
-                        title="Delete this slot permanently"
                       >
                         <Trash2 className="w-3 h-3" />
                         <span>Delete</span>
@@ -839,8 +850,9 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                     Cancel
                   </button>
                   <button
+                    {...guard()}
                     onClick={handleConfirmSlotBulkUpload}
-                    disabled={slotBulkUploading || parsedBulkSlots.length === 0}
+                    disabled={slotBulkUploading || parsedBulkSlots.length === 0 || !!guard().disabled}
                     className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center space-x-2 disabled:opacity-40"
                   >
                     {slotBulkUploading && <RefreshCw className="w-4 h-4 animate-spin" />}

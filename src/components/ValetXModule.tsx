@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ValetTicket, VehicleType, ValetTicketType, ValetStatus } from '../types';
+import { useWriteGuard } from '../utils/withSite';
+import { SiteCodeChip } from './SiteCodeChip';
 import {
   KeyRound,
   Plus,
@@ -28,6 +30,7 @@ import {
 } from 'lucide-react';
 
 export const ValetXModule: React.FC = () => {
+  const guard = useWriteGuard();
   const [tickets, setTickets] = useState<ValetTicket[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<'BOARD' | 'CHECKIN' | 'GUEST_PORTAL' | 'LOCKER'>('BOARD');
@@ -385,7 +388,10 @@ export const ValetXModule: React.FC = () => {
                       <KeyRound className="w-3.5 h-3.5 text-purple-300" />
                       {ticket.keyTagNumber}
                     </span>
-                    <span className="font-mono text-xs font-bold text-slate-600">{ticket.ticketNumber}</span>
+                    <span className="font-mono text-xs font-bold text-slate-600">
+                      <SiteCodeChip siteId={ticket.siteId} />
+                      {ticket.ticketNumber}
+                    </span>
                   </div>
 
                   <span
@@ -452,6 +458,7 @@ export const ValetXModule: React.FC = () => {
                 <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
                   {ticket.status === 'PARKED' && (
                     <button
+                      {...guard()}
                       onClick={() => handleStatusUpdate(ticket.id, 'RETRIEVAL_REQUESTED')}
                       className="w-full py-1.5 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors flex items-center justify-center space-x-1.5"
                     >
@@ -462,6 +469,7 @@ export const ValetXModule: React.FC = () => {
 
                   {ticket.status === 'RETRIEVAL_REQUESTED' && (
                     <button
+                      {...guard()}
                       onClick={() => {
                         setShowStatusModal(ticket);
                         setStatusNote('Keys delivered to guest at Gate Drop-Off point.');
@@ -623,6 +631,7 @@ export const ValetXModule: React.FC = () => {
                 Cancel
               </button>
               <button
+                {...guard()}
                 type="submit"
                 className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-black text-xs rounded-xl shadow-lg shadow-purple-600/30 flex items-center space-x-2"
               >
@@ -666,6 +675,7 @@ export const ValetXModule: React.FC = () => {
                   className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-purple-500"
                 />
                 <button
+                  {...guard()}
                   type="submit"
                   className="px-5 py-2 bg-purple-600 hover:bg-purple-500 font-bold text-xs rounded-xl shadow-lg shadow-purple-600/30 transition-colors"
                 >
@@ -858,6 +868,7 @@ export const ValetXModule: React.FC = () => {
                 Cancel
               </button>
               <button
+                {...guard()}
                 onClick={() => handleStatusUpdate(showStatusModal.id, 'RETRIEVED_DELIVERED')}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm"
               >

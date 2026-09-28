@@ -174,6 +174,8 @@ export interface SiteContextValue {
   isAllSites: boolean;
   /** A Master Admin is viewing the console as another user (read-only). */
   isViewAs: boolean;
+  /** The (effective) user is a Master Admin. */
+  isMaster: boolean;
   /** Writes are allowed: one site chosen and not viewing as someone else. */
   canWrite: boolean;
   /** Why writes are disabled, for a tooltip; null when canWrite. */
@@ -188,7 +190,8 @@ export const WRITE_DISABLED_VIEW_AS = 'Read-only while viewing as another user';
 export function buildSiteContextValue(
   siteId: string | null,
   sites: SiteConfig[],
-  isViewAs: boolean
+  isViewAs: boolean,
+  isMaster = false
 ): SiteContextValue {
   const isAllSites = siteId === ALL_SITES;
   const activeSite = siteId && !isAllSites ? sites.find((s) => s.id === siteId) || null : null;
@@ -204,6 +207,7 @@ export function buildSiteContextValue(
     sites,
     isAllSites,
     isViewAs,
+    isMaster,
     canWrite: writeDisabledReason === null,
     writeDisabledReason,
     // Records without a siteId belong to the legacy default site.
@@ -215,4 +219,36 @@ export const SiteContext = createContext<SiteContextValue>(buildSiteContextValue
 
 export function useSiteContext(): SiteContextValue {
   return useContext(SiteContext);
+}
+
+/** Props a guarded action button spreads: disabled + tooltip when writes aren't allowed. */
+export interface WriteGuardProps {
+  disabled?: boolean;
+  title?: string;
+  'aria-disabled'?: boolean;
+  'data-write-guard': '';
+}
+
+/**
+ * For write actions (L-3, L-8): disabled with "Select one site to make changes"
+ * in All sites mode, and read-only while viewing as another user. The server
+ * refuses these anyway (400 ERR_SITE_ALL_NOT_ALLOWED / 403 ERR_VIEW_AS_READ_ONLY);
+ * this only keeps people from trying.
+ *
+ * `perSiteRead` is for single-site reads such as a CSV export: they need one
+ * site but are allowed while viewing as someone else.
+ *
+ * Usage: `const guard = useWriteGuard(); <button {...guard('Delete this slot')} …>`
+ */
+export function useWriteGuard(): (title?: string, opts?: { perSiteRead?: boolean }) => WriteGuardProps {
+  const ctx = useSiteContext();
+  return (title, opts) => {
+    const reason = opts?.perSiteRead
+      ? !ctx.siteId || ctx.isAllSites
+        ? WRITE_DISABLED_ALL_SITES
+        : null
+      : ctx.writeDisabledReason;
+    if (!reason) return { title, 'data-write-guard': '' };
+    return { disabled: true, title: reason, 'aria-disabled': true, 'data-write-guard': '' };
+  };
 }

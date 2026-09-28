@@ -1,4 +1,6 @@
 node_modules/
+# Leftover partial installs (T0e)
+node_modules*/
 build/
 dist/
 coverage/
@@ -11,3 +13,6 @@ coverage/
 # Must never be committed. This was previously exposed in the repo's
 # history; the repo was recreated clean rather than trying to purge it.
 data/
+
+# Deploy installs with bun.lock (d42af6f); keep a single lockfile (T0d)
+package-lock.json

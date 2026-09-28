@@ -98,8 +98,7 @@ import {
   generatePasswordResetToken,
   consumePasswordResetToken,
   destroySession,
-  loadAuditLogsFromFirestore,
-  clearAuditLogs
+  loadAuditLogsFromFirestore
 } from './src/server/security';
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
@@ -424,6 +423,13 @@ function assertRecordSite(req: express.Request, res: express.Response, record: S
   if (resolvedSite === 'ALL' && siteAllowedFor(scopeUser(req), stored)) return true;
   denySite(req, res, stored, `${req.user?.email || 'unknown'} (site ${resolvedSite}) tried to act on a record of site ${stored}.`);
   return false;
+}
+
+// Master Admin only (AC-52). Checks the REAL signed-in user, never the Role
+// View Simulator target.
+function requireMasterAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.user && isMasterAdmin(req.user)) return next();
+  return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can do this.');
 }
 
 // List filter for a resolved site ('ALL' = no filter).
@@ -1227,11 +1233,12 @@ app.post('/api/v1/sites/delete', requirePermission('MASTER_CONFIG', 'canDelete')
 // a chosen date. See clearHistoricalRecords()'s own comment for exactly
 // which records within each collection count as "history" versus
 // something still in progress that's never touched here.
-const CLEARABLE_COLLECTIONS: (ClearableCollection | 'securityAuditLogs')[] = [
-  'logs', 'slotChangeNotifications', 'valetTickets', 'securityAuditLogs',
-];
+// securityAuditLogs is deliberately NOT clearable (M1; retention rules for
+// the audit trail are still open, OQ-11c), so no one can erase the record of
+// what they did.
+const CLEARABLE_COLLECTIONS: ClearableCollection[] = ['logs', 'slotChangeNotifications', 'valetTickets'];
 
-app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canDelete'), async (req, res) => {
+app.post('/api/v1/admin/clear-history', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canDelete'), async (req, res) => {
   const { collections, olderThan } = req.body as { collections?: string[]; olderThan?: string };
 
   if (!Array.isArray(collections) || collections.length === 0) {
@@ -1250,16 +1257,8 @@ app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canD
   // datetime.
   const olderThanISO = olderThan ? new Date(olderThan).toISOString() : undefined;
 
-  const storeCollections = collections.filter((c) => c !== 'securityAuditLogs') as ClearableCollection[];
   const result: Record<string, number> = {};
-
-  if (storeCollections.length > 0) {
-    const storeResult = await clearHistoricalRecords(storeCollections, olderThanISO);
-    Object.assign(result, storeResult);
-  }
-  if (collections.includes('securityAuditLogs')) {
-    result.securityAuditLogs = await clearAuditLogs(olderThanISO);
-  }
+  Object.assign(result, await clearHistoricalRecords(collections as ClearableCollection[], olderThanISO));
 
   logSecurityEvent({
     action: 'HISTORICAL_DATA_CLEARED',
@@ -1274,7 +1273,7 @@ app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canD
   res.json({ success: true, cleared: result });
 });
 
-app.post('/api/v1/admin/migrate-site-data', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
+app.post('/api/v1/admin/migrate-site-data', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
   const { fromSiteId, toSiteId } = req.body;
 
   if (!fromSiteId || !toSiteId) {
@@ -2481,26 +2480,26 @@ app.post('/api/v1/rbac/users/toggle-module', requirePermission('USER_MANAGEMENT'
 // ==========================================
 
 // Get Security Posture & Compliance Summary
-app.get('/api/v1/security/compliance-summary', requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
+app.get('/api/v1/security/compliance-summary', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
   const summary = getSecurityComplianceSummary();
   res.json({ success: true, summary });
 });
 
 // Get Cryptographic Tamper-Evident Audit Logs
-app.get('/api/v1/security/audit-logs', requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
+app.get('/api/v1/security/audit-logs', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
   const limit = parseInt(req.query.limit as string, 10) || 100;
   const logs = getSecurityAuditLogs(limit);
   res.json({ success: true, total: logs.length, logs });
 });
 
 // Mathematically verify SHA-256 HMAC integrity chaining of audit trail
-app.post('/api/v1/security/verify-audit-chain', requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
+app.post('/api/v1/security/verify-audit-chain', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
   const verification = verifyAuditTrailIntegrity();
   res.json({ success: true, verification });
 });
 
 // Interactive Infosec Vulnerability & Remediation Attack Simulator (For Security Testing UI)
-app.post('/api/v1/security/simulate-attack', requirePermission('SECURITY_AUDIT', 'canEdit'), (req, res) => {
+app.post('/api/v1/security/simulate-attack', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'canEdit'), (req, res) => {
   const { attackType } = req.body;
 
   if (attackType === 'BOLA_EXPLOIT') {

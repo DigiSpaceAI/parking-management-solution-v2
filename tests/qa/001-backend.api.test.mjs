@@ -469,3 +469,27 @@ test('B8/H8 toggle-module and reset tokens respect the target\'s sites and forbi
   assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attAUser.id })).status, 200);
   assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).length >= 5);
 });
+
+// ---------------------------------------------------------------- B9
+test('B9/AC-52 test tools and audit reads are Master Admin only', async () => {
+  const calls = [
+    ['POST', '/security/simulate-attack', { attackType: 'BOLA_EXPLOIT' }],
+    ['POST', '/admin/clear-history', { collections: ['logs'] }],
+    ['POST', '/admin/migrate-site-data', { fromSiteId: F.A.id, toSiteId: F.B.id }],
+    ['GET', '/security/audit-logs'],
+    ['GET', '/security/compliance-summary'],
+    ['POST', '/security/verify-audit-chain', {}],
+  ];
+  for (const [m, url, body] of calls) {
+    const r = await call('adminA', m, url, { body });
+    assert.equal(r.status, 403, `${m} ${url}`);
+    assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY', url);
+  }
+  assert.equal((await get('master', '/security/audit-logs')).status, 200);
+});
+
+test('B9/M1 security audit logs can no longer be cleared', async () => {
+  const r = await post('master', '/admin/clear-history', { collections: ['securityAuditLogs'] });
+  assert.equal(r.status, 400);
+  assert.ok((await get('master', '/security/audit-logs')).body.logs.length > 0);
+});

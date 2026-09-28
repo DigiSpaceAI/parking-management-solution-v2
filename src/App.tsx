@@ -178,10 +178,26 @@ export default function App() {
     }
 
     showToast('success', `Signed in as ${user.fullName} (${user.roleName})`);
+
+    // Data is first fetched on mount, before anyone is signed in, so those
+    // requests come back empty or unauthorised. Re-fetch now that the
+    // session exists, otherwise every page shows 0 until a manual refresh.
+    refreshAll();
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
+    // Drop the previous user's data and site context so the next person
+    // to sign in never sees it, even briefly.
+    setSlots([]);
+    setEmployees([]);
+    setLogs([]);
+    setAllUsers([]);
+    setRoles([]);
+    setSites([]);
+    setAlertCount(0);
+    setPendingReqCount(0);
+    setCurrentSiteId('ALL');
     try {
       localStorage.removeItem(SESSION_STORAGE_KEY);
     } catch (e) {

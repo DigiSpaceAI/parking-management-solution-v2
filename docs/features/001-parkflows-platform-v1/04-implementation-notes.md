@@ -7,7 +7,7 @@ _History: blocked on 25 Sep and early 28 Sep (no approved 03 yet). This section 
 1. **T0b "done-when" was wrong.** 03 expected `add --renormalize` to touch only `.gitattributes` + `src/App.tsx`. In fact 47 tracked files were stored with **CRLF in git** (not just the 26 churn files), so renormalising converts all 47 to LF. I kept that in its own commit (`6dba91b chore: enforce LF line endings`, whitespace only: `git diff --ignore-cr-at-eol` shows only `.gitattributes`). Reviewers can skip that commit.
 2. **B12 script as written fails on Node 22.** `node --test tests/qa/` treats the directory as a module path. I used `node --test tests/qa/*.test.mjs` instead (Node expands the pattern itself on Windows cmd).
 3. **T0a–T0c are tagged [frontend]** but block everything else. On the user's instruction ("do step 0 first") backend-dev did them exactly as written.
-4. **PERM-02 (AC-07: Site Admin can edit the corporate domain whitelist)** is not covered by 03: domains "stay global in Phase 1", with no task restricting `/domains/add|remove`. Default `role-site-manager` has REGISTRATION:canEdit, so a Site Admin can still change the platform-wide list. **Architect/PM decision needed**. Not changed.
+4. **PERM-02 (AC-07, domain whitelist): RESOLVED by user decision, 28 Sep 2026: "Site Admin can allow the domain for his site".** This is not in 03 (the per-site whitelist was Phase 2, M10/US-13), so it's built on the user's direct approval. **Architect: please record it in 03.** See "Per-site domain whitelist" below.
 5. QA's `tests/qa/001-platform-v1.api.test.mjs` fixtures send no site, so under strict mode (the default) its `before()` fails with `ERR_SITE_REQUIRED`. QA must update the fixtures in step 6, as 03 plans. Until then it can be run with `SITE_SCOPE_MODE=fallback`.
 
 ### Commits (on the branch, oldest first)
@@ -47,6 +47,14 @@ Shared errors are as in 03: `ERR_SITE_REQUIRED` 400, `ERR_SITE_FORBIDDEN` 403 (a
 - **B10:** `x-view-as` works for Master sessions only. It is GET-only; scope, permissions and masking follow the target, and the audit actor stays the Master. *Not in 03:* it is ignored on `/api/v1/auth/*` (so sign-out works while viewing as someone), and it was added to the CORS allowed headers.
 - **B11:** error codes on `requireAuth`; logout destroys cookie, bearer and `x-session-token` sessions; on Cloud Run (`K_SERVICE`) the server exits at start without `AUDIT_HMAC_SECRET` (the user confirmed it is set).
 - **B12:** `npm run test:qa`.
+- **Per-site domain whitelist (user decision 28 Sep):**
+  - `WhitelistedDomain.siteId?`: absent means every site, so existing entries are unchanged.
+  - `POST /domains/add|remove` (REGISTRATION canEdit) acts on the selected site. Another site gives 403 + audit; missing site gives 400.
+  - Platform-wide entries are Master Admin only (403 `ERR_MASTER_ONLY`). A Master with no single site selected adds platform-wide.
+  - `addedBy` comes from the session, not the body.
+  - Registration (single and bulk) accepts the site's domains plus platform-wide ones, and still fails closed when that set is empty.
+  - Public `GET /domains?siteId=` returns the site's domains plus platform-wide ones; without a site it returns all (unchanged).
+  - Adds and removes are audit-logged as `DOMAIN_WHITELIST_ADDED/REMOVED` with `siteId`.
 
 ### How to test manually
 1. `bun install --frozen-lockfile && npm run lint && npm run build && npm run test:qa` (see results below).
@@ -60,6 +68,8 @@ Shared errors are as in 03: `ERR_SITE_REQUIRED` 400, `ERR_SITE_FORBIDDEN` 403 (a
 
 ### Known limitations / hand-offs
 - **Frontend (F1–F8) must ship with this.** Under strict mode the current console sends no site, so its list calls get 400 until F1's fetch wrapper adds `x-site-id`. Do not deploy the backend alone; if you must, set `SITE_SCOPE_MODE=fallback`.
+- Frontend: the domain screens (`EmployeeRegistration.tsx`, `MasterAdminSites.tsx`) should show which entries are "this site" vs "all sites", and hide Remove on all-sites entries for non-Masters. The calls themselves need no change once F1 sends `x-site-id`.
+- QA: `PERM-02` must be rewritten to match the decision. A Site Admin CAN add a domain for their own site, but gets 403 for another site or for a platform-wide entry.
 - Frontend: `MasterAdminData.tsx` still offers "Security Audit Log" in clear-history, and the server now answers 400 if it is ticked. Remove that option.
 - Mobile (M1): `/attendant` must block when the site can't be resolved, because a header-less call is now a 400.
 - `LoginScreen.tsx`'s employee sign-in calls `/employees/profile` before a session exists (401 today as well); that's Phase 2 (P2-7).
@@ -95,4 +105,4 @@ Frontend-side notes for the architect: the PRD points at P0 frontend-heavy work.
 ## Build/lint results
 Not run for frontend. No frontend changes were made.
 
-**Backend (2026-09-28, on `0180e3e`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `tests/qa/001-backend.api.test.mjs` **41/41 pass** · QA suite `001-platform-v1` with `SITE_SCOPE_MODE=fallback`: **32/48 pass** (was 21/48 on 25 Sep; 0 new failures; the 16 left are Phase 2 ACs plus PERM-02, see Backend gap 4). QA suite under strict mode: fixtures need a site (Backend gap 5).
+**Backend (2026-09-28, on `0180e3e`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `tests/qa/001-backend.api.test.mjs` **43/43 pass** (incl. domain whitelist) · QA suite `001-platform-v1` with `SITE_SCOPE_MODE=fallback`: **32/48 pass** (was 21/48 on 25 Sep; 0 new failures; the 16 left are Phase 2 ACs plus PERM-02, which now fails by design and is to be rewritten by QA; see Backend gap 4). QA suite under strict mode: fixtures need a site (Backend gap 5).

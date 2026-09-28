@@ -2316,7 +2316,8 @@ app.post(
     }
     // H8: a non-Master can only reset accounts at their own sites, and never
     // their own (self-service would bypass the out-of-band handover).
-    if (!isMasterAdmin(req.user!) && (targetUser.id === req.user!.id || !userWithinCallerScope(req.user, targetUser))) {
+    const resetSelf = targetUser.id === req.user!.id;
+    if (!isMasterAdmin(req.user!) && (resetSelf || !userWithinCallerScope(req.user, targetUser))) {
       logSecurityEvent({
         action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
         actor: req.user!.email,
@@ -2326,7 +2327,9 @@ app.post(
         status: 'BLOCKED_UNAUTHORIZED',
         details: 'Reset token refused: target is the caller or outside the caller\'s sites.',
       });
-      return sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only reset passwords for other accounts at your own sites.');
+      return resetSelf
+        ? sendApiError(res, 403, 'ERR_MASTER_ONLY', 'You can\'t generate a reset token for your own account.')
+        : sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only reset passwords for accounts at your own sites.');
     }
 
     const token = generatePasswordResetToken(targetUser.id);
@@ -2605,9 +2608,12 @@ app.post('/api/v1/rbac/users/toggle-module', requirePermission('USER_MANAGEMENT'
   const caller = req.user!;
   if (!isMasterAdmin(caller)) {
     const target = getAppUsers().find((u) => u.id === userId);
+    // m-3: ERR_SITE_FORBIDDEN only for a target outside the caller's sites;
+    // self / privileged refusals are ERR_MASTER_ONLY.
     let refusal = '';
+    let code: ApiErrorCode = 'ERR_MASTER_ONLY';
     if (userId === caller.id) refusal = 'You can\'t change your own module access.';
-    else if (target && !userWithinCallerScope(caller, target)) refusal = 'You can only manage accounts at your own sites.';
+    else if (target && !userWithinCallerScope(caller, target)) { refusal = 'You can only manage accounts at your own sites.'; code = 'ERR_SITE_FORBIDDEN'; }
     else if (enabled && PRIVILEGED_MODULES.includes(moduleId)) refusal = 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit access.';
     if (refusal) {
       logSecurityEvent({
@@ -2619,7 +2625,7 @@ app.post('/api/v1/rbac/users/toggle-module', requirePermission('USER_MANAGEMENT'
         status: 'BLOCKED_UNAUTHORIZED',
         details: `${refusal} (module ${moduleId})`,
       });
-      return sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', refusal);
+      return sendApiError(res, 403, code, refusal);
     }
   }
   const result = toggleUserModuleOverride(userId, moduleId, enabled);

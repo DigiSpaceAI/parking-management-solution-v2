@@ -682,3 +682,14 @@ test('m-2 a Master Admin cannot move a record to a site that does not exist', as
   assert.equal((await slotsAt(F.B.id)).find((s) => s.id === mk.body.slot.id).siteId, F.B.id, 'record stays in its site');
   await post('master', '/slots/delete', { slotId: mk.body.slot.id }, { site: F.B.id });
 });
+
+test('m-3 self / privileged refusals are ERR_MASTER_ONLY; outside-site refusals stay ERR_SITE_FORBIDDEN', async () => {
+  const self = await post('umA', '/rbac/users/toggle-module', { userId: F.umAUser.id, moduleId: 'LOGS', enabled: true });
+  assert.equal(self.body.errorCode, 'ERR_MASTER_ONLY');
+  const priv = await post('umA', '/rbac/users/toggle-module', { userId: F.attAUser.id, moduleId: 'SECURITY_AUDIT', enabled: true });
+  assert.equal(priv.body.errorCode, 'ERR_MASTER_ONLY');
+  const foreign = await post('umA', '/rbac/users/toggle-module', { userId: F.attBUser.id, moduleId: 'LOGS', enabled: false });
+  assert.equal(foreign.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.umAUser.id })).body.errorCode, 'ERR_MASTER_ONLY');
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attBUser.id })).body.errorCode, 'ERR_SITE_FORBIDDEN');
+});

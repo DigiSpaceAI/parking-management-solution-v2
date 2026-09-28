@@ -499,6 +499,12 @@ function siteForSave(
     if (!assertRecordSite(req, res, stored, resolvedSite)) return null;
     const wanted = bodySiteId ? canonicalSiteId(String(bodySiteId)) : resolvedSite;
     if (wanted !== resolvedSite && req.user && isMasterAdmin(req.user) && !req.viewAs) {
+      // m-2: never move a record to a site that doesn't exist (it would be
+      // orphaned: no one could select it again).
+      if (wanted !== DEFAULT_SITE_ID && !getSites().some((x) => x.id === wanted)) {
+        res.status(400).json({ success: false, message: 'That site does not exist. Nothing was changed.' });
+        return null;
+      }
       logSecurityEvent({
         action: 'RECORD_SITE_MOVED',
         actor: req.user.email,

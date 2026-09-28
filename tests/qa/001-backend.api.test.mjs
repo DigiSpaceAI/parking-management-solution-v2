@@ -673,3 +673,12 @@ test('M-2 creating, editing and deleting roles is Master-only (roles are shared 
   const mDel = await call('master', 'DELETE', `/rbac/roles/${id}`);
   assert.equal(mDel.status, 200, 'Master can still delete');
 });
+
+test('m-2 a Master Admin cannot move a record to a site that does not exist', async () => {
+  const mk = await post('master', '/slots/save', { slot: { slotNumber: 'B-ORPHAN-1', basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN' } }, { site: F.B.id });
+  assert.equal(mk.status, 200);
+  const mv = await post('master', '/slots/save', { slot: { id: mk.body.slot.id, slotNumber: 'B-ORPHAN-1', siteId: 'site-does-not-exist' } }, { site: F.B.id });
+  assert.equal(mv.status, 400);
+  assert.equal((await slotsAt(F.B.id)).find((s) => s.id === mk.body.slot.id).siteId, F.B.id, 'record stays in its site');
+  await post('master', '/slots/delete', { slotId: mk.body.slot.id }, { site: F.B.id });
+});

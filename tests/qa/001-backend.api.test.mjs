@@ -693,3 +693,50 @@ test('m-3 self / privileged refusals are ERR_MASTER_ONLY; outside-site refusals 
   assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.umAUser.id })).body.errorCode, 'ERR_MASTER_ONLY');
   assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attBUser.id })).body.errorCode, 'ERR_SITE_FORBIDDEN');
 });
+
+// ---------------------------------------------------------------- Round 3
+test('N-1 setup: a same-site account with a privileged role, and one with a privileged override', async () => {
+  const ops = await post('master', '/rbac/roles', { roleName: 'BE Site Ops Plus', modulePermissions: { HOME: FULL, MASTER_CONFIG: FULL } });
+  assert.ok(ops.body.success);
+  await mkUser('opsA', ops.body.role.id, [F.A.id]);
+  await mkUser('ovA', 'role-gate-attendant', [F.A.id]);
+  const ov = await post('master', '/rbac/users/toggle-module', { userId: F.ovAUser.id, moduleId: 'SECURITY_AUDIT', enabled: true });
+  assert.ok(ov.body.success, JSON.stringify(ov.body));
+});
+
+test('N-1 (a) a non-Master cannot set another account\'s password; points to the reset-token flow', async () => {
+  const users = (await get('master', '/rbac/users')).body.users;
+  const att = users.find((u) => u.id === F.attAUser.id);
+  const r = await post('umA', '/rbac/users', { ...att, plainPassword: 'Taken0verPassword#1' });
+  assert.equal(r.status, 403, JSON.stringify(r.body)); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY');
+  assert.match(r.body.message, /generate-reset-token/);
+  // The old password still works: nothing was changed.
+  assert.equal((await post(null, '/auth/login', { identifier: F.attAUser.email, password: PW })).status, 200);
+  assert.equal((await post(null, '/auth/login', { identifier: F.attAUser.email, password: 'Taken0verPassword#1' })).status, 401);
+});
+
+test('N-1 (b) a non-Master cannot edit an account with a privileged role or override (reviewer repro)', async () => {
+  const users = (await get('master', '/rbac/users')).body.users;
+  const ops = users.find((u) => u.id === F.opsAUser.id);
+  const ov = users.find((u) => u.id === F.ovAUser.id);
+  const pw = await post('umA', '/rbac/users', { id: ops.id, plainPassword: 'Taken0verPassword#2' });
+  assert.equal(pw.status, 403);
+  assert.equal((await post(null, '/auth/login', { identifier: F.opsAUser.email, password: 'Taken0verPassword#2' })).status, 401, 'no takeover sign-in');
+  const rename = await post('umA', '/rbac/users', { ...ops, fullName: 'Renamed by HR' });
+  assert.equal(rename.status, 403); assert.equal(rename.body.errorCode, 'ERR_MASTER_ONLY');
+  const ovEdit = await post('umA', '/rbac/users', { ...ov, fullName: 'Renamed by HR' });
+  assert.equal(ovEdit.status, 403);
+  const plain = await post('umA', '/rbac/users', { ...users.find((u) => u.id === F.attAUser.id), fullName: 'BE attA renamed' });
+  assert.equal(plain.status, 200, 'ordinary same-site accounts are still editable');
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `user/${ops.id}`));
+});
+
+test('N-1 (c) generate-reset-token refuses privileged same-site accounts', async () => {
+  for (const u of [F.opsAUser, F.ovAUser]) {
+    const r = await post('umA', '/auth/admin/generate-reset-token', { userId: u.id });
+    assert.equal(r.status, 403, u.email); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY');
+  }
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attAUser.id })).status, 200);
+  assert.equal((await post('master', '/auth/admin/generate-reset-token', { userId: F.opsAUser.id })).status, 200, 'Master still can');
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `auth/reset-token/${F.opsAUser.id}`));
+});

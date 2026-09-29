@@ -2308,7 +2308,10 @@ app.post(
     // H8: a non-Master can only reset accounts at their own sites, and never
     // their own (self-service would bypass the out-of-band handover).
     const resetSelf = targetUser.id === req.user!.id;
-    if (!isMasterAdmin(req.user!) && (resetSelf || !userWithinCallerScope(req.user, targetUser))) {
+    // N-1 (c): a reset token for a privileged same-site account is the same
+    // takeover as setting its password.
+    const resetPrivileged = !resetSelf && accountIsPrivileged(targetUser);
+    if (!isMasterAdmin(req.user!) && (resetSelf || resetPrivileged || !userWithinCallerScope(req.user, targetUser))) {
       logSecurityEvent({
         action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
         actor: req.user!.email,
@@ -2316,8 +2319,11 @@ app.post(
         ipAddress: req.ip,
         targetResource: `auth/reset-token/${targetUser.id}`,
         status: 'BLOCKED_UNAUTHORIZED',
-        details: 'Reset token refused: target is the caller or outside the caller\'s sites.',
+        details: 'Reset token refused: target is the caller, a privileged account, or outside the caller\'s sites.',
       });
+      if (resetPrivileged) {
+        return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can reset an account with Master Config, User Management or Security Audit rights, or all-sites access.');
+      }
       return resetSelf
         ? sendApiError(res, 403, 'ERR_MASTER_ONLY', 'You can\'t generate a reset token for your own account.')
         : sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only reset passwords for accounts at your own sites.');
@@ -2517,9 +2523,32 @@ app.get('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'view'), (req
 // Why a non-Master may not save this user record (M-1: the H8 rules must
 // hold on the user-save route too), or '' when allowed. Unchanged values
 // are fine, so re-saving a full record the UI loaded doesn't trip it.
+// An account a non-Master must never edit or reset (N-1): its CURRENT role
+// grants MASTER_CONFIG / USER_MANAGEMENT / SECURITY_AUDIT rights or all-sites
+// scope, it is all-sites itself, or its overrides enable a privileged module.
+// Taking such an account over would raise the caller's privileges.
+function accountIsPrivileged(user: { roleId?: string; siteScopeType?: string; customModuleOverrides?: Partial<Record<AppModuleId, boolean>> }): boolean {
+  if (isMasterAdmin(user) || user.siteScopeType === 'ALL_SITES') return true;
+  const role = getAppRoles().find((r) => r.id === user.roleId || r.roleCode === user.roleId);
+  if (role && (grantsPrivilegedRights(role.modulePermissions) || role.siteScope === 'ALL_SITES')) return true;
+  return PRIVILEGED_MODULES.some((m) => user.customModuleOverrides?.[m] === true);
+}
+
 function userSaveRefusal(caller: NonNullable<express.Request['user']>, body: any): string {
   if (!body || typeof body !== 'object') return '';
   const existing = body.id ? getAppUsers().find((u) => u.id === body.id) : undefined;
+
+  if (existing && existing.id !== caller.id) {
+    // N-1 (a): never set another account's password directly; the reset-token
+    // flow hands it over out of band and is never self-redeemed.
+    if (typeof body.plainPassword === 'string' && body.plainPassword.length > 0) {
+      return 'You can\'t set another account\'s password. Generate a reset token for them instead (POST /api/v1/auth/admin/generate-reset-token).';
+    }
+    // N-1 (b): no edits at all to a privileged account.
+    if (accountIsPrivileged(existing)) {
+      return 'Only a Platform Master Admin can change an account with Master Config, User Management or Security Audit rights, or all-sites access.';
+    }
+  }
   const changes = (key: string) =>
     body[key] !== undefined && JSON.stringify(body[key]) !== JSON.stringify(existing ? (existing as any)[key] : undefined);
 

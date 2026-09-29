@@ -225,3 +225,8 @@ Already in good shape: `firestore.rules` denies all direct client access (only t
 ## Addendum B — PM decision on G-17 (2026-09-28)
 **Accepted for Phase 1:** at the 1 Oct Alphatech launch the existing `/attendant` web portal keeps its current toast-only gate feedback (no dedicated result screens). This follows the user's direction to keep today's working flows. For Phase 1, AC-14 and AC-19..AC-23 pass if the **server** outcome is correct (entry allowed/refused, slot assigned, duplicate/full/invalid refused, audit written) **and** the attendant sees a toast with the matching message. The full gate result sheet (02-ux-design) moves to Phase 2 with the Android APKs.
 Condition: toasts must show the refusal reason in plain words and stay visible long enough to read (QA to check). Also: R4 (production secrets) closed by user confirmation on 2026-09-28.
+
+---
+## Addendum C — Scope change: per-site domain whitelist (2026-09-28)
+User decision (via backend-dev, PERM-02): **a Site Admin may allow email domains for their own site.** US-13 is extended: Master Admin can still manage domains for all sites; a Site Admin manages only their own site's domains. AC-07 no longer blocks Site Admins from the domain whitelist for their own site.
+New AC-57 (US-13): Given a Site Admin of Site A, when they add or remove an allowed domain, then it applies to Site A registrations only, is audit-logged, and they cannot see or change Site B's or platform-wide domains (API returns 403). Platform-wide domains (no site) are Master Admin only and apply to every site.

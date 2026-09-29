@@ -1,5 +1,5 @@
 # Technical Design — ParkFlows Platform v1 (baseline) · Phase 1 launch (Option A)
-Feature ID: 001 · Author: architect · Date: 2026-09-28 · Revision: **v1.0.1** (2026-09-29) · v1.0 **APPROVED by user 2026-09-28**
+Feature ID: 001 · Author: architect · Date: 2026-09-28 · Revision: **v1.0.1** (2026-09-29) · **APPROVED by user 2026-09-29** (v1.0 approved 2026-09-28)
 Inputs: `01-prd.md` v1.2 **APPROVED** + Addendum A (R1–R11) · `02-ux-design.md` v1.1 · `05-code-review.md` (round 1, CHANGES) · `06-test-report.md` (FAIL, 31 bugs) · `07-security-review.md` (BLOCKED, H1–H9) · `08-release.md` (NOT READY)
 v1.0.1 inputs: `01-prd.md` Addendum B (G-17) + **Addendum C (AC-57)** · `05-code-review.md` **round 2** (CHANGES: C-1, M-1, M-2, M-3, m-1..m-8) · `04-implementation-notes.md` (backend/frontend round-2 fixes, mobile M1) · branch `feature/001-parkflows-platform-v1` @ `ffa13fd`.
 Code read: `main` @ `d42af6f` + working tree (28 Sep 2026): `server.ts`, `src/server/{db,security}.ts`, `src/App.tsx`, `src/sessionTokenFallback.ts`, `src/utils/rbac.ts`, `src/types.ts`, `src/components/{Header,Sidebar,MasterAdminRoleSimulator,…}.tsx`, `src/mobile/{api,siteContext}.ts`.
@@ -16,7 +16,7 @@ The v1.0 design is unchanged except for the items below. They come from PRD Adde
 - **M-2 decision: creating, editing and deleting custom roles is Master Admin only in Phase 1** (B16). M-1 (no self-escalation through `POST /rbac/users`) is added to the API table (B15).
 - **m-6 decision: the duplicate-plate and pending-request checks at registration are per site, not global** (B17, to build). While checking this, I found that bulk registration upload has the same global match and **can overwrite, and with `autoApprove` approve, another site's request** (gap 13).
 - **M1 stays in Phase 1. No descope.** It was built in `523218e` (mobile-dev, 29 Sep) and goes to code review round 3.
-- A decisions log and status are added. The v1.0.1 changes need user approval (see the end of the file).
+- A decisions log and status are added. **v1.0.1 approved by user on 2026-09-29.**
 
 ## Gaps found in PRD / UX
 1. **`withSite()` does not exist.** `.claude/agents/architect.md` and `KNOWN_ISSUES.md` refer to it (commit `2472379`), but neither the commit nor the helper is in this repo. `src/App.tsx` still fetches `/slots`, `/employees`, `/logs`, `/alerts/non-parked` and `/registrations` with no site (Addendum R1, QA BUG-18). This design re-introduces it (`src/utils/withSite.ts`, task F1). It does **not** assume the lost commit will be recovered.
@@ -316,6 +316,7 @@ Order and dependencies: **T0a→T0e**, then B1 → (B2, B3, B4, B5, B6, B7, B8, 
 | 2026-09-29 | **M-2: custom-role create/edit/delete is Master Admin only in Phase 1** | architect (from review M-2) | Roles are global (one list shared by every site), so letting any site's admin edit or delete them changes other tenants' staff permissions. The alternative (a non-Master may edit a role only if every assignee is in their sites and the role was created at their sites) needs role ownership data that doesn't exist yet. Revisit in P2-2 as site-scoped custom roles. Site Admins can still **assign** existing non-privileged roles to users at their own sites (M-1 rules apply). |
 | 2026-09-29 | **m-6: the registration duplicate-plate check is per site, not global** | architect | **Reasons:** (1) PRD AC-27 says "a vehicle number already on another employee's active pass **at that site**"; (2) US-25/AC-48 let one employee hold passes at several sites with the same vehicles, which a global check blocks; (3) on the public endpoint a global check is a cross-tenant existence signal (it reveals that a plate is registered at *some* other customer); (4) gate matching is already per site (B4), so the same plate at two sites is never ambiguous at the gate. **Risk accepted:** someone could register another person's plate at a second site. Site Admin approval at that site is the control, and each site's gate only admits its own passes. The same rule fixes the bulk-upload cross-site overwrite (gap 13). Task B17. |
 | 2026-09-29 | **M1 (mobile blocking screen) stays in Phase 1; no descope** | architect | Built in `523218e`. Without it, strict mode turns a failed `/my-sites` into a gate that toasts "Choose a site first." on every action at Alphatech (K2). Goes to code review round 3. |
+| 2026-09-29 | **Tech design v1.0.1 approved** (Addendum C design, C-1 split, M-1/M-2 rules, m-6 per-site duplicate checks, M1 kept) | user | B17 is released to backend-dev; then code review round 3 covers B17 + M1 (+ gap 13). |
 | 2026-09-28 | **Production secrets confirmed on Cloud Run** (Addendum R4): `AUDIT_HMAC_SECRET` is set, `BOOTSTRAP_ADMIN_PASSWORD` is set, `SEED_DEMO_USERS` is off | user | R4 **closed**. B11's startup check won't block the deploy (K8). Devops still runs smoke check S9 after deploy: no fallback-secret warning and no demo-user seeding in the Cloud Run logs. |
 
 ## New dependencies
@@ -323,4 +324,4 @@ Order and dependencies: **T0a→T0e**, then B1 → (B2, B3, B4, B5, B6, B7, B8, 
 
 **Config/deploy items needing approval with this design (CLAUDE.md rule 5):** the new optional env var `SITE_SCOPE_MODE`; `AUDIT_HMAC_SECRET` becomes mandatory on Cloud Run; `.gitattributes` added; `package-lock.json` removed; `test:qa` script added. **No Firestore rules or index changes.** v1.0.1 adds none: `whitelistedDomains.siteId` is an optional field in the existing collection.
 
-Status: READY FOR APPROVAL (v1.0.1 changes: Addendum C design, C-1 split, M-1/M-2 rules, m-6 per-site duplicates + B17, M1 kept). v1.0 APPROVED by user 2026-09-28.
+Status: APPROVED (v1.0.1 by user, 2026-09-29; v1.0 by user, 2026-09-28)

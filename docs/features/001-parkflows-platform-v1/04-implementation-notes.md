@@ -229,6 +229,45 @@ Build with `VITE_API_BASE_URL=http://localhost:<port> npm run build` (see gap 2)
 
 I ran steps 1–8 in headless Chromium against a local server built from this branch. The scripts are ad hoc and not committed; a browser test harness is QA's call.
 ## Mobile
+
+**Author:** mobile-dev · **Date:** 2026-09-29 · **Task:** M1 (`03`), code review round 2 finding **M-3** · **Commit:** `523218e` on `feature/001-parkflows-platform-v1` (not pushed)
+
+### Gaps found in inputs
+1. **No UX spec for this screen.** `02` §-states only covers the console ("Couldn't load your sites" + retry). I used the M1 wording from `03` ("Couldn't load your site", **Try again**, sign-out) and the existing `/attendant` look. UX may want to review the copy (below).
+2. **An attendant with 2+ sites still gets the first permitted site.** `/attendant` has no site picker, and that is unchanged (Phase 2, P2-7). M1 only covers "no site" and "failed".
+3. **During a slow network the attendant waits up to 15 s** (the `apiFetch` timeout) on "Setting up your site…" before the error appears. That's today's timeout, and I left it unchanged.
+
+### What changed
+| File | Change |
+|---|---|
+| `src/mobile/siteContext.ts` | `resolveSiteContext` now returns a `SiteResolveResult`: `ok` / `no-site` / `error` / `session-expired` (401). It clears any old site first and never falls back to a default site. Every non-`ok` result leaves `getSiteId()` = `null`. |
+| `src/mobile/ParkFlowsApp.tsx` | After sign-in, the user is kept as `pendingUser` until the site resolves. `currentUser` is only set on `ok`, so the gate, slots, levels, MANUAL, manual-entry modal and the 4 s `/slots` poll can't render or run before that. The render guard also checks `getSiteId()`. On `error` / `no-site`, a full-screen blocking **"Couldn't load your site"** card (`role="alert"`) shows **Try again** (52 px, primary; shows "Trying again…" while busy) and **Sign out** (48 px). A 401 goes back to sign-in, the same as the existing 401 path. An attempt counter stops a late `/my-sites` answer from signing the user back in after Sign out. The removed `siteReady` flag is replaced by this. |
+
+The copy is "Check your connection and try again." for errors, and "Your account has no site assigned. Ask your site admin to assign one, then try again." for no site. Both end with "Gate actions are paused until your site loads."
+
+No new dependencies, and no server, Firestore rules or deploy config changes. It is backward compatible: the server contract is unchanged, and `/my-sites` + `x-site-id` are used as before.
+
+### Checks
+- `npm run lint`: exit 0. `npm run build` (web + server + mobile): exit 0, with only the existing chunk-size warning. `npm run build:mobile`: exit 0.
+- These were run on a clean copy of the branch files with a fresh `npm install` (the working copy has no `node_modules`), on 2026-09-29.
+- **`resolveSiteContext` unit check** (throw-away script, esbuild + node): network error → `error`, 500 → `error`, bad JSON → `error`, 401 → `session-expired`, `sites: []` → `no-site`, one site → `ok`. `getSiteId()` is `null` in every non-ok case, including when a stale site was set before.
+- **Browser check** (headless Chromium, 390×844, built `dist-mobile`, API mocked; the server stub returns 400 when there's no `x-site-id`):
+  - `/my-sites` network failure → blocking screen. No MANUAL button, and **0** `/slots`/`/vehicles`/`/employees` calls over 4.5 s. **Try again** with `/my-sites` now OK → Gate Terminal loads, with `/employees` and `/slots` sent with `x-site-id: alpha`.
+  - `/my-sites` 500 → blocking screen with the error copy.
+  - `sites: []` → blocking screen with the no-site copy. **Sign out** → `/auth/logout` called, back to sign-in, 0 gate calls.
+  - Happy path → header "RAVI KUMAR · ALPHATECH", first data calls carry `x-site-id`.
+
+### Device / manual test steps (QA, staging with `SITE_SCOPE_MODE` strict)
+1. Open `/attendant` on a phone and sign in as an Attendant assigned to Alphatech. The Gate Terminal loads and the header shows the site name.
+2. **Failure:** in DevTools (or with a proxy), block `GET /api/v1/my-sites`, or return 500, then sign in or PIN-unlock. Expect "Couldn't load your site" with Try again and Sign out. There's no way to reach Gate, Slots, Levels or MANUAL, and the Network tab shows no `/slots` or `/vehicles` calls.
+3. Unblock `/my-sites` and tap **Try again**. The Gate Terminal loads, and requests carry `x-site-id`.
+4. **No site:** sign in as an Attendant with no assigned site (or a site that no longer exists). Expect the no-site copy. **Sign out** returns to sign-in.
+5. **Airplane mode** at sign-in: expect "Setting up your site…" for up to 15 s, then the error screen. Turn the network back on and tap Try again.
+6. Regression: MAN-11 (session expiry) still returns to sign-in and PIN unlock, and End shift still signs out.
+
+### Android build notes
+None. This is web code shared by `/attendant` and the Phase 2 Capacitor build. No native, `capacitor.config.ts` or `android/` changes, and no APK was built (Phase 1 ships `/attendant` only, per `03`).
+
 ## Build/lint results
 
 **Backend (2026-09-28, on `0180e3e`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `tests/qa/001-backend.api.test.mjs` **43/43 pass** (incl. domain whitelist) · QA suite `001-platform-v1` with `SITE_SCOPE_MODE=fallback`: **32/48 pass** (was 21/48 on 25 Sep; 0 new failures; the 16 left are Phase 2 ACs plus PERM-02, which now fails by design and is to be rewritten by QA; see Backend gap 4). QA suite under strict mode: fixtures need a site (Backend gap 5).
@@ -236,3 +275,5 @@ I ran steps 1–8 in headless Chromium against a local server built from this br
 **Frontend (2026-09-28, on `0dd8643`):** `bun install --frozen-lockfile` OK · `npm run lint` exit 0 · `npm run build` exit 0 · `npm run test:qa` after every task F1–F8: `001-backend` **43/43 pass** (unchanged); `001-platform-v1` **0/48** under strict mode, unchanged from before F1: its `before()` hook sends no site (Backend gap 5; QA-owned fixtures). No frontend change touches the server, so these suites can't move with F1–F8.
 
 **Frontend round 2 (2026-09-28, on `a485dda`):** `npm run lint` exit 0 · `npm run build` exit 0 · `npm run test:qa`: `001-backend` **49/49**; `001-platform-v1` 0/48 under strict mode (unchanged, QA fixtures).
+
+**Mobile (2026-09-29, on `523218e`):** `npm run lint` exit 0 · `npm run build` exit 0 · `npm run build:mobile` exit 0 (clean copy of the branch files, fresh `npm install`). Headless-browser check of M1 passed (see Mobile › Checks). `test:qa` not re-run: no server change.

@@ -101,6 +101,30 @@ _Scope: C-1, M-1, M-2 (backend parts) and Minors m-1…m-4. One commit per findi
 - **Security (step 7):** please re-check C-1 and M-1 as the review asks.
 - Not in this task and left open: M-3 (mobile M1), m-5 (frontend), m-6 (PM/architect decision), m-7/m-8 (frontend/security).
 
+### Round 3 fixes (code review round 3, 2026-09-29)
+_User decision (round 3 escalation): option (a), one more fix round for N-1 and N-2, then a short round-4 review of just these commits. Not self-reviewed._
+
+| Finding | Commit | Change | Tests (`001-backend.api.test.mjs`) |
+|---|---|---|---|
+| **N-1** (Major, H8: account takeover) | `f246389` | For a non-Master caller: **(a)** `POST /rbac/users` refuses `plainPassword` on any existing account other than their own, and the message points to `POST /auth/admin/generate-reset-token`. **(b)** It refuses **any** edit of an account that is privileged now (`accountIsPrivileged`): its current role grants MASTER_CONFIG / USER_MANAGEMENT / SECURITY_AUDIT rights or has `siteScope: ALL_SITES`, the user is all-sites or a Master Admin, or its overrides enable a privileged module. **(c)** `generate-reset-token` applies rule (b). All return 403 `ERR_MASTER_ONLY` + `RBAC_PRIVILEGE_ESCALATION_BLOCKED`. **Note:** (b) does not apply to the caller's own account. Their own role holds USER_MANAGEMENT, so (b) would block their permitted own edits (incl. their own password, which (a) allows). M-1 already locks their privileged fields. | "N-1 setup", "N-1 (a)…", "N-1 (b)…" (the reviewer's repro: HR sets the Ops user's password → 403, and signing in with it fails), "N-1 (c)…" |
+| **N-2** (Major) = **B17** as in 03 v1.0.1 | `8acc272` | `submitRegistrationRequest`: the ACTIVE-plate check and the PENDING (plate or email) check look only at the request's site; the pending message is generic. `bulkUploadRegistrations`: the upsert matches only at the row's site, so a request at another site is never updated or approved and the row becomes a new request at its own site. The route's `stampBulkRows` matcher is relaxed to the row's site (a foreign row `siteId` is still refused). `approveRegistrationRequest`: 400 "This vehicle is already on an active pass at this site." when another **active** pass at the same site has the plate. The same `employeeId` counts as an update, not a duplicate. | "B17 (1)" (also the reviewer's pending-at-Site-B repro), "B17 (2)", "B17 (3)" (with and without `autoApprove`), "B17 (4)" |
+
+**Test changes from B17:**
+- The B3 registration-bulk test now checks that a row carrying a **foreign `siteId`** is refused. A row matching another site's request by plate/email is now a new request at the row's own site (B17 (3)).
+- The B7/H9 test now uses a **same-site** duplicate.
+- Fixture passes `empA` / `empB` are now created `ACTIVE`. `/employees/save` defaults to INACTIVE, and B17 counts active passes only.
+- The B17 tests create Site B requests through the admin bulk upload, because the public submit route is rate-limited to 10/min per IP.
+
+**Checks on `8acc272`:**
+- `npm run lint`: exit 0. `npm run build`: exit 0.
+- `npm run test:qa`: `001-backend.api.test.mjs` **57/57**. The committed `001-platform-v1.api.test.mjs` is still the old-fixture version (0/48 strict).
+- **QA's updated (uncommitted) suite, run against this code in strict mode: 39/54.** All 15 failures are Phase 2 ACs (AC-13, 14, 16, 17, 20, 22, 23, 24, 27 malformed input, 29, 30, 32, 37, 39); none are N-1 or B17.
+
+**Not in scope / hand-offs:**
+- n-1 (default-domains fallback in `EmployeeMobileApp.tsx`) goes to **frontend-dev**; no frontend files were touched.
+- Bulk `autoApprove` does not run the new same-site duplicate-pass refusal. B17 names only `approveRegistrationRequest`. Flag for round 4 / Phase 2 if wanted.
+- `DELETE /rbac/users/:id` is not covered by N-1's rule (b), which the finding scoped to save + reset token. `deleteAppUser` already refuses non-Master deletes of Master Admins; for other privileged custom-role accounts, see round 4 / security.
+
 ## Frontend
 _Author: frontend-dev · Date: 2026-09-28 · Status: **Round 2 frontend fixes done (C-1 c, m-5, m-7, M-2 UI); ready for code review round 3**. F1–F8 + PRD Addendum C done earlier. Not self-reviewed. `main` untouched, nothing pushed._
 _History: blocked on 25 Sep (no approved 02/03). This section replaces that note._

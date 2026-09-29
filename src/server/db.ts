@@ -2405,7 +2405,13 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
   }
 
   // Check if vehicle already exists in active employees whitelist
-  const existingEmp = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === vehicleNumber);
+  // B17 (m-6): duplicate checks look at the REQUEST's site only. A plate or
+  // email known at another site neither blocks this site nor is revealed.
+  const atRequestSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === requestSite;
+  const isActivePass = (e: Employee) => (e.status ? e.status === 'ACTIVE' : !!e.isActive);
+  const existingEmp = storeData.employees.find(
+    e => atRequestSite(e) && isActivePass(e) && e.vehicleNumber.toUpperCase() === vehicleNumber
+  );
   if (existingEmp) {
     // Public endpoint: never disclose who owns a plate (H9).
     return {
@@ -2416,13 +2422,14 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
 
   // Check if already submitted pending request
   const existingReq = (storeData.registrationRequests || []).find(
-    r => r.email.toLowerCase() === email || r.vehicleNumber.toUpperCase() === vehicleNumber
+    r => atRequestSite(r) && r.status === 'PENDING' &&
+      (r.email.toLowerCase() === email || r.vehicleNumber.toUpperCase() === vehicleNumber)
   );
 
-  if (existingReq && existingReq.status === 'PENDING') {
+  if (existingReq) {
     return {
       success: false,
-      message: `A registration request for ${email} / ${vehicleNumber} is ALREADY pending Parking Admin review.`,
+      message: 'A request for this vehicle or email is already waiting for review at this site.',
     };
   }
 
@@ -2469,6 +2476,19 @@ export function approveRegistrationRequest(requestId: string): { success: boolea
 
   if (req.status === 'APPROVED') {
     return { success: false, message: 'This registration request has already been APPROVED.' };
+  }
+
+  // B17: never create a second active pass for the same plate at the same
+  // site (the same person's own pass, matched by employeeId, is updated).
+  const reqSite = req.siteId || DEFAULT_SITE_ID;
+  const duplicatePass = storeData.employees.find(
+    e => (e.siteId || DEFAULT_SITE_ID) === reqSite &&
+      (e.status ? e.status === 'ACTIVE' : !!e.isActive) &&
+      e.vehicleNumber.toUpperCase() === (req.vehicleNumber || '').toUpperCase() &&
+      e.employeeId.toUpperCase() !== (req.employeeId || '').toUpperCase()
+  );
+  if (duplicatePass) {
+    return { success: false, message: 'This vehicle is already on an active pass at this site.' };
   }
 
   // Update status
@@ -2900,8 +2920,13 @@ export function bulkUploadRegistrations(
       return;
     }
 
+    // B17 (gap 13): upsert only within the row's own site. A request at
+    // another site with the same plate/email is never updated or approved;
+    // this row becomes a new request at its own site.
+    const rowSite = item.siteId || DEFAULT_SITE_ID;
     const existingIndex = storeData.registrationRequests.findIndex(
-      r => r.vehicleNumber.toUpperCase() === vehicleNumber || r.email.toLowerCase() === email
+      r => (r.siteId || DEFAULT_SITE_ID) === rowSite &&
+        (r.vehicleNumber.toUpperCase() === vehicleNumber || r.email.toLowerCase() === email)
     );
 
     const now = new Date().toISOString();

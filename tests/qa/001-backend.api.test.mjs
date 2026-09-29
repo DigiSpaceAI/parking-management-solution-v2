@@ -247,7 +247,7 @@ test('B3/H4 bulk upload: one foreign row rejects the whole batch and nothing is 
 });
 
 test('B3/H4 employee save by id of another site -> 403 and record unchanged', async () => {
-  const e = await post('master', '/employees/save', { employee: { name: 'B Emp', employeeId: 'BE-B-1', email: 'b.emp@be-b.test', vehicleNumber: 'MH12AB1001' } }, { site: F.B.id });
+  const e = await post('master', '/employees/save', { employee: { name: 'B Emp', employeeId: 'BE-B-1', email: 'b.emp@be-b.test', vehicleNumber: 'MH12AB1001', status: 'ACTIVE' } }, { site: F.B.id });
   assert.equal(e.status, 200, JSON.stringify(e.body)); assert.equal(e.body.employee.siteId, F.B.id);
   F.empB = e.body.employee;
   const r = await post('adminAB', '/employees/save', { employee: { id: F.empB.id, name: 'Hijacked', vehicleNumber: 'MH12AB1001' } }, { site: F.A.id });
@@ -278,8 +278,10 @@ test('B3 approve / reject / registration bulk of another site -> 403', async () 
   F.regB = sub.body.request;
   assert.equal((await post('adminAB', '/registrations/approve', { requestId: F.regB.id }, { site: F.A.id })).status, 403);
   assert.equal((await post('adminAB', '/registrations/reject', { requestId: F.regB.id, reason: 'x' }, { site: F.A.id })).status, 403);
-  const bulk = await post('adminAB', '/registrations/bulk-upload', { requests: [{ name: 'Overwrite', email: 'reg.b@company.com', vehicleNumber: 'MH12AB2002' }] }, { site: F.A.id });
-  assert.equal(bulk.status, 403, 'a row matching another site\'s request by email/plate is refused');
+  // Since B17 a bulk row matching another site's request becomes a new request
+  // at the row's own site (see "B17 (3)"); a foreign row siteId is still refused:
+  const bulk = await post('adminAB', '/registrations/bulk-upload', { requests: [{ name: 'Overwrite', email: 'reg.b@company.com', vehicleNumber: 'MH12AB2002', siteId: F.B.id }] }, { site: F.A.id });
+  assert.equal(bulk.status, 403, 'a row carrying another site is refused');
 });
 
 test('B3 valet: status and retrieval never touch another site\'s ticket', async () => {
@@ -360,7 +362,7 @@ test('B5/H7 /sites returns only the caller\'s sites, without contact or pricing 
 // ---------------------------------------------------------------- B6
 test('B6 setup: an employee user with a pass at site A', async () => {
   await mkUser('empA', 'role-gate-attendant', [F.A.id]);
-  const e = await post('master', '/employees/save', { employee: { name: 'Emp A', employeeId: 'BE-A-9', email: F.empAUser.email, vehicleNumber: 'MH12AB6006' } }, { site: F.A.id });
+  const e = await post('master', '/employees/save', { employee: { name: 'Emp A', employeeId: 'BE-A-9', email: F.empAUser.email, vehicleNumber: 'MH12AB6006', status: 'ACTIVE' } }, { site: F.A.id });
   assert.equal(e.status, 200, JSON.stringify(e.body));
   F.empA = e.body.employee;
 });
@@ -412,7 +414,8 @@ test('B7/BUG-12 approval creates the pass in the request\'s site and is audit-lo
 });
 
 test('B7/H9 public registration never discloses a plate owner', async () => {
-  const r = await post(null, '/registrations/submit', { name: 'Someone', email: 'someone@company.com', vehicleNumber: F.empB.vehicleNumber, siteId: F.A.id });
+  // Same-site duplicate (B17: the check is per site).
+  const r = await post(null, '/registrations/submit', { name: 'Someone', email: 'someone@company.com', vehicleNumber: F.empB.vehicleNumber, siteId: F.B.id });
   assert.equal(r.status, 400);
   assert.equal(r.body.message, "This vehicle can't be registered. Contact your site admin.");
   assert.ok(!JSON.stringify(r.body).includes(F.empB.name) && !JSON.stringify(r.body).includes(F.empB.employeeId));
@@ -739,4 +742,53 @@ test('N-1 (c) generate-reset-token refuses privileged same-site accounts', async
   assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attAUser.id })).status, 200);
   assert.equal((await post('master', '/auth/admin/generate-reset-token', { userId: F.opsAUser.id })).status, 200, 'Master still can');
   assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `auth/reset-token/${F.opsAUser.id}`));
+});
+
+// B17 (N-2): registration duplicate checks are per site (03 v1.0.1).
+const requestsAt = async (siteId) => (await get('master', '/registrations', { site: siteId })).body.requests;
+
+test('B17 (1) a plate active at Site B, or pending at Site B, does not block Site A', async () => {
+  const r = await post(null, '/registrations/submit', { name: 'Multi Site', email: 'multi.a@company.com', vehicleNumber: F.empB.vehicleNumber, siteId: F.A.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.request.status, 'PENDING'); assert.equal(r.body.request.siteId, F.A.id);
+  // (Site B side made through the admin bulk upload: the public route is rate-limited to 10/min.)
+  const pb = await post('master', '/registrations/bulk-upload', { requests: [{ name: 'Pend B', email: 'pend.b@company.com', vehicleNumber: 'KA01AB1234' }] }, { site: F.B.id });
+  assert.equal(pb.status, 200); assert.equal(pb.body.added, 1);
+  const pa = await post(null, '/registrations/submit', { name: 'Pend A', email: 'pend.a@company.com', vehicleNumber: 'KA01AB1234', siteId: F.A.id });
+  assert.equal(pa.status, 200, 'pending at another site does not block (reviewer repro)');
+  const dupA = await post(null, '/registrations/submit', { name: 'Pend A2', email: 'pend.a2@company.com', vehicleNumber: 'KA01AB1234', siteId: F.A.id });
+  assert.equal(dupA.status, 400, 'pending at the same site still blocks');
+  assert.ok(!JSON.stringify(dupA.body).includes('pend.a@company.com') && !JSON.stringify(dupA.body).includes('KA01AB1234'), 'generic message');
+});
+
+test('B17 (2) a plate active at Site A refuses a Site A registration with the generic message', async () => {
+  const r = await post(null, '/registrations/submit', { name: 'Clash', email: 'clash@company.com', vehicleNumber: 'MH12AB6116', siteId: F.A.id });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.message, "This vehicle can't be registered. Contact your site admin.");
+});
+
+test('B17 (3) a Site A bulk row with a Site B request\'s plate/email makes a new Site A request; Site B untouched (also autoApprove)', async () => {
+  const bUp = await post('master', '/registrations/bulk-upload', { requests: [{ name: 'Bulk B', email: 'bulk.b@company.com', vehicleNumber: 'MH12AC3001' }] }, { site: F.B.id });
+  assert.equal(bUp.status, 200);
+  const b = { body: { request: (await requestsAt(F.B.id)).find((x) => x.email === 'bulk.b@company.com') } };
+  const row = { name: 'Bulk A', email: 'bulk.b@company.com', vehicleNumber: 'MH12AC3001' };
+  const r1 = await post('adminAB', '/registrations/bulk-upload', { requests: [row] }, { site: F.A.id });
+  assert.equal(r1.status, 200, JSON.stringify(r1.body)); assert.equal(r1.body.added, 1); assert.equal(r1.body.updated, 0);
+  const r2 = await post('adminAB', '/registrations/bulk-upload', { requests: [row], autoApprove: true }, { site: F.A.id });
+  assert.equal(r2.status, 200); assert.equal(r2.body.updated, 1, 'second upload updates the Site A request only');
+  const aReq = (await requestsAt(F.A.id)).filter((x) => x.vehicleNumber === 'MH12AC3001');
+  assert.equal(aReq.length, 1); assert.equal(aReq[0].status, 'APPROVED');
+  const bReq = (await requestsAt(F.B.id)).find((x) => x.id === b.body.request.id);
+  assert.equal(bReq.status, 'PENDING'); assert.equal(bReq.name, 'Bulk B', 'Site B request unchanged');
+  const bPasses = (await get('master', '/employees', { site: F.B.id })).body.employees.filter((e) => e.vehicleNumber === 'MH12AC3001');
+  assert.equal(bPasses.length, 0, 'nothing approved at Site B');
+});
+
+test('B17 (4) approve refuses a same-site duplicate active pass', async () => {
+  const up = await post('adminA', '/registrations/bulk-upload', { requests: [{ name: 'Dup A', email: 'dup.a@company.com', vehicleNumber: 'MH12AB6116', employeeId: 'BE-DUP-1' }] }, { site: F.A.id });
+  assert.equal(up.status, 200); assert.equal(up.body.added, 1, JSON.stringify(up.body));
+  const reqA = (await requestsAt(F.A.id)).find((x) => x.email === 'dup.a@company.com');
+  const ap = await post('adminA', '/registrations/approve', { requestId: reqA.id }, { site: F.A.id });
+  assert.equal(ap.status, 400);
+  assert.equal(ap.body.message, 'This vehicle is already on an active pass at this site.');
+  assert.equal((await requestsAt(F.A.id)).find((x) => x.id === reqA.id).status, 'PENDING', 'nothing changed');
 });

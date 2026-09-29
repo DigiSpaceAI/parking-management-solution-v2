@@ -1171,13 +1171,16 @@ app.post('/api/v1/registrations/bulk-upload', requirePermission('REGISTRATION', 
     }
     const site = resolveSite(req, res, { allowAll: false });
     if (site === null) return;
-    // bulkUploadRegistrations updates an existing request matched by plate or
-    // email, so a row matching another site's request is a cross-site write.
+    // bulkUploadRegistrations upserts by plate or email within the row's own
+    // site only (B17), so the matcher looks at that site too: the same plate
+    // at another site becomes a new request here instead of refusing the
+    // batch. A foreign row siteId is still refused by stampBulkRows.
     const existingRequests = getRegistrationRequests();
     const matchRequest = (row: any) => {
       const plate = String(row.vehicleNumber || '').trim().toUpperCase();
       const email = String(row.email || '').trim().toLowerCase();
-      return existingRequests.find((r) => (plate && r.vehicleNumber.toUpperCase() === plate) || (email && r.email.toLowerCase() === email));
+      return existingRequests.find((r) => recordSite(r) === row.siteId &&
+        ((plate && r.vehicleNumber.toUpperCase() === plate) || (email && r.email.toLowerCase() === email)));
     };
     if (!stampBulkRows(req, res, site, list, matchRequest)) return;
     const result = bulkUploadRegistrations(list, !!autoApprove);

@@ -125,6 +125,23 @@ _User decision (round 3 escalation): option (a), one more fix round for N-1 and 
 - Bulk `autoApprove` does not run the new same-site duplicate-pass refusal. B17 names only `approveRegistrationRequest`. Flag for round 4 / Phase 2 if wanted.
 - `DELETE /rbac/users/:id` is not covered by N-1's rule (b), which the finding scoped to save + reset token. `deleteAppUser` already refuses non-Master deletes of Master Admins; for other privileged custom-role accounts, see round 4 / security.
 
+### Round 4 fixes (code review round 4, 2026-09-30)
+_User decision: fix both Criticals before the 1 Oct launch (recorded in review-log.md). R4-3 (bulk autoApprove duplicate-pass check) is deferred to Phase 2 and not touched. Not self-reviewed; for a round-5 review of these two commits._
+
+| Finding | Commit | Change | Tests (`001-backend.api.test.mjs`) |
+|---|---|---|---|
+| **R4-1** (Critical: cross-site / privileged account delete) | `2c349b3` | `DELETE /api/v1/rbac/users/:id`, for a non-Master caller, before `deleteAppUser`: a target **outside the caller's sites** (`userWithinCallerScope`) → 403 `ERR_SITE_FORBIDDEN` + `CROSS_SITE_ACCESS_DENIED` audit (`auditDenied`); a **privileged** target (`accountIsPrivileged`) → 403 `ERR_MASTER_ONLY` + `RBAC_PRIVILEGE_ESCALATION_BLOCKED`. Self-delete falls through to the existing check (same message), and the last-Master check in `deleteAppUser` is unchanged. | "R4-1 …": Site B account → 403 and still exists; privileged Site A account → 403 and still exists; self-delete still refused; ordinary same-site delete works; Master unaffected |
+| **R4-2** (Critical: cross-site pass takeover via email) | `ff2f58f` | **(1)** `resolveEmployeeTarget`: "your" pass is matched only among employees at sites the caller may access (`siteAllowedFor(me, e.siteId)`); with several, the selected site (`?siteId=`/`x-site-id`) wins. **(2)** `userSaveRefusal`, non-Masters: `email` and `username` join the locked own-account fields; setting **any** account's `email` (edit or create) to one used by an employee record or an account outside the caller's sites → 403 `ERR_MASTER_ONLY`, with a generic message ("That email can't be used for this account…") that doesn't reveal the other site. | "R4-2 a non-Master cannot re-point…" (own email, own username, in-scope account email, new account email → 403; unused email still fine); "R4-2 an email re-pointed by a Master…" (Master can set it; `/employees/profile` returns no Site B pass; `/employees/update-vehicle` → 404; Site B plate unchanged) |
+
+**Checks on `ff2f58f`:**
+- `npm run lint`: exit 0. `npm run build`: exit 0.
+- `npm run test:qa`: 108 tests. `001-backend.api.test.mjs` **60/60**. The committed `001-platform-v1` is still the old-fixture version (0/48 strict).
+- QA's updated, uncommitted `001-platform-v1.api.test.mjs`, run against this code: **39/54**, unchanged. All ISO-* and PERM-* pass; the 15 failures are the Phase 2 ACs.
+
+**Notes:**
+- Part (1) means an account whose sites don't include its pass's site no longer finds that pass through self-service. That's intended (a pass is only "yours" where you have access). Employee accounts must be assigned to their pass's site, which is today's setup.
+- R4-3 is left open for Phase 2 as decided.
+
 ## Frontend
 _Author: frontend-dev · Date: 2026-09-28 · Status: **Round 2 frontend fixes done (C-1 c, m-5, m-7, M-2 UI); ready for code review round 3**. F1–F8 + PRD Addendum C done earlier. Not self-reviewed. `main` untouched, nothing pushed._
 _History: blocked on 25 Sep (no approved 02/03). This section replaces that note._

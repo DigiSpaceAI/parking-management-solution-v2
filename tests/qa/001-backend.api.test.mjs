@@ -811,3 +811,37 @@ test('R4-1 a non-Master cannot delete an account at another site, or a privilege
   const m = await call('master', 'DELETE', `/rbac/users/${F.delBUser.id}`);
   assert.equal(m.body.success, true, 'Master is unaffected');
 });
+
+test('R4-2 a non-Master cannot re-point their own or an in-scope account\'s email at a Site B pass', async () => {
+  const users = (await get('master', '/rbac/users')).body.users;
+  const me = users.find((u) => u.id === F.umAUser.id);
+  const self = await post('umA', '/rbac/users', { ...me, email: F.empB.email });
+  assert.equal(self.status, 403, JSON.stringify(self.body)); assert.equal(self.body.errorCode, 'ERR_MASTER_ONLY');
+  const selfUser = await post('umA', '/rbac/users', { ...me, username: 'be.renamed' });
+  assert.equal(selfUser.status, 403, 'own username is locked too');
+  const att = users.find((u) => u.id === F.attAUser.id);
+  const other = await post('umA', '/rbac/users', { ...att, email: F.empB.email });
+  assert.equal(other.status, 403);
+  assert.ok(!JSON.stringify(other.body).includes(F.B.id), 'message does not reveal the other site');
+  const created = await post('umA', '/rbac/users', { username: 'be.sneaky', fullName: 'Sneaky', email: F.empB.email,
+    roleId: 'role-gate-attendant', siteScopeType: 'SPECIFIC_SITES', assignedSiteIds: [F.A.id], status: 'ACTIVE', plainPassword: PW });
+  assert.equal(created.status, 403, 'a new account cannot take a Site B employee\'s email either');
+  const after = (await get('master', '/rbac/users')).body.users;
+  assert.equal(after.find((u) => u.id === F.umAUser.id).email, F.umAUser.email);
+  assert.equal(after.find((u) => u.id === F.attAUser.id).email, F.attAUser.email);
+  const fine = await post('umA', '/rbac/users', { ...after.find((u) => u.id === F.attAUser.id), email: 'be.atta.new@be-parkflows.test' });
+  assert.equal(fine.status, 200, 'an unused email is still fine');
+});
+
+test('R4-2 an email re-pointed by a Master still cannot reach another site\'s pass through self-service', async () => {
+  await mkUser('repA', 'role-gate-attendant', [F.A.id]);
+  const users = (await get('master', '/rbac/users')).body.users;
+  const rep = await post('master', '/rbac/users', { ...users.find((u) => u.id === F.repAUser.id), email: F.empB.email });
+  assert.equal(rep.status, 200, 'Master is unaffected by the new refusals');
+  const prof = await get('repA', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`);
+  assert.ok(!prof.body.employee, `no Site B pass returned: ${JSON.stringify(prof.body).slice(0, 200)}`);
+  const upd = await post('repA', '/employees/update-vehicle', { email: F.empB.email, vehicleNumber: 'KA05ZZ9999' });
+  assert.equal(upd.status, 404, JSON.stringify(upd.body));
+  const b = (await get('master', '/employees', { site: F.B.id })).body.employees.find((e) => e.id === F.empB.id);
+  assert.equal(b.vehicleNumber, F.empB.vehicleNumber, 'Site B plate unchanged');
+});

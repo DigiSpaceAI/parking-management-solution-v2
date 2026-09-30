@@ -835,7 +835,13 @@ function resolveEmployeeTarget(
   const employeeId = typeof source.employeeId === 'string' ? sanitizeInputString(source.employeeId).trim().toUpperCase() : '';
   const employees = getStore().employees;
   const myEmail = me.email.toLowerCase();
-  const own = employees.find((e) => (e.email || '').toLowerCase() === myEmail);
+  // R4-2 (1): "your" pass is only ever one at a site you may access, never a
+  // record elsewhere that happens to share your account email. With several,
+  // prefer the site the request selected.
+  const mine = employees.filter((e) => (e.email || '').toLowerCase() === myEmail && siteAllowedFor(me, e.siteId));
+  const rawSite = rawClientSiteId(req);
+  const preferredSite = rawSite && rawSite !== 'ALL' ? canonicalSiteId(rawSite) : undefined;
+  const own = (preferredSite && mine.find((e) => recordSite(e) === preferredSite)) || mine[0];
 
   const namesSomeoneElse = (email && email !== myEmail) || (employeeId && (!own || own.employeeId.toUpperCase() !== employeeId));
   if (!namesSomeoneElse) return { employee: own, handled: false };
@@ -2556,8 +2562,24 @@ function userSaveRefusal(caller: NonNullable<express.Request['user']>, body: any
     body[key] !== undefined && JSON.stringify(body[key]) !== JSON.stringify(existing ? (existing as any)[key] : undefined);
 
   if (existing && existing.id === caller.id) {
-    const own = ['roleId', 'customModuleOverrides', 'siteScopeType', 'assignedSiteIds', 'status'].filter(changes);
+    // R4-2 (2): email and username are locked too; the account email is the
+    // key employee self-service uses to find "your" pass.
+    const own = ['roleId', 'customModuleOverrides', 'siteScopeType', 'assignedSiteIds', 'status', 'email', 'username'].filter(changes);
     if (own.length > 0) return `You can't change your own ${own.join(', ')}.`;
+  }
+
+  // R4-2 (2): never point an account's email at an employee record or an
+  // account outside the caller's sites (that would hand over that pass or
+  // identity). Generic message: it must not reveal the email exists elsewhere.
+  if (typeof body.email === 'string' && body.email.trim() && changes('email')) {
+    const wanted = body.email.trim().toLowerCase();
+    const foreignEmployee = getStore().employees.some(
+      (e) => (e.email || '').toLowerCase() === wanted && !siteAllowedFor(caller, e.siteId)
+    );
+    const foreignAccount = getAppUsers().some(
+      (u) => u.id !== body.id && (u.email || '').toLowerCase() === wanted && !userWithinCallerScope(caller, u)
+    );
+    if (foreignEmployee || foreignAccount) return 'That email can\'t be used for this account. Ask a Platform Master Admin.';
   }
 
   const overrides = body.customModuleOverrides;

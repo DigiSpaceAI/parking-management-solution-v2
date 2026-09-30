@@ -1,11 +1,20 @@
 // QA API tests — feature 001-parkflows-platform-v1 (docs/features/001-parkflows-platform-v1/01-prd.md)
 // Runner: Node's built-in test runner (node:test) + global fetch — NO new dependencies.
-// Run:   node --test tests/qa/            (from the repo root, after `npm install`)
+// Run:   npm run test:qa                   (from the repo root, after `bun install --frozen-lockfile`)
 // The suite boots server.ts via tsx in a throw-away working dir (in-memory store,
 // Firestore env vars blanked => never touches production data) and builds its own
 // fixtures — Site A, Site B, Site C, users, slots — through the public API.
 // Test names start with the test ID and the AC they cover (see 06-test-report.md).
 // A FAILING test here means the acceptance criterion is NOT met.
+//
+// Site scoping (03-tech-design.md v1.0.1, strict mode = the default): every scoped
+// call must name its site. A `?siteId=` in the URL wins; otherwise call() sends the
+// `x-site-id` header: by default the caller's own site (SITE[who]), or the `site`
+// argument when one is given. Pass NONE to send no site at all (to test the
+// 400 ERR_SITE_REQUIRED path). Master Admin has no default site, so every scoped
+// Master call names one explicitly ('ALL' for reads). Platform routes (sites,
+// rbac, invoices, audit, and domains as Master without a site) send none.
+// SITE_SCOPE_MODE=fallback npm run test:qa runs against the legacy kill-switch.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -25,16 +34,23 @@ let server, workDir;
 const tok = {}; // role -> session token
 const F = {};   // fixtures
 
-async function call(who, method, url, body) {
+const NONE = Symbol('no-site');
+const SITE = {}; // role -> default site id (set in before(); master has none)
+
+async function call(who, method, url, body, site) {
   const headers = { 'Content-Type': 'application/json' };
   if (who) headers['x-session-token'] = tok[who];
+  const s = site === NONE ? undefined : (site ?? SITE[who]);
+  if (s) headers['x-site-id'] = s;
   const res = await fetch(BASE + url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const text = await res.text();
   let json; try { json = JSON.parse(text); } catch { json = text; }
   return { status: res.status, body: json };
 }
-const get = (who, url) => call(who, 'GET', url);
-const post = (who, url, body) => call(who, 'POST', url, body);
+const get = (who, url, site) => call(who, 'GET', url, undefined, site);
+const post = (who, url, body, site) => call(who, 'POST', url, body, site);
+const errCode = (r) => r.body?.errorCode;
+const auditLogs = async () => (await get('master', '/security/audit-logs?limit=1000')).body.logs || [];
 
 async function login(identifier, password = PW) {
   const r = await post(null, '/auth/login', { identifier, password });
@@ -65,7 +81,8 @@ const onlySite = (rows, site) => rows.every((r) => (r.siteId || 'site-default') 
 before(async () => {
   workDir = mkdtempSync(path.join(tmpdir(), 'pf-qa-'));
   const env = { ...process.env, NODE_ENV: 'production', PORT: String(PORT), BOOTSTRAP_ADMIN_PASSWORD: PW,
-    SEED_DEMO_USERS: 'false', FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', GEMINI_API_KEY: '' };
+    SEED_DEMO_USERS: 'false', FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', GEMINI_API_KEY: '',
+    K_SERVICE: '', SITE_SCOPE_MODE: process.env.SITE_SCOPE_MODE || '' };
   server = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [path.join(REPO, 'server.ts')], { cwd: workDir, env, stdio: 'pipe' });
   let log = ''; server.stdout.on('data', (d) => (log += d)); server.stderr.on('data', (d) => (log += d));
   for (let i = 0; i < 120; i++) {
@@ -81,17 +98,22 @@ before(async () => {
   const mkSlots = (site, prefix, n) => Array.from({ length: n }, (_, i) => ({ siteId: site.id, slotNumber: `${prefix}-0${i + 1}`,
     basement: 'B1', floorLocation: 'Level 1', slotType: 'SEDAN', height: '2.0m', parkingType: 'FLAT', allocation: 'EMPLOYEE', status: 'VACANT' }));
   for (const [s, p] of [[F.A, 'A'], [F.B, 'B'], [F.C, 'C']]) {
-    const r = await post('master', '/slots/bulk-upload', { slots: mkSlots(s, p, 3) });
+    const r = await post('master', '/slots/bulk-upload', { slots: mkSlots(s, p, 3) }, s.id);
     assert.ok(r.body.success, JSON.stringify(r.body));
   }
   await mkUser('adminA', 'role-site-manager', [F.A.id]);
   await mkUser('attA', 'role-gate-attendant', [F.A.id]);
   await mkUser('attB', 'role-gate-attendant', [F.B.id]);
   await mkUser('noSite', 'role-site-manager', []);
+  Object.assign(SITE, { adminA: F.A.id, attA: F.A.id, attB: F.B.id });
 
   // Approved passes (active whitelisted employees) at A and B
-  const e = async (site, id, plate) => (await post('master', '/employees/save', { employee: { siteId: site.id, employeeId: id,
-    name: `QA ${id}`, email: `${id.toLowerCase()}@qa-corp.in`, mobile: '+91 9876543210', vehicleNumber: plate, vehicleType: 'SEDAN', status: 'ACTIVE' } })).body.employee;
+  const e = async (site, id, plate) => {
+    const r = await post('master', '/employees/save', { employee: { siteId: site.id, employeeId: id, name: `QA ${id}`,
+      email: `${id.toLowerCase()}@qa-corp.in`, mobile: '+91 9876543210', vehicleNumber: plate, vehicleType: 'SEDAN', status: 'ACTIVE' } }, site.id);
+    assert.ok(r.body.success, `employee ${id}: ${JSON.stringify(r.body)}`);
+    return r.body.employee;
+  };
   F.empA = await e(F.A, 'QAE-A1', 'MH12AB1234');
   F.empB = await e(F.B, 'QAE-B1', 'MH14CD5678');
   // Site B vehicle parked by Site B attendant, then relocated (creates a Site B notification)
@@ -102,8 +124,10 @@ before(async () => {
   const mv = await post('attB', '/slots/change', { vehicleNumberOrSlot: 'MH14CD5678', newSlotNumber: bFree.slotNumber, reason: 'qa', attendantName: 'QA attB' });
   assert.ok(mv.body.success, JSON.stringify(mv.body));
   F.bSlot = bFree;
-  // Corporate domain + one pending registration at Site B
-  await post('master', '/domains/add', { domain: 'qa-corp.in' });
+  // Platform-wide corporate domain (Master, no site) + one pending registration at Site B
+  const pw = await post('master', '/domains/add', { domain: 'qa-corp.in' });
+  assert.ok(pw.body.success && !pw.body.domain.siteId, `platform-wide domain: ${JSON.stringify(pw.body)}`);
+  F.domPlatform = pw.body.domain;
   const rb = await post(null, '/registrations/submit', { siteId: F.B.id, name: 'QA Reg B', email: 'regb@qa-corp.in',
     mobile: '+91 9000000001', vehicleNumber: 'MH14EF1111', employeeId: 'QAR-B1' });
   assert.ok(rb.body.success, JSON.stringify(rb.body));
@@ -113,14 +137,42 @@ before(async () => {
 after(() => { server?.kill(); if (workDir) rmSync(workDir, { recursive: true, force: true }); });
 
 // ---------------- Site isolation (AC-02, AC-03, AC-05, AC-06, AC-44) ----------------
-test('ISO-01 [AC-02] Site Admin A: list APIs without siteId return only Site A rows', async () => {
+const LISTS = [['/slots', 'slots'], ['/employees', 'employees'], ['/logs', 'logs'], ['/alerts/non-parked', 'alerts'],
+  ['/registrations', 'requests'], ['/valet/tickets', 'tickets']];
+
+test('ISO-01 [AC-02] Site Admin A: list APIs with site A return only Site A rows', async () => {
   const s = await get('adminA', '/slots');
-  assert.ok(s.body.slots.length > 0 && onlySite(s.body.slots, F.A.id), 'slots');
-  assert.ok(onlySite((await get('adminA', '/employees')).body.employees, F.A.id), 'employees');
-  assert.ok(onlySite((await get('adminA', '/logs')).body.logs, F.A.id), 'logs');
-  assert.ok(onlySite((await get('adminA', '/alerts/non-parked')).body.alerts, F.A.id), 'alerts');
-  assert.ok(onlySite((await get('adminA', '/registrations')).body.requests, F.A.id), 'registrations');
-  assert.ok(onlySite((await get('adminA', '/valet/tickets')).body.tickets, F.A.id), 'valet');
+  assert.ok(s.body.slots.length > 0, 'slots empty');
+  for (const [u, key] of LISTS) {
+    const r = await get('adminA', u);
+    assert.equal(r.status, 200, `${u} -> ${r.status} ${JSON.stringify(r.body).slice(0, 100)}`);
+    assert.ok(onlySite(r.body[key], F.A.id), `${u} returned non-Site-A rows`);
+  }
+});
+
+const FALLBACK = process.env.SITE_SCOPE_MODE === 'fallback';
+
+test('ISO-01b [AC-02] Strict mode: list APIs with no site are refused (400 ERR_SITE_REQUIRED), never defaulted', async (t) => {
+  if (FALLBACK) return t.skip('SITE_SCOPE_MODE=fallback restores the legacy default');
+  for (const who of ['adminA', 'master']) {
+    for (const [u] of LISTS) {
+      const r = await get(who, u, NONE);
+      assert.equal(r.status, 400, `${who} ${u} -> ${r.status}`);
+      assert.equal(errCode(r), 'ERR_SITE_REQUIRED', `${who} ${u} errorCode=${errCode(r)}`);
+    }
+  }
+});
+
+test('ISO-01c [AC-02] "ALL" is Master-only and read-only', async (t) => {
+  if (FALLBACK) return t.skip('strict-mode rule');
+  const m = await get('master', '/slots', 'ALL');
+  assert.equal(m.status, 200);
+  assert.ok([F.A.id, F.B.id].every((id) => m.body.slots.some((s) => s.siteId === id)), 'Master ALL should include A and B rows');
+  const a = await get('adminA', '/slots', 'ALL');
+  assert.ok(a.status === 400 || a.status === 403, `Site Admin ALL -> ${a.status}`);
+  const w = await post('master', '/slots/save', { slot: { slotNumber: 'ALL-01' } }, 'ALL');
+  assert.equal(w.status, 400, `Master write in ALL -> ${w.status}`);
+  assert.equal(errCode(w), 'ERR_SITE_ALL_NOT_ALLOWED');
 });
 
 test('ISO-02 [AC-02] Site Admin A: list APIs with siteId=B are refused (403)', async () => {
@@ -159,7 +211,7 @@ test('ISO-06 [AC-06] Attendant A: plate scan never returns another site\'s emplo
 test('ISO-07 [AC-03] Site Admin A: slot save targeting a Site B slot id is refused and B slot unchanged', async () => {
   const target = (await slotsOf('master', F.B.id)).find((s) => s.status === 'VACANT');
   const r = await post('adminA', '/slots/save', { slot: { id: target.id, slotNumber: target.slotNumber, status: 'MAINTENANCE' } });
-  const now = (await get('master', '/slots')).body.slots.find((s) => s.id === target.id);
+  const now = (await get('master', '/slots', 'ALL')).body.slots.find((s) => s.id === target.id);
   assert.equal(r.status, 403, `status ${r.status}; Site B slot now siteId=${now?.siteId} status=${now?.status}`);
   assert.equal(now.siteId, F.B.id);
 });
@@ -180,7 +232,7 @@ test('ISO-10 [AC-03] Attendant A: relocating a Site B vehicle into a Site A slot
   if (!(await slotsOf('master', F.B.id)).some((s) => s.currentVehicle === 'MH14CD5678')) await post('attB', '/vehicles/entry', { vehicleNumber: 'MH14CD5678' });
   const r = await post('attA', '/slots/change', { vehicleNumberOrSlot: 'MH14CD5678', newSlotNumber: 'A-03', reason: 'qa', attendantName: 'QA attA' });
   const a3 = (await slotsOf('master', F.A.id)).find((s) => s.slotNumber === 'A-03');
-  if (r.body.success) await post('master', '/vehicles/exit', { vehicleNumberOrSlot: 'MH14CD5678' });
+  if (r.body.success) await post('master', '/vehicles/exit', { vehicleNumberOrSlot: 'MH14CD5678' }, F.A.id);
   assert.ok(!r.body.success, `relocation succeeded: Site A slot A-03 now holds Site B vehicle ${a3.currentVehicle}`);
 });
 
@@ -196,8 +248,7 @@ test('ISO-12 [AC-03] Site Admin A: editing a Site B employee by id is refused an
 
 test('ISO-13 [AC-03] Refused cross-site write attempts are audit-logged', async () => {
   await post('adminA', '/slots/delete', { slotId: F.bSlot.id });
-  const logs = (await get('master', '/security/audit-logs?limit=1000')).body.logs;
-  const hit = logs.find((l) => l.actor === F.adminAUser.email && l.status === 'BLOCKED_UNAUTHORIZED');
+  const hit = (await auditLogs()).find((l) => l.actor === F.adminAUser.email && l.status === 'BLOCKED_UNAUTHORIZED');
   assert.ok(hit, 'no BLOCKED_UNAUTHORIZED audit entry for Site Admin A');
 });
 
@@ -205,11 +256,14 @@ test('ISO-14 [AC-05] Site switcher source (/my-sites) offers only assigned sites
   assert.deepEqual((await get('adminA', '/my-sites')).body.sites.map((s) => s.id), [F.A.id]);
 });
 
-test('ISO-15 [AC-44] User with no assigned site gets no data', async () => {
-  for (const u of ['/slots', '/employees', '/logs', '/registrations']) {
-    const r = await get('noSite', u);
-    const rows = r.body.slots || r.body.employees || r.body.logs || r.body.requests || [];
-    assert.ok(r.status === 403 || rows.length === 0, `${u} returned ${rows.length} rows`);
+test('ISO-15 [AC-44] User with no assigned site gets no data (no site, or naming a site)', async () => {
+  assert.deepEqual((await get('noSite', '/my-sites')).body.sites, [], '/my-sites should be empty');
+  for (const [u, key] of LISTS) {
+    for (const site of [NONE, F.A.id]) {
+      const r = await get('noSite', u, site);
+      const rows = r.body?.[key] || [];
+      assert.ok([400, 403].includes(r.status) || rows.length === 0, `${u} (site ${String(site)}) -> ${r.status}, ${rows.length} rows`);
+    }
   }
 });
 
@@ -220,9 +274,75 @@ test('PERM-01 [AC-07] Site Admin cannot call Master-only APIs (onboard, status, 
   for (const [u, b] of calls) assert.equal((await post('adminA', u, b)).status, 403, u);
 });
 
-test('PERM-02 [AC-07] Site Admin cannot change the corporate domain whitelist', async () => {
-  const r = await post('adminA', '/domains/add', { domain: 'qa-sitea-added.in' });
-  assert.equal(r.status, 403, `status ${r.status}: ${r.body.message}`);
+// PERM-02 rewritten for PRD Addendum C / AC-57 (user decision 28 Sep): a Site Admin manages
+// allowed email domains for their OWN site only; Site B's and platform-wide entries are
+// out of reach (403); platform-wide entries are Master Admin only. API per 03 v1.0.1 (B13/B14).
+const manageRows = async (who, site) => (await get(who, '/domains/manage', site)).body.domains || [];
+
+test('PERM-02a [AC-57] Site Admin A adds a domain for Site A: stored with Site A, audit-logged with siteId', async () => {
+  const r = await post('adminA', '/domains/add', { domain: 'qa-a-only.in' });
+  assert.equal(r.status, 200, `add -> ${r.status} ${JSON.stringify(r.body)}`);
+  assert.equal(r.body.domain?.siteId, F.A.id, `stored siteId=${r.body.domain?.siteId}`);
+  F.domA = r.body.domain;
+  assert.ok((await manageRows('adminA')).some((d) => d.id === F.domA.id), 'not listed in Site A /domains/manage');
+  const a = (await auditLogs()).find((l) => l.action === 'DOMAIN_WHITELIST_ADDED' && l.actor === F.adminAUser.email);
+  assert.ok(a, 'no DOMAIN_WHITELIST_ADDED audit row');
+  assert.equal(a.siteId, F.A.id, `audit siteId=${a.siteId}`);
+});
+
+test('PERM-02b [AC-57] A Site A domain applies to Site A registrations only', async () => {
+  const atA = await post(null, '/registrations/submit', { siteId: F.A.id, name: 'QA Dom A', email: 'da1@qa-a-only.in',
+    mobile: '+91 9000000011', vehicleNumber: 'MH12DA0001', employeeId: 'QAD-A1' });
+  assert.equal(atA.status, 200, `Site A registration -> ${atA.status} ${atA.body.message}`);
+  const atB = await post(null, '/registrations/submit', { siteId: F.B.id, name: 'QA Dom B', email: 'db1@qa-a-only.in',
+    mobile: '+91 9000000012', vehicleNumber: 'MH14DA0002', employeeId: 'QAD-B1' });
+  assert.equal(atB.status, 400, `Site B registration with a Site A-only domain -> ${atB.status}`);
+  const pubB = (await get(null, `/domains?siteId=${F.B.id}`)).body.domains.map((d) => d.domain);
+  assert.ok(!pubB.includes('qa-a-only.in'), 'public /domains for Site B lists the Site A domain');
+});
+
+test('PERM-02c [AC-57] Site Admin A cannot add a domain for Site B or platform-wide', async () => {
+  const toB = await post('adminA', '/domains/add', { domain: 'qa-a-to-b.in' }, F.B.id);
+  assert.equal(toB.status, 403, `add at Site B -> ${toB.status}`);
+  for (const site of [NONE, 'ALL']) {
+    const r = await post('adminA', '/domains/add', { domain: 'qa-a-platform.in' }, site);
+    const label = site === NONE ? 'no site' : 'ALL';
+    if (FALLBACK) {
+      // Kill-switch: a missing/ALL site falls back to the admin's own site (A), never platform-wide.
+      assert.ok(r.status === 200 && r.body.domain?.siteId === F.A.id, `fallback add with ${label} -> ${r.status} ${JSON.stringify(r.body.domain)}`);
+      await post('adminA', '/domains/remove', { domainId: r.body.domain.id });
+    } else {
+      assert.ok([400, 403].includes(r.status), `add with ${label} -> ${r.status} (must not become platform-wide)`);
+    }
+  }
+  const every = await manageRows('master', 'ALL');
+  const leaked = every.filter((d) => d.domain === 'qa-a-to-b.in' || (d.domain === 'qa-a-platform.in' && !d.siteId));
+  assert.deepEqual(leaked.map((d) => `${d.domain}@${d.siteId ?? 'platform'}`), [], 'a refused add was stored');
+});
+
+test('PERM-02d [AC-57] Site Admin A cannot see or remove Site B domains, nor remove platform-wide ones', async () => {
+  const b = await post('master', '/domains/add', { domain: 'qa-b-only.in' }, F.B.id);
+  assert.ok(b.body.success && b.body.domain.siteId === F.B.id, `setup Site B domain: ${JSON.stringify(b.body)}`);
+  F.domB = b.body.domain;
+  const mine = await manageRows('adminA');
+  assert.deepEqual(mine.filter((d) => d.siteId && d.siteId !== F.A.id).map((d) => d.domain), [], 'Site B rows visible to Site A');
+  assert.equal((await get('adminA', '/domains/manage', F.B.id)).status, 403, '/domains/manage?site=B');
+  const rmB = await post('adminA', '/domains/remove', { domainId: F.domB.id });
+  assert.equal(rmB.status, 403, `remove Site B entry -> ${rmB.status}`);
+  assert.equal(errCode(rmB), 'ERR_SITE_FORBIDDEN');
+  const rmP = await post('adminA', '/domains/remove', { domainId: F.domPlatform.id });
+  assert.equal(rmP.status, 403, `remove platform-wide entry -> ${rmP.status}`);
+  assert.equal(errCode(rmP), 'ERR_MASTER_ONLY');
+  const every = (await manageRows('master', 'ALL')).map((d) => d.id);
+  assert.ok(every.includes(F.domB.id) && every.includes(F.domPlatform.id), 'a refused remove deleted the entry');
+});
+
+test('PERM-02e [AC-57] Site Admin A removes their own Site A domain; removal is audit-logged with siteId', async () => {
+  const r = await post('adminA', '/domains/remove', { domainId: F.domA.id });
+  assert.equal(r.status, 200, `remove own -> ${r.status} ${JSON.stringify(r.body)}`);
+  assert.ok(!(await manageRows('adminA')).some((d) => d.id === F.domA.id), 'still listed after remove');
+  const a = (await auditLogs()).find((l) => l.action === 'DOMAIN_WHITELIST_REMOVED' && l.actor === F.adminAUser.email);
+  assert.ok(a && a.siteId === F.A.id, `audit row: ${JSON.stringify(a)}`);
 });
 
 test('PERM-03 [AC-08] Attendant cannot edit inventory, approve passes or export logs', async () => {
@@ -307,8 +427,9 @@ test('FLOW-09 [AC-20] Plate with no pass is told "not authorised"; no slot occup
 });
 
 test('FLOW-10 [AC-20] Plate whose pass is at another site is refused', async () => {
-  await post('master', '/employees/save', { employee: { siteId: F.B.id, employeeId: 'QAE-B2', name: 'QA B2', email: 'b2@qa-corp.in',
-    mobile: '+91 9876500000', vehicleNumber: 'MH14GH2222', vehicleType: 'SEDAN', status: 'ACTIVE' } });
+  const setup = await post('master', '/employees/save', { employee: { siteId: F.B.id, employeeId: 'QAE-B2', name: 'QA B2', email: 'b2@qa-corp.in',
+    mobile: '+91 9876500000', vehicleNumber: 'MH14GH2222', vehicleType: 'SEDAN', status: 'ACTIVE' } }, F.B.id);
+  assert.ok(setup.body.success, `setup: ${JSON.stringify(setup.body)}`);
   const r = await post('attA', '/vehicles/entry', { vehicleNumber: 'MH14GH2222' });
   if (r.body.success) await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH14GH2222' });
   assert.equal(r.body.success, false, `Site B pass admitted at Site A into ${r.body.slot?.slotNumber}`);
@@ -380,7 +501,7 @@ test('FLOW-18 [AC-27] Registration refused for malformed phone or plate', async 
 test('FLOW-19 [AC-28] Approval creates the pass at the request\'s site and is audit-logged', async () => {
   const r = await post('adminA', '/registrations/approve', { requestId: F.regA.id });
   assert.ok(r.body.success, JSON.stringify(r.body));
-  const logs = (await get('master', '/security/audit-logs?limit=1000')).body.logs;
+  const logs = await auditLogs();
   const audited = logs.some((l) => /REGISTRATION|APPROV/i.test(l.action) && String(l.details).includes('MH12RA1001'));
   assert.equal(r.body.employee.siteId, F.A.id, `pass created at '${r.body.employee.siteId}' instead of Site A`);
   assert.ok(audited, 'approval not audit-logged');
@@ -393,7 +514,8 @@ test('FLOW-20 [AC-29] Rejection without a reason is blocked', async () => {
 });
 
 test('FLOW-21 [AC-30] Revoked (inactive) pass is refused at the gate', async () => {
-  await post('master', '/employees/save', { employee: { id: F.empA.id, siteId: F.A.id, employeeId: 'QAE-A1', name: 'QA QAE-A1', vehicleNumber: 'MH12AB1234', status: 'INACTIVE' } });
+  const setup = await post('master', '/employees/save', { employee: { id: F.empA.id, siteId: F.A.id, employeeId: 'QAE-A1', name: 'QA QAE-A1', vehicleNumber: 'MH12AB1234', status: 'INACTIVE' } }, F.A.id);
+  assert.ok(setup.body.success, `setup: ${JSON.stringify(setup.body)}`);
   const r = await post('attA', '/vehicles/entry', { vehicleNumber: 'MH12AB1234' });
   if (r.body.success) await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB1234' });
   assert.equal(r.body.success, false, 'inactive pass admitted');
@@ -416,14 +538,14 @@ test('FLOW-23 [AC-35] Invoice can be generated and marked Paid', async () => {
 });
 
 test('FLOW-24 [AC-37] Gate entry/exit writes an audit entry with site', async () => {
-  const logs = (await get('master', '/security/audit-logs?limit=1000')).body.logs;
+  const logs = await auditLogs();
   const gate = logs.filter((l) => /VEHICLE_ENTRY|VEHICLE_EXIT|GATE_/i.test(l.action) && l.status === 'SUCCESS');
   assert.ok(gate.length > 0, 'no audit entries for successful vehicle entry/exit');
   assert.ok(gate.every((l) => 'siteId' in l), 'audit entries carry no site');
 });
 
 test('FLOW-25 [AC-39] Valet: retrieval request from Site A cannot hit a Site B ticket', async () => {
-  const t = await post('master', `/valet/checkin`, { siteId: F.B.id, vehicleNumber: 'MH14VV7777', guestName: 'QA Guest', guestPhone: '+91 9111111111' });
+  const t = await post('master', `/valet/checkin`, { siteId: F.B.id, vehicleNumber: 'MH14VV7777', guestName: 'QA Guest', guestPhone: '+91 9111111111' }, F.B.id);
   assert.ok(t.body.success, JSON.stringify(t.body));
   const r = await post('adminA', '/valet/request-retrieval', { query: '9111111111' });
   assert.equal(r.body.success, false, `Site A user changed Site B ticket ${r.body.ticket?.ticketNumber} to ${r.body.ticket?.status}`);

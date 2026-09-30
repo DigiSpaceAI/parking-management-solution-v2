@@ -2610,6 +2610,29 @@ app.post('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'canCreate')
 });
 
 app.delete('/api/v1/rbac/users/:id', requirePermission('USER_MANAGEMENT', 'canDelete'), (req, res) => {
+  // R4-1: a non-Master may delete only ordinary accounts at their own sites.
+  // Self-delete and last-Master protection stay in deleteAppUser.
+  const caller = req.user!;
+  const target = getAppUsers().find((u) => u.id === req.params.id);
+  if (!isMasterAdmin(caller) && target && target.id !== caller.id) {
+    if (!userWithinCallerScope(caller, target)) {
+      auditDenied(req, canonicalSiteId((target.assignedSiteIds || [])[0] || DEFAULT_SITE_ID),
+        `${caller.email} tried to delete account ${target.id}, which is outside their sites.`);
+      return sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only remove accounts at your own sites.');
+    }
+    if (accountIsPrivileged(target)) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `user/${target.id}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: 'Delete refused: the account has Master Config, User Management or Security Audit rights, or all-sites access.',
+      });
+      return masterOnly(res, 'Only a Platform Master Admin can remove an account with Master Config, User Management or Security Audit rights, or all-sites access.');
+    }
+  }
   const result = deleteAppUser(req.params.id, req.user!.id);
   logSecurityEvent({
     action: 'RBAC_USER_DELETED',

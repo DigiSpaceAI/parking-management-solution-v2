@@ -792,3 +792,22 @@ test('B17 (4) approve refuses a same-site duplicate active pass', async () => {
   assert.equal(ap.body.message, 'This vehicle is already on an active pass at this site.');
   assert.equal((await requestsAt(F.A.id)).find((x) => x.id === reqA.id).status, 'PENDING', 'nothing changed');
 });
+
+// ---------------------------------------------------------------- Round 4
+test('R4-1 a non-Master cannot delete an account at another site, or a privileged same-site account', async () => {
+  await mkUser('delB', 'role-gate-attendant', [F.B.id]);
+  const cross = await call('umA', 'DELETE', `/rbac/users/${F.delBUser.id}`);
+  assert.equal(cross.status, 403, JSON.stringify(cross.body)); assert.equal(cross.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  assert.ok((await get('master', '/rbac/users')).body.users.some((u) => u.id === F.delBUser.id), 'Site B account still exists');
+  assert.ok((await auditEntries('CROSS_SITE_ACCESS_DENIED')).some((l) => l.details.includes(F.delBUser.id)));
+  const priv = await call('umA', 'DELETE', `/rbac/users/${F.opsAUser.id}`);
+  assert.equal(priv.status, 403); assert.equal(priv.body.errorCode, 'ERR_MASTER_ONLY');
+  assert.ok((await get('master', '/rbac/users')).body.users.some((u) => u.id === F.opsAUser.id), 'privileged account still exists');
+  const self = await call('umA', 'DELETE', `/rbac/users/${F.umAUser.id}`);
+  assert.equal(self.body.success, false, 'self-delete still refused by the existing check');
+  await mkUser('delA', 'role-gate-attendant', [F.A.id]);
+  const ok = await call('umA', 'DELETE', `/rbac/users/${F.delAUser.id}`);
+  assert.equal(ok.status, 200); assert.equal(ok.body.success, true, 'ordinary same-site account can be removed');
+  const m = await call('master', 'DELETE', `/rbac/users/${F.delBUser.id}`);
+  assert.equal(m.body.success, true, 'Master is unaffected');
+});

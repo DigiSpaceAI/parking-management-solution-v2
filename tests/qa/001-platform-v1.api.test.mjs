@@ -580,3 +580,52 @@ test('FLOW-29 [AC-10] Suspended user: existing session rejected on next request 
   const l = await post(null, '/auth/login', { identifier: F.attBUser.email, password: PW });
   assert.notEqual(l.status, 200, 'sign-in');
 });
+
+// The public registration route allows 10 requests/min per client; earlier tests use most of it,
+// so these late tests wait out a 429 instead of failing on it.
+async function submitReg(body) {
+  for (let i = 0; i < 6; i++) {
+    const r = await post(null, '/registrations/submit', body);
+    if (r.status !== 429) return r;
+    await sleep(15000);
+  }
+  throw new Error('registration submit still rate-limited after 90 s');
+}
+
+// ---------------- Late fixes, acceptance level (step 6; backend unit cases are in 001-backend) ----------------
+test('LATE-01 [AC-27/B17] A registration pending at Site B does not block the same plate/email at Site A', async () => {
+  const b = await submitReg({ siteId: F.B.id, name: 'QA Late B', email: 'late1@qa-corp.in',
+    mobile: '+91 9000000021', vehicleNumber: 'MH14LT0001', employeeId: 'QAL-1' });
+  assert.equal(b.status, 200, `Site B -> ${b.status} ${b.body.message}`);
+  const a = await submitReg({ siteId: F.A.id, name: 'QA Late A', email: 'late1@qa-corp.in',
+    mobile: '+91 9000000021', vehicleNumber: 'MH14LT0001', employeeId: 'QAL-1' });
+  assert.equal(a.status, 200, `Site A blocked by Site B pending: ${a.status} ${a.body.message}`);
+  const again = await submitReg({ siteId: F.A.id, name: 'QA Late A2', email: 'late1@qa-corp.in',
+    mobile: '+91 9000000021', vehicleNumber: 'MH14LT0001' });
+  assert.equal(again.status, 400, 'same-site pending duplicate must still be refused');
+  assert.ok(!/QAL-1|QA Late|site-/.test(again.body.message), `message discloses data: ${again.body.message}`);
+});
+
+test('LATE-02 [AC-48/B17] An active pass at Site A does not block registering for Site B; each admin sees only their own request', async () => {
+  // MH12RA1001 / rega@qa-corp.in was approved at Site A in FLOW-19.
+  const b = await submitReg({ siteId: F.B.id, name: 'QA Reg A', email: 'rega@qa-corp.in',
+    mobile: '+91 9000000002', vehicleNumber: 'MH12RA1001', employeeId: 'QAR-A1' });
+  assert.equal(b.status, 200, `Site B -> ${b.status} ${b.body.message}`);
+  assert.equal(b.body.request.siteId, F.B.id);
+  const emps = (await get('adminA', '/employees')).body.employees;
+  assert.ok(emps.some((e) => e.employeeId === 'QAR-A1' && e.status === 'ACTIVE'), 'Site A pass changed');
+  const reqsA = (await get('adminA', '/registrations')).body.requests;
+  assert.ok(!reqsA.some((r) => r.id === b.body.request.id), 'Site A admin sees the Site B request');
+});
+
+test('LATE-03 [AC-57/C-1] Public /domains needs a site and returns names only', async () => {
+  const none = await get(null, '/domains');
+  assert.equal(none.status, 400); assert.equal(errCode(none), 'ERR_SITE_REQUIRED');
+  assert.equal((await get(null, '/domains?siteId=ALL')).status, 400, 'ALL');
+  const a = await get(null, `/domains?siteId=${F.A.id}`);
+  assert.equal(a.status, 200);
+  assert.ok(a.body.domains.every((d) => Object.keys(d).join() === 'domain'), `extra fields: ${JSON.stringify(a.body.domains[0])}`);
+  const names = a.body.domains.map((d) => d.domain);
+  assert.ok(names.includes('qa-corp.in'), 'platform-wide domain missing');
+  assert.ok(!names.includes('qa-b-only.in'), 'Site B domain listed for Site A');
+});

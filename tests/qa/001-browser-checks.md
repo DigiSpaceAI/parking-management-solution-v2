@@ -1,8 +1,16 @@
 # Browser check plan: 001-parkflows-platform-v1, step 6 (Phase 1)
-Owner: qa-engineer · Written: 2026-09-29 · Status: **PLAN**. It runs after code review round 3 passes and B17 is built.
+Owner: qa-engineer · Written: 2026-09-29 · Status: **EXECUTED 2026-09-30** against `712d74d` (branch head `1d62feb`); results are in `06-test-report.md`.
 Sources: `03-tech-design.md` v1.0.1 (F1–F9, L-1..L-8), `02-ux-design.md` v1.1 (§3.0, L-3, L-8, G-18), `04-implementation-notes.md` (frontend "How to test manually" 1–8), `05-code-review.md` round 2 ("QA (step 6)").
 
 These checks cover what the API suite (`001-platform-v1.api.test.mjs`) can't: what the console shows and enables. The results go into `06-test-report.md` as MAN-02, AS-* and VA-* rows.
+
+## 0. How to run (as executed)
+1. Build: `bun install --frozen-lockfile`, then `VITE_API_BASE_URL=http://127.0.0.1:3950 VITE_API_BASE=http://127.0.0.1:3950 npm run build`.
+2. Start: `NODE_ENV=production PORT=3950 BOOTSTRAP_ADMIN_PASSWORD='QaTestPassword#2026' SEED_DEMO_USERS=false node dist/server.cjs`, with the Firestore variables blank and in a throw-away working copy (see 06 BUG-8).
+3. Seed: `QA_OUT=./qa-out node tests/qa/browser/seed.mjs http://127.0.0.1:3950 > qa-out/fixtures.json`.
+4. Run each script with `PLAYWRIGHT_MODULE=<path to an existing playwright install> QA_OUT=./qa-out PF_REPO=$PWD node tests/qa/browser/<script>.mjs`. The scripts are `man02`, `as all`, `as viewas`, `as02`, `va`, `va5`, `misc`, `dom`, `att`, `ui2`, `err`, `ac12` and `pred`. Playwright is not a repo dependency (CLAUDE.md rule 5).
+5. `att.mjs` routes `/assets/mobile-*` to `dist-mobile/assets`, because the served `/attendant` page is blank (06 BUG-1). Remove that work-around once BUG-1 is fixed.
+6. MAN-02d on Inventory/Floor: vacant slots sort first, so the check asserts the site-code chips (QAA/QAB) rather than plates. AS-07 (Relocation Logs) is N/A: that page isn't mounted, and relocations appear in Entry/Exit Logs.
 
 ## 1. Environment
 - **Build under test.** A clean clone of `feature/001-parkflows-platform-v1` at the commit code review round 3 approves. I don't use the working copy, which has uncommitted doc edits.

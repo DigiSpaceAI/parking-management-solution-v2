@@ -142,6 +142,31 @@ _User decision: fix both Criticals before the 1 Oct launch (recorded in review-l
 - Part (1) means an account whose sites don't include its pass's site no longer finds that pass through self-service. That's intended (a pass is only "yours" where you have access). Employee accounts must be assigned to their pass's site, which is today's setup.
 - R4-3 is left open for Phase 2 as decided.
 
+### Hotfix (2 Oct 2026): cold start must never overwrite production data (08 "New finding (P2-3)", first patch item 0)
+_Production is live on this code (`00126-t6t`). Urgent; route: backend-dev → code-reviewer (short) → QA → devops (same 0%-traffic procedure). Not self-reviewed._
+
+| Change | Commit | What | Tests (`001-backend.api.test.mjs`) |
+|---|---|---|---|
+| **1. No seed write in `initDB`** | `deab529` | `initDB()`'s Firestore-configured branch no longer calls `saveDB()`. That call full-synced the boot seed (5 default roles, bootstrap Master, `dom-1 company.com`, `_meta`) into Firestore with `merge:true` on every cold start. An empty Firestore is still seeded by `bootstrapFirestore()` ("No existing data found"), unchanged. | "Hotfix-1 a cold start with existing Firestore data…": with a 5 s load (longer than the 3 s debounce, as on Cloud Run), there are 0 store writes before the load, no `appRoles`/`appUsers`/`whitelistedDomains` writes, the changed `role-site-manager` (ALERTS edit off) is kept, the edited Master is kept, and only `parkflows.in` remains (no `company.com`). **Before the fix the same test saw 8 seed writes.** "Hotfix-1 an EMPTY Firestore is still seeded…" |
+| **2. "Loaded" flag + 503** | `c30a947` | `storeReady` / `isStoreReady()` in `db.ts`. It is set once `bootstrapFirestore()` has loaded the data (or seeded an empty project), or at once when Firestore isn't configured or available. Until then `saveDB()` skips **every** Firestore sync (full and targeted), the debounced full sync re-checks it, and the local JSON copy is still written. `server.ts`: until ready, `/api/v1/*` (except `/health`) and `/login` answer **503 `{ errorCode: 'ERR_STARTING' }`** with `Retry-After: 5`. `/health` stays 200 and now includes **`ready`**. `ApiErrorCode` gains `ERR_STARTING`. | "Hotfix-2 no Firestore sync runs before the load finishes…" (a `saveDB()` before the load writes nothing); "Hotfix-2 until the store is loaded…" (server against a slow fake Firestore: `/slots`, `/auth/login`, `/login` and `/domains` → 503 `ERR_STARTING`; `/health` 200 `ready:false`; then ready, `/slots` 401 and `/domains` serving the loaded data) |
+
+**Also in `c30a947`, needed for the flag (please review):**
+- **`getStore()` initialises once only.** It used to re-run `initDB()` whenever the store had **no slots**, so a loaded production store with no slots was thrown away and replaced with the boot seed, and (before change 1) full-synced over Firestore. Found by the Hotfix-2 server test (the fake "production" data has no slots).
+- **A failed load no longer goes "ready" on the seed.** Before, the instance kept serving (and later syncing) the boot-time store. Now it stays at 503 and `bootstrapFirestore()` retries with backoff (10 s, doubling to 60 s). If Firestore is disabled after a fatal config error, the instance goes ready on the local store with no Firestore writes, as before.
+
+**Test seam:** `__setFirestoreDbForTests()` in `src/server/firestoreClient.ts` lets the cold-start harness (`tests/qa/support/coldstart-harness.mjs` + `fakeFirestore.mjs`, an in-memory fake that records every write) inject a fake before boot. Nothing in the app calls it, and no request can reach it.
+
+**Checks on `c30a947`:**
+- `npm run lint`: exit 0. `npm run build`: exit 0.
+- `npm run test:qa`: 121 tests, **106 pass**. `001-backend.api.test.mjs` **64/64**. `001-platform-v1.api.test.mjs` **42/57**; the 15 failures are the same known Phase 2 ACs as every run since round 3 (FLOW-03…06, 09…12, 14, 18, 20…22, 24, 27). `test:qa` therefore exits 1 for those alone.
+
+**For devops / ops (deploy and after):**
+- **Warm-up rule, now enforced:** until `Loaded existing data from Firestore.`, users get 503 instead of an empty console. Watch `GET /api/v1/health` → `"ready": true`.
+- **After deploy, verify:** `role-site-manager` ALERTS edit stays off, `company.com` doesn't come back (`/domains?siteId=site-1787676715259`), and there is no full sync before `Loaded existing data` in the log.
+- Any `company.com` already re-seeded by an earlier cold start must still be removed once by hand. This fix stops it coming back; it doesn't delete it.
+- **Clients see 503 `ERR_STARTING` for up to a few minutes after a cold start.** The console and Android app show it as an error; a retry works once ready. A friendly "starting up" message is a frontend/mobile follow-up.
+- Not in this hotfix: "pin `engines.node`" (also listed under first-patch item 0); left for the first patch.
+
 ## Frontend
 _Author: frontend-dev · Date: 2026-09-28 · Status: **Round 2 frontend fixes done (C-1 c, m-5, m-7, M-2 UI); ready for code review round 3**. F1–F8 + PRD Addendum C done earlier. Not self-reviewed. `main` untouched, nothing pushed._
 _History: blocked on 25 Sep (no approved 02/03). This section replaces that note._

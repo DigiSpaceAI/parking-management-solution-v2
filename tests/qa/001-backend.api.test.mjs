@@ -845,3 +845,40 @@ test('R4-2 an email re-pointed by a Master still cannot reach another site\'s pa
   const b = (await get('master', '/employees', { site: F.B.id })).body.employees.find((e) => e.id === F.empB.id);
   assert.equal(b.vehicleNumber, F.empB.vehicleNumber, 'Site B plate unchanged');
 });
+
+// ---------------------------------------------------------------- Hotfix 2 Oct (first patch item 0)
+// Cold start against EXISTING Firestore data (an in-memory fake, see
+// tests/qa/support): nothing seeded at boot may overwrite production records.
+async function runColdStart(extraEnv = {}) {
+  const workDir = mkdtempSync(path.join(tmpdir(), 'pf-cold-'));
+  const harness = path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs');
+  const env = { ...process.env, PF_REPO: REPO, NODE_ENV: 'production', SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
+    K_SERVICE: '', AUDIT_HMAC_SECRET: 'x'.repeat(64), BOOTSTRAP_ADMIN_PASSWORD: PW, ...extraEnv };
+  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [harness, 'store'], { cwd: workDir, env, stdio: 'pipe' });
+  let out = ''; proc.stdout.on('data', (d) => (out += d)); proc.stderr.on('data', (d) => (out += d));
+  await new Promise((r) => proc.on('exit', r));
+  try { rmSync(workDir, { recursive: true, force: true }); } catch {}
+  const line = out.split('\n').find((l) => l.startsWith('REPORT '));
+  assert.ok(line, 'harness report missing:\n' + out.slice(-2000));
+  return JSON.parse(line.slice(7));
+}
+
+test('Hotfix-1 a cold start with existing Firestore data does not overwrite a changed default role, a removed domain or the Master', async () => {
+  // The load takes 5 s here, longer than the 3 s full-sync debounce, as on Cloud Run.
+  const r = await runColdStart({ FAKE_LOAD_DELAY_MS: '5000' });
+  assert.equal(r.writesBeforeLoad, 0, 'initDB wrote to Firestore before the load');
+  const seeded = r.writes.filter((w) => ['appRoles', 'appUsers', 'whitelistedDomains'].includes(w.collection));
+  assert.deepEqual(seeded, [], 'boot-time seed records written to Firestore: ' + JSON.stringify(seeded));
+  assert.equal(r.siteManager.modulePermissions.ALERTS.canEdit, false, 'changed default role kept');
+  assert.equal(r.siteManager.description, 'changed in prod');
+  assert.equal(r.master.fullName, 'Prod Master (edited)', 'bootstrap Master not reset');
+  assert.deepEqual(r.domains.map((d) => d.domain), ['parkflows.in'], 'removed company.com did not come back');
+});
+
+test('Hotfix-1 an EMPTY Firestore is still seeded by bootstrapFirestore (accounts and default roles)', async () => {
+  const r = await runColdStart({ EMPTY_FIRESTORE: '1' });
+  assert.equal(r.writesBeforeLoad, 0, 'nothing written before bootstrap');
+  const roles = r.writes.filter((w) => w.collection === 'appRoles').map((w) => w.id);
+  assert.ok(roles.includes('role-site-manager') && roles.includes('role-master-admin'), 'default roles seeded: ' + JSON.stringify(roles));
+  assert.ok(r.writes.some((w) => w.collection === 'appUsers' && w.id === 'usr-digi-master'), 'bootstrap Master seeded');
+});

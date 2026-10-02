@@ -83,3 +83,12 @@ export function markFirestoreUnavailable(reason: string) {
   initAttempted = true;
   initError = reason;
 }
+
+// TEST SEAM ONLY (hotfix tests, tests/qa/support/coldstart-harness.mjs): lets
+// a test process replace the Firestore client with an in-memory fake before
+// the store boots. Not reachable from any request; nothing in the app calls it.
+export function __setFirestoreDbForTests(fake: unknown) {
+  firestoreDb = fake as admin.firestore.Firestore;
+  initAttempted = true;
+  initError = null;
+}

@@ -1197,7 +1197,12 @@ export function initDB(): StoreData {
         overnightRequests: [],
         lastUpdated: new Date().toISOString(),
       };
-      saveDB();
+      // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
+      // boot-time seed (default roles, bootstrap Master, dom-1 company.com)
+      // into Firestore with merge:true on every cold start, resetting changed
+      // default roles, re-adding removed domains and resetting the Master.
+      // An empty Firestore is still seeded from this store by
+      // bootstrapFirestore() ("No existing data found").
     } else {
       // Firestore genuinely isn't configured for this environment (no
       // project ID resolvable) — this is the local/dev case, where full

@@ -191,3 +191,68 @@ New in step 6 (not fixed, as the role requires). Severity uses the code-review s
 **The user deferred BUG-1 to the next upgrade, along with the devops live check and the QA re-run.** They do not block launch. The QA verdict stays **FAIL as tested**, but the risk is accepted and step 7 can proceed.
 **What this means at go-live:** if `/attendant` is also blank in production, Alphatech attendants have no gate app on 1 Oct. Before go-live, devops should open `/attendant/` once, and the site team should have a fallback ready: gate entry/exit from the web console (Entry / Exit Logs → Record Manual Entry / Process Exit Checkout), signed in as a site user with gate rights.
 **BUG-4 (demo domains) is also not a blocker (user, 2026-10-01).** It moves to the next upgrade; the security reviewer may still grade it. The PM decisions (gaps 1–3) are unchanged.
+
+---
+
+## Hotfix test (2 Oct)
+Author: qa-engineer · Date: 2026-10-02 · **Urgent: production is live on this code.**
+**Scope:** `deab529` (no seed write at cold start) and `c30a947` (no Firestore sync, and 503 `ERR_STARTING`, until the store is loaded). Read against `08` "New finding (P2-3)" / "First patch, item 0", `04` Backend "Hotfix (2 Oct 2026)" and `05` "Hotfix review (2 Oct)" (H-1…H-3).
+
+### Environment
+| Item | Value |
+|---|---|
+| Code under test | `feature/001-parkflows-platform-v1` @ **`e656c0e`**, a clean clone from a `git bundle` in the QA cloud workspace. Dependencies were installed there only (not in the user's repo folder). No source edits. |
+| Runtime | Node **22.22.2**, Bun **1.4.2** (`bun install --frozen-lockfile` OK), Playwright 1.56 / Chromium for step 4 (not a repo dependency) |
+| Firestore | The in-memory fake in `tests/qa/support/fakeFirestore.mjs`, injected through the hotfix test seam. No real Firestore is touched. Its "production" data: `role-site-manager` with ALERTS edit off, `company.com` removed (only `parkflows.in`), bootstrap Master edited. |
+| Mode | `SITE_SCOPE_MODE` unset (strict) |
+
+### Results
+| # | Check | Result | Evidence |
+|---|---|---|---|
+| 1 | `npm run lint` / `npm run build` | **PASS** / **PASS** | exit 0 / exit 0 |
+| 1 | `npm run test:qa` as delivered | **PASS** (as expected) | 121 tests, 106 pass. `001-backend` **64/64**, including Hotfix-1 ×2 and Hotfix-2 ×2. `001-platform-v1` **42/57**; the 15 failures are exactly the known Phase 2 ACs (FLOW-03…06, 09…12, 14, 18, 20…22, 24, 27). **No regression.** |
+| 1 | `npm run test:qa` with the new QA file | **PASS** | 127 tests, 112 pass, the same 15 Phase 2 failures, and 0 failures outside that list. |
+| 2a | H-2 (a) failed load: store level (HF-01) | **PASS** | The first store read throws `4 DEADLINE_EXCEEDED`. The result is: `ready:false`, 0 store writes even after the 3 s debounce, and the log says "retrying in 10s". Then: ready, the in-memory store is the loaded production data (`site-alpha`), and there are **0 seed writes** (`appRoles` / `appUsers` / `whitelistedDomains`). ALERTS edit stays off, only `parkflows.in` is present, and the Master edit is kept. |
+| 2a | H-2 (a) failed load: server level (HF-02) | **PASS** | While the load has failed: `/health` 200 `ready:false`; `GET /slots`, `POST /auth/login`, public `GET /domains` and `GET /my-sites` → **503 `ERR_STARTING`** with `Retry-After: 5`; 0 writes, read through a side report port on the harness. After the retry: `ready:true`, `/domains` serves `parkflows.in` only, `/slots` → 401 (normal), and still 0 seed writes. |
+| 2b | H-2 (b) writes after ready reach Firestore (HF-03) | **PASS** | After the load, a targeted `saveDB([{appRoles: role-site-manager}])` is recorded by the fake with the new description. A full `saveDB()` reaches it after the debounce (the changed site name is stored). |
+| 2 | The new tests can fail | **PASS** | Mutation check on a throw-away copy (reverted): a mutant that disables all syncs fails HF-03, and a mutant that goes "ready" on the seed after a failed load fails HF-01 and HF-02. |
+| 3 | Changed default role survives a cold start (HF-04, load 0 ms and 5 s) | **PASS** | `role-site-manager` ALERTS.canEdit stays `false`, and the description stays "changed in prod". |
+| 3 | Removed `company.com` doesn't come back (HF-04) | **PASS** | Domains after a cold start: `parkflows.in` only. |
+| 3 | Bootstrap Master's edited fields are kept (HF-04) | **PASS** | `fullName` = "Prod Master (edited)". |
+| 3 | An EMPTY Firestore is still seeded (HF-05) | **PASS** | Default roles (incl. `role-site-manager`, `role-master-admin`) and `usr-digi-master` are written by `bootstrapFirestore()`, with 0 writes before it. |
+| 4 | Warm-up on a local build of `e656c0e`: console | **PASS** | Built with a local API base; server started through the harness with a 90 s fake load. `/` loads (200). Sign-in → `POST /auth/login` 503, and the page shows **"ParkFlows is starting up. Try again in a moment."** (red banner on the sign-in form; the server's message is shown). |
+| 4 | Warm-up: `/attendant` | **PASS** | The `/attendant/` HTML returns 200. The page itself was rendered with the step 6 asset work-around, because BUG-1 is still open. `GET /auth/me` and `POST /auth/login` → 503. The sign-in step shows **"ParkFlows is starting up. Try again in a moment."** |
+| 4 | After warm-up | **PASS** | At about 90 s, `/health` `ready:true`, `/domains` = `parkflows.in` only, and the fake recorded **0 store writes**. The log shows no sync before "Loaded existing data from Firestore." |
+
+**Notes:**
+- **Client message:** during warm-up both clients already show the server's text, "ParkFlows is starting up. Try again in a moment.", rather than a generic error. A dedicated "starting up" screen with auto-retry is still the known follow-up, not a defect.
+- **H-1 is visible:** the first failed load still logs "Load failed, falling back to local JSON store" (`db.ts` L1319), followed by the correct "NOT reseeding; API stays at 503 ERR_STARTING; retrying in 10s." This is the known Minor for the first patch.
+- **H-3** (an outage can keep the API at 503 while `/health` is 200) is unchanged. Devops' alert on `ready:false` for more than about 5 min is still recommended.
+
+### New tests (QA)
+- **`tests/qa/001-hotfix-coldstart.test.mjs`** (6 tests, part of `npm run test:qa`, about 80 s): HF-01, HF-02 (H-2a), HF-03 (H-2b), HF-04 ×2 (regression at 0 ms and 5 s load), HF-05 (empty Firestore).
+- **`tests/qa/support/fakeFirestore.mjs`:**
+  - new `failReads` / `failMessage` options: the first n store reads throw `DEADLINE_EXCEEDED`;
+  - `securityAuditLogs` reads are not counted;
+  - a `readFailures` counter.
+- **`tests/qa/support/coldstart-harness.mjs`:**
+  - `FAKE_FAIL_READS` env;
+  - new `retry` mode (failed load → retry → ready → targeted and full write after ready);
+  - `FAKE_REPORT_PORT` serves the fake's writes in `server` mode.
+  - The backend suite's existing harness modes are unchanged (64/64 still pass).
+
+### Post-deploy checks for devops
+1. `GET /api/v1/health` reaches **`"ready": true`** after the cold start. Until then, API calls get 503 `ERR_STARTING` and users see "ParkFlows is starting up. Try again in a moment."
+2. Restart (or scale to zero and back), then confirm **`role-site-manager` ALERTS edit is still off** (User & RBAC → Site Facility Manager), and a Site Admin still gets 403 on an ALERTS edit.
+3. Remove `company.com` **once by hand**, if an earlier cold start re-seeded it. After the next restart, `GET /api/v1/domains?siteId=site-1787676715259` must **not** list `company.com`.
+4. In the Cloud Run log for that start, **no full-store sync (and no `DEADLINE_EXCEEDED` on a sync) appears before "[firestore] Loaded existing data from Firestore."** A "Store not loaded yet — Firestore sync skipped" line is expected and fine.
+
+### Verdict: PASS
+- **Both hotfix goals hold**, including the failure path:
+  - the boot seed never reaches Firestore;
+  - nothing syncs before the real data is loaded, even when the first load fails;
+  - writes resume once the store is loaded;
+  - an empty Firestore is still seeded.
+- **H-2 is closed** by HF-01…HF-03.
+- **H-1 and H-3 stay open** as Minors for the first patch.
+- **No regression in the existing suites.**

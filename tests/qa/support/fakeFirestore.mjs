@@ -2,10 +2,16 @@
 // Every write is recorded in `writes` so tests can assert what (if anything)
 // a cold start pushed to "production" Firestore.
 export class FakeFirestore {
-  constructor(seed = {}, { loadDelayMs = 0 } = {}) {
+  // failReads: the first n collection reads (get) throw `failMessage`, like a
+  // Firestore DEADLINE_EXCEEDED on a throttled cold start. The append-only
+  // securityAuditLogs reads are not counted, so the store load is what fails.
+  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded' } = {}) {
     this.data = new Map();
     this.writes = [];
     this.loadDelayMs = loadDelayMs;
+    this.failReadsLeft = failReads;
+    this.failMessage = failMessage;
+    this.readFailures = 0;
     for (const [name, docs] of Object.entries(seed)) {
       this.data.set(name, new Map(docs.map((d) => [String(d.id), structuredClone(d)])));
     }
@@ -27,6 +33,10 @@ export class FakeFirestore {
       where() { return query; },
       async get() {
         if (fs.loadDelayMs) await new Promise((r) => setTimeout(r, fs.loadDelayMs));
+        if (fs.failReadsLeft > 0 && name !== 'securityAuditLogs') {
+          fs.failReadsLeft--; fs.readFailures++;
+          const err = new Error(fs.failMessage); err.code = 4; throw err;
+        }
         const docs = [...fs._coll(name).values()].map((v) => ({ id: v.id, data: () => structuredClone(v), ref: { _c: name, _id: v.id } }));
         return { docs, empty: docs.length === 0, size: docs.length };
       },

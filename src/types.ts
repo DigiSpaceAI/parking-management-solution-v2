@@ -345,7 +345,8 @@ export type ApiErrorCode =
   | 'ERR_VIEW_AS_READ_ONLY'
   | 'ERR_MASTER_ONLY'
   | 'ERR_SESSION_EXPIRED'
-  | 'ERR_ACCOUNT_INACTIVE';
+  | 'ERR_ACCOUNT_INACTIVE'
+  | 'ERR_STARTING';
 
 export interface SecurityComplianceSummary {
   encryptionAtRest: boolean;

@@ -8,6 +8,7 @@ import {
   getStore,
   saveDB,
   bootstrapFirestore,
+  isStoreReady,
   rotateKnownDefaultPasswords,
   DEFAULT_SITE_ID,
   processVehicleEntry,
@@ -189,6 +190,18 @@ app.use('/api', (req, res, next) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.setHeader('Surrogate-Control', 'no-store');
+  next();
+});
+
+// HOTFIX (2 Oct): until the store has loaded from Firestore, the API answers
+// 503 ERR_STARTING instead of serving (and possibly writing) the boot-time
+// seed store. /health stays up for Cloud Run and reports `ready`.
+app.use((req, res, next) => {
+  const isApi = (req.path.startsWith('/api/v1/') && req.path !== '/api/v1/health') || req.path === '/login';
+  if (isApi && !isStoreReady()) {
+    res.setHeader('Retry-After', '5');
+    return sendApiError(res, 503, 'ERR_STARTING', 'ParkFlows is starting up. Try again in a moment.');
+  }
   next();
 });
 
@@ -601,6 +614,7 @@ app.get('/api/v1/health', (req, res) => {
     occupiedSlots: occupiedCount,
     vacantSlots: store.slots.length - occupiedCount,
     activeEmployees: store.employees.length,
+    ready: isStoreReady(),
     timestamp: new Date().toISOString(),
   });
 });

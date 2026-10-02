@@ -913,7 +913,25 @@ function generate1080Inventory(): StoreData {
 }
 
 // Ensure database file exists or generate fresh with absolute preservation of existing data
+// HOTFIX (2 Oct, 08 P2-3): the store is "ready" only once the real data is
+// in memory. With Firestore configured that is after bootstrapFirestore() has
+// loaded it (or seeded an empty project); without Firestore, right after
+// initDB(). Until then NO Firestore sync (full or targeted) runs, and the API
+// answers 503 ERR_STARTING (server.ts), so the boot-time seed can never
+// overwrite production data and nobody is served an almost-empty store.
+let storeReady = false;
+let storeInitialized = false;
+export function isStoreReady(): boolean {
+  return storeReady;
+}
+
+const BOOTSTRAP_RETRY_MIN_MS = 10_000;
+const BOOTSTRAP_RETRY_MAX_MS = 60_000;
+let bootstrapRetryMs = BOOTSTRAP_RETRY_MIN_MS;
+
 export function initDB(): StoreData {
+  storeInitialized = true;
+  storeReady = !isFirestoreConfigured();
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1373,23 +1391,34 @@ export function rotateKnownDefaultPasswords(): void {
 
 export async function bootstrapFirestore(): Promise<void> {
   const db = getFirestoreDb();
-  if (!db) return;
+  if (!db) {
+    // Firestore unavailable this run (not configured, or disabled after a
+    // fatal config error): nothing can be written to it, so the local store
+    // is all there is.
+    storeReady = true;
+    return;
+  }
 
   const { data: remote, failed } = await loadStoreFromFirestore();
   if (remote) {
     store = remote;
+    storeReady = true;
     console.log('[firestore] Loaded existing data from Firestore.');
     rotateKnownDefaultPasswords();
   } else if (failed) {
-    // Loading genuinely failed (quota, timeout, network) — do NOT
-    // reseed. Keep running on whatever's already in the in-memory
-    // local store and let the next natural write cycle sync normally,
-    // rather than hammering an already-struggling Firestore with a
-    // full reseed write right now.
-    console.warn('[firestore] Load failed (see error above) — continuing with local store in memory, NOT reseeding, to avoid making quota pressure worse.');
+    // Loading genuinely failed (quota, timeout, network): do NOT reseed,
+    // and do NOT go "ready" on the boot-time seed store (a later sync of it
+    // would overwrite real data). Stay at 503 and retry with backoff.
+    const wait = bootstrapRetryMs;
+    bootstrapRetryMs = Math.min(bootstrapRetryMs * 2, BOOTSTRAP_RETRY_MAX_MS);
+    console.warn(`[firestore] Load failed (see error above) — NOT reseeding; API stays at 503 ERR_STARTING; retrying in ${wait / 1000}s.`);
+    setTimeout(() => {
+      bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
+    }, wait).unref?.();
   } else {
     console.log('[firestore] No existing data found — seeding Firestore from local store.');
     await syncStoreToFirestore(store);
+    storeReady = true;
   }
 }
 
@@ -1503,6 +1532,7 @@ function scheduleDebouncedFullSync() {
   if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
   fullSyncDebounceTimer = setTimeout(() => {
     fullSyncDebounceTimer = null;
+    if (!storeReady) return; // never sync the boot-time seed (hotfix 2 Oct)
     void syncStoreToFirestore(store);
   }, FULL_SYNC_DEBOUNCE_MS);
 }
@@ -1516,6 +1546,13 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
     fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2));
   } catch (err) {
     console.error('Error saving PMS database:', err);
+  }
+
+  // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
+  // loaded. The local JSON copy above is still written.
+  if (!storeReady) {
+    console.warn('[firestore] Store not loaded yet — Firestore sync skipped (local copy only).');
+    return;
   }
 
   if (targetedSync && targetedSync.length > 0) {
@@ -1614,7 +1651,11 @@ export async function clearHistoricalRecords(
 }
 
 export function getStore(): StoreData {
-  if (store.slots.length === 0) {
+  // Hotfix (2 Oct): initialise once only. This used to re-run initDB()
+  // whenever the store had no slots, which threw away a loaded production
+  // store with no slots (and, before this hotfix, full-synced the boot seed
+  // over Firestore) and reset storeReady.
+  if (!storeInitialized) {
     initDB();
   }
   return store;

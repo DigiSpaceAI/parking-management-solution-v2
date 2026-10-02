@@ -882,3 +882,47 @@ test('Hotfix-1 an EMPTY Firestore is still seeded by bootstrapFirestore (account
   assert.ok(roles.includes('role-site-manager') && roles.includes('role-master-admin'), 'default roles seeded: ' + JSON.stringify(roles));
   assert.ok(r.writes.some((w) => w.collection === 'appUsers' && w.id === 'usr-digi-master'), 'bootstrap Master seeded');
 });
+
+test('Hotfix-2 no Firestore sync runs before the load finishes, even if something calls saveDB() early', async () => {
+  const r = await runColdStart({ FAKE_LOAD_DELAY_MS: '5000', SAVE_BEFORE_LOAD: '1' });
+  assert.equal(r.writesBeforeLoad, 0, 'a pre-load saveDB() reached Firestore');
+  assert.deepEqual(r.writes.filter((w) => ['appRoles', 'appUsers', 'whitelistedDomains'].includes(w.collection)), []);
+  assert.equal(r.siteManager.modulePermissions.ALERTS.canEdit, false);
+  assert.deepEqual(r.domains.map((d) => d.domain), ['parkflows.in']);
+  assert.equal(r.ready, true, 'ready once loaded');
+});
+
+test('Hotfix-2 until the store is loaded, /api/v1/* answers 503 ERR_STARTING; /health stays 200', async () => {
+  const workDir = mkdtempSync(path.join(tmpdir(), 'pf-cold-'));
+  const port = 4900 + Math.floor(Math.random() * 90);
+  const base = `http://127.0.0.1:${port}`;
+  const env = { ...process.env, PF_REPO: REPO, NODE_ENV: 'production', PORT: String(port), SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
+    K_SERVICE: '', AUDIT_HMAC_SECRET: 'x'.repeat(64), BOOTSTRAP_ADMIN_PASSWORD: PW, FAKE_LOAD_DELAY_MS: '8000', SITE_SCOPE_MODE: '' };
+  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs'), 'server'],
+    { cwd: workDir, env, stdio: 'pipe' });
+  let log = ''; proc.stdout.on('data', (d) => (log += d)); proc.stderr.on('data', (d) => (log += d));
+  try {
+    let health;
+    for (let i = 0; i < 60 && !health; i++) { try { const h = await fetch(base + '/api/v1/health'); if (h.ok) health = await h.json(); } catch {} if (!health) await sleep(250); }
+    assert.ok(health, 'server did not listen:\n' + log.slice(-1500));
+    assert.equal(health.ready, false, '/health reports not ready yet');
+    const early = [
+      ['GET', '/api/v1/slots?siteId=site-alpha'],
+      ['POST', '/api/v1/auth/login'],
+      ['POST', '/login'],
+      ['GET', '/api/v1/domains?siteId=site-alpha'],
+    ];
+    for (const [method, url] of early) {
+      const r = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify({ identifier: MASTER_EMAIL, password: PW }) : undefined });
+      assert.equal(r.status, 503, `${method} ${url}`);
+      assert.equal((await r.json()).errorCode, 'ERR_STARTING', url);
+    }
+    let ready = false;
+    for (let i = 0; i < 80 && !ready; i++) { await sleep(250); ready = (await (await fetch(base + '/api/v1/health')).json()).ready; }
+    assert.ok(ready, 'became ready after the load:\n' + log.slice(-1500));
+    const after = await fetch(base + '/api/v1/slots?siteId=site-alpha');
+    assert.equal(after.status, 401, 'normal answers once loaded');
+    const dom = await fetch(base + '/api/v1/domains?siteId=site-alpha');
+    assert.deepEqual((await dom.json()).domains.map((d) => d.domain), ['parkflows.in'], 'loaded production data is served (no company.com)');
+  } finally { proc.kill(); try { rmSync(workDir, { recursive: true, force: true }); } catch {} }
+});

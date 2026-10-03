@@ -1,6 +1,7 @@
 import React from 'react';
 import { ToastProvider } from '../components';
 import { ButtonsSection, FieldsSection, ChipsSection, FeedbackSection } from './sections14';
+import { CardsSection, NavigationSection, TableSection, SlotsSection } from './sections57';
 
 /**
  * The /design-system preview (002 tech design): every component in every state,
@@ -21,6 +22,10 @@ export const DesignSystemPreview: React.FC = () => (
       <FieldsSection />
       <ChipsSection />
       <FeedbackSection />
+      <CardsSection />
+      <NavigationSection />
+      <TableSection />
+      <SlotsSection />
     </div>
   </ToastProvider>
 );

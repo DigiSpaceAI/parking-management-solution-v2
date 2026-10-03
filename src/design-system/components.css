@@ -332,8 +332,8 @@
     transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard); }
   .pf-level-btn small { font: var(--type-small); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   .pf-level-btn:hover { border-color: var(--ink); }
-  .pf-level-btn[aria-selected="true"] { background: var(--navy-600); border-color: var(--navy-600); color: var(--on-navy); }
-  .pf-level-btn[aria-selected="true"] small { color: var(--navy-100); }
+  .pf-level-btn[aria-selected="true"], .pf-level-btn[aria-checked="true"] { background: var(--navy-600); border-color: var(--navy-600); color: var(--on-navy); }
+  .pf-level-btn[aria-selected="true"] small, .pf-level-btn[aria-checked="true"] small { color: var(--navy-100); }
   .pf-level-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
   /* Bulk-action bar (an info banner with actions) */
@@ -372,9 +372,9 @@
   .pf-toast-region { position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--space-2); max-width: calc(100% - var(--space-8)); }
   .pf-toast[data-entering="true"] { animation: pf-fade-in var(--duration-base) var(--ease-standard); }
   .pf-toast .pf-toast-close svg { color: var(--on-navy); }
-  .pf-toast-close { margin-left: var(--space-2); color: inherit; background: none; border: 0; cursor: pointer; padding: 0; display: inline-flex; border-radius: var(--radius-sm); }
+  .pf-toast-close { margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) var(--space-2); width: var(--control-sm); height: var(--control-sm); flex: none; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); }
   .pf-toast-close:focus-visible, .pf-toast-action:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
-  .pf-banner-close { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer; color: var(--text-secondary); display: inline-flex; border-radius: var(--radius-sm); }
+  .pf-banner-close { margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) auto; width: var(--control-sm); height: var(--control-sm); flex: none; background: none; border: 0; padding: 0; cursor: pointer; color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); }
   .pf-banner-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .pf-banner-title { font: var(--type-body-strong); }
 
@@ -403,7 +403,7 @@
   }
   .pf-table-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); border-bottom: 1px solid var(--line-100); cursor: pointer; }
   .pf-table-card:last-child { border-bottom: 0; }
-  .pf-table-card[aria-selected="true"] { background: var(--navy-50); }
+  .pf-table-card[data-selected="true"] { background: var(--navy-50); }
   .pf-table-card:focus-visible { outline: none; box-shadow: inset var(--focus-ring); }
   .pf-table-card dl { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: var(--space-1) var(--space-3); margin: 0; }
   .pf-table-card dt { color: var(--text-secondary); font: var(--type-small); }
@@ -441,4 +441,25 @@
   .pf-preview-section > h2 { margin: 0; font: var(--type-title-2); }
   .pf-preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-4); }
   .pf-preview-label { font: var(--type-caption); color: var(--text-muted); }
+
+  /* Card head, KPI card, chart wrapper (002 T5) */
+  .pf-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
+  .pf-card-head-actions { display: flex; gap: var(--space-2); }
+  .pf-card--kpi { padding: var(--space-5) var(--space-6); }
+  @media (max-width: 767.98px) { .pf-card { padding: var(--space-4); } .pf-card--kpi { padding: var(--space-4); } }
+  .pf-bars-scroll { overflow-x: auto; }
+  .pf-bars-figure { margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+  .pf-bars-figure figcaption { font: var(--type-small); color: var(--text-muted); }
+  .pf-pager-ellipsis { min-width: var(--control-sm); text-align: center; color: var(--text-muted); }
+  .pf-slot-since-none { color: var(--text-muted); }
+  .pf-panel-close { margin-left: auto; }
+
+  /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
+  @media (pointer: coarse), (max-width: 767.98px) {
+    .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn { height: auto; min-height: var(--touch-min); }
+    .pf-icon-btn { width: var(--touch-min); height: var(--touch-min); }
+    .pf-pager-ellipsis { min-width: var(--touch-min); }
+    .pf-page { min-width: var(--touch-min); height: var(--touch-min); }
+    .pf-toast-close, .pf-banner-close { width: var(--touch-min); height: var(--touch-min); }
+  }
 }

@@ -371,6 +371,7 @@
   /* Toast region (one per app): bottom-right, above everything */
   .pf-toast-region { position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--space-2); max-width: calc(100% - var(--space-8)); }
   .pf-toast[data-entering="true"] { animation: pf-fade-in var(--duration-base) var(--ease-standard); }
+  .pf-toast .pf-toast-close svg { color: var(--on-navy); }
   .pf-toast-close { margin-left: var(--space-2); color: inherit; background: none; border: 0; cursor: pointer; padding: 0; display: inline-flex; border-radius: var(--radius-sm); }
   .pf-toast-close:focus-visible, .pf-toast-action:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
   .pf-banner-close { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer; color: var(--text-secondary); display: inline-flex; border-radius: var(--radius-sm); }

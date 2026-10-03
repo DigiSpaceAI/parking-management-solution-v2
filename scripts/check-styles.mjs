@@ -83,6 +83,7 @@ export function checkText(file, text) {
   const add = (idx, msg) => problems.push(`${file}:${lineOf(t, idx)}  ${msg}`);
   if (ext === '.tsx' || ext === '.ts' || ext === '.js' || ext === '.mjs') for (const p of inlineStyleProblems(t)) add(p.idx, p.msg);
   if (ext === '.html') for (const m of t.matchAll(/\sstyle\s*=\s*["']/g)) add(m.index, 'inline style attribute in HTML');
+  if (ext === '.tsx' || ext === '.jsx') for (const m of t.matchAll(/\bstyle=\{(?!\{)/g)) add(m.index, 'style={…} must be the literal { \'--pf-…\': value } form so it can be checked');
   if (ext === '.tsx' || ext === '.html') {
     // React's `style` objects are caught above; this catches `.style.x = …` in scripts.
   }
@@ -113,6 +114,7 @@ function selfTest() {
     ['x/Bad.tsx', 'export const A = () => <div style={{ color: "red" }} />;', /inline style/],
     ['x/Bad.tsx', 'export const A = () => <div style={{ "--pf-w": "40%", width: 3 }} />;', /inline style/],
     ['x/Ok.tsx', 'export const A = () => <div style={{ "--pf-w": "40%" } as React.CSSProperties} />;', null],
+    ['x/Bad.tsx', 'const a = <p style={cond ? { color: "red" } : undefined} />;', /must be the literal/],
     ['x/Bad.tsx', 'const a = <p className="text-rose-600" />;', /non-token colour class/],
     ['x/Bad.tsx', 'const a = <p className="bg-white" />;', /non-token colour class/],
     ['x/Ok.tsx', 'const a = <p className="bg-navy-600 text-success-700 p-4 text-title-1" />;', null],

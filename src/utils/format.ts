@@ -72,25 +72,35 @@ function groupIndian(intDigits: string): string {
   return `${rest},${last3}`;
 }
 
-/** Whole numbers and decimals with Indian grouping: 1080 → "1,080", 100000 → "1,00,000". */
+/** Above this, toFixed() switches to exponent notation ("1e+21"), which can't be grouped. */
+const MAX_GROUPABLE = 1e21;
+
+/** True when `digits` (as printed) is all zeros, e.g. "0" or "0.00": a value that rounds to zero has no sign. */
+const isZero = (digits: string) => !/[1-9]/.test(digits);
+
+/**
+ * Whole numbers and decimals with Indian grouping: 1080 → "1,080", 100000 → "1,00,000".
+ * The sign is decided after rounding, so −0.4 → "0" (not "−0"). Non-finite or ≥ 1e21 → "—".
+ */
 export function formatNumber(value: number, fractionDigits = 0): string {
-  if (!Number.isFinite(value)) return '—';
-  const negative = value < 0;
+  if (!Number.isFinite(value) || Math.abs(value) >= MAX_GROUPABLE) return '—';
   const fixed = Math.abs(value).toFixed(fractionDigits);
   const [int, frac] = fixed.split('.');
+  const negative = value < 0 && !isZero(fixed);
   return `${negative ? '−' : ''}${groupIndian(int)}${frac ? `.${frac}` : ''}`;
 }
 
 /**
  * Rupees with Indian grouping: 177000 → "₹1,77,000". Paise are shown only when
  * the amount has them (or `paise: true` forces two decimals): 1499.5 → "₹1,499.50".
+ * An amount that rounds to zero has no sign (−0.001 → "₹0").
  */
 export function formatINR(value: number, options: { paise?: boolean } = {}): string {
-  if (!Number.isFinite(value)) return '—';
+  if (!Number.isFinite(value) || Math.abs(value) >= MAX_GROUPABLE) return '—';
   const hasPaise = Math.round(Math.abs(value) * 100) % 100 !== 0;
   const digits = options.paise || hasPaise ? 2 : 0;
   const n = formatNumber(Math.abs(value), digits);
-  return `${value < 0 ? '−' : ''}₹${n}`;
+  return `${value < 0 && !isZero(n) ? '−' : ''}₹${n}`;
 }
 
 /**

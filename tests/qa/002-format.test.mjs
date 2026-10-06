@@ -40,6 +40,19 @@ test('rupees and numbers use Indian digit grouping', () => {
   assert.equal(formatNumber(NaN), '—');
 });
 
+test('values that round to zero have no sign, and huge values show a dash (05 m-5)', () => {
+  assert.equal(formatNumber(-0.4), '0');
+  assert.equal(formatNumber(-0.004, 2), '0.00');
+  assert.equal(formatNumber(-0.6), '−1');
+  assert.equal(formatINR(-0.001), '₹0');
+  assert.equal(formatINR(-0.004, { paise: true }), '₹0.00');
+  assert.equal(formatINR(-1499.5), '−₹1,499.50');
+  assert.equal(formatNumber(1e21), '—');
+  assert.equal(formatNumber(-1e21), '—');
+  assert.equal(formatINR(1e21), '—');
+  assert.equal(formatNumber(999999999999999), '99,99,99,99,99,99,999');
+});
+
 test('durations read as days+hours, hours+minutes or minutes', () => {
   const m = 60000, h = 60 * m, d = 24 * h;
   assert.equal(formatDuration(7 * d + 22 * h + 15 * m), '7d 22h');

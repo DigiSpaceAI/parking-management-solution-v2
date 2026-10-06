@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en-IN">
+  <head>
+<!-- @partial head -->
+    <title>Book a demo — ParkFlows</title>
+    <meta name="description" content="Tell us about your site and we'll contact you within one working day to set up a ParkFlows demo." />
+    <link rel="canonical" href="https://parkflows.in/demo/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ParkFlows" />
+    <meta property="og:title" content="Book a ParkFlows demo" />
+    <meta property="og:description" content="Tell us about your site and we'll contact you within one working day." />
+    <meta property="og:url" content="https://parkflows.in/demo/" />
+    <meta property="og:image" content="https://parkflows.in/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="module" src="./demo.js"></script>
+  </head>
+  <body>
+<!-- @partial header -->
+    <main id="main" class="mk-section">
+      <div class="mk-container mk-page">
+        <div>
+          <div class="mk-page-head">
+            <h1 class="mk-h2">Book a demo</h1>
+            <p class="mk-lead">Tell us about your site. We'll contact you within one working day to arrange a demo with your own site's layout.</p>
+          </div>
+
+          <noscript>
+            <div class="pf-banner pf-banner--info mk-noscript" role="status">
+              <div class="pf-stack"><p class="pf-banner-title">This form needs JavaScript</p>
+              <p>Email <a href="mailto:sales@parkflows.in?subject=Demo%20request">sales@parkflows.in</a> or call <a href="tel:+919820603518">+91 98206 03518</a> instead.</p></div>
+            </div>
+          </noscript>
+
+          <div class="pf-banner pf-banner--danger mk-form-alert" id="form-error" role="alert" tabindex="-1" hidden>
+            <i data-icon="circle-alert"></i>
+            <div class="pf-stack">
+              <p class="pf-banner-title" id="form-error-title">We couldn't send your request</p>
+              <p id="form-error-text">Please email <a id="form-error-mail" href="mailto:sales@parkflows.in?subject=Demo%20request">sales@parkflows.in</a> or call <a href="tel:+919820603518">+91 98206 03518</a>, or try again in a few minutes.</p>
+            </div>
+          </div>
+
+          <div class="mk-success mk-form-alert" id="form-success" tabindex="-1" hidden>
+            <div class="pf-banner pf-banner--success" role="status">
+              <i data-icon="circle-check"></i>
+              <div class="pf-stack"><p class="pf-banner-title">Thanks — we'll contact you within one working day.</p></div>
+            </div>
+            <a class="pf-btn pf-btn--secondary" href="/">Back to the home page</a>
+          </div>
+
+          <form class="mk-form" id="demo-form" novalidate aria-describedby="form-required-note">
+            <p class="pf-field-help" id="form-required-note">All fields are required unless marked optional.</p>
+            <div class="mk-form-grid">
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-name">Your name</label>
+                <input class="pf-input" id="f-name" name="name" type="text" autocomplete="name" required minlength="2" maxlength="80" aria-describedby="f-name-err" />
+                <p class="pf-field-error" id="f-name-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-company">Company</label>
+                <input class="pf-input" id="f-company" name="company" type="text" autocomplete="organization" required minlength="2" maxlength="120" aria-describedby="f-company-err" />
+                <p class="pf-field-error" id="f-company-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-email">Work email</label>
+                <input class="pf-input" id="f-email" name="workEmail" type="email" autocomplete="email" inputmode="email" required maxlength="200" aria-describedby="f-email-err" />
+                <p class="pf-field-error" id="f-email-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-phone">Phone</label>
+                <input class="pf-input" id="f-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" required maxlength="20" aria-describedby="f-phone-help f-phone-err" />
+                <p class="pf-field-help" id="f-phone-help">A 10-digit Indian number, with or without +91.</p>
+                <p class="pf-field-error" id="f-phone-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-city">City</label>
+                <input class="pf-input" id="f-city" name="city" type="text" autocomplete="address-level2" required maxlength="80" aria-describedby="f-city-err" />
+                <p class="pf-field-error" id="f-city-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-facility">Facility type</label>
+                <div class="pf-select-wrap">
+                  <select class="pf-select" id="f-facility" name="facilityType" required aria-describedby="f-facility-err">
+                    <option value="">Choose a type</option>
+                    <option>Office park</option>
+                    <option>Tech campus</option>
+                    <option>Mall</option>
+                    <option>Hospital</option>
+                    <option>Residential</option>
+                    <option>Other</option>
+                  </select>
+                </div>
+                <p class="pf-field-error" id="f-facility-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-slots">Parking slots, roughly <span class="mk-optional">(optional)</span></label>
+                <input class="pf-input" id="f-slots" name="slotsApprox" type="text" inputmode="numeric" autocomplete="off" maxlength="9" aria-describedby="f-slots-err" />
+                <p class="pf-field-error" id="f-slots-err" hidden></p>
+              </div>
+              <div class="pf-field">
+                <label class="pf-field-label" for="f-sites">Number of sites <span class="mk-optional">(optional)</span></label>
+                <input class="pf-input" id="f-sites" name="sitesApprox" type="text" inputmode="numeric" autocomplete="off" maxlength="9" aria-describedby="f-sites-err" />
+                <p class="pf-field-error" id="f-sites-err" hidden></p>
+              </div>
+            </div>
+
+            <fieldset class="mk-fieldset" aria-describedby="f-contact-err">
+              <legend class="pf-field-label">How should we contact you?</legend>
+              <div class="mk-radios">
+                <label class="pf-check pf-check--radio"><input type="radio" name="preferredContact" value="Email" checked /><span class="pf-check-box" aria-hidden="true"></span><span>Email</span></label>
+                <label class="pf-check pf-check--radio"><input type="radio" name="preferredContact" value="Phone" /><span class="pf-check-box" aria-hidden="true"></span><span>Phone</span></label>
+              </div>
+              <p class="pf-field-error" id="f-contact-err" hidden></p>
+            </fieldset>
+
+            <div class="pf-field">
+              <label class="pf-field-label" for="f-message">Anything we should know? <span class="mk-optional">(optional)</span></label>
+              <textarea class="pf-input mk-textarea" id="f-message" name="message" rows="4" aria-describedby="f-message-count f-message-err"></textarea>
+              <p class="mk-counter" id="f-message-count" aria-live="polite">0 / 1,000 characters</p>
+              <p class="pf-field-error" id="f-message-err" hidden></p>
+            </div>
+
+            <div class="mk-honeypot" aria-hidden="true">
+              <label for="f-website">Website</label>
+              <input id="f-website" name="website" type="text" tabindex="-1" autocomplete="off" />
+            </div>
+
+            <div class="pf-field">
+              <label class="pf-check">
+                <input type="checkbox" id="f-consent" name="consent" required aria-describedby="f-consent-err" />
+                <span class="pf-check-box" aria-hidden="true"><i data-icon="check"></i></span>
+                <span>I agree that ParkFlows may contact me about a demo. We keep these details for up to 12 months. <a href="/privacy/">Read the privacy note</a>.</span>
+              </label>
+              <p class="pf-field-error" id="f-consent-err" hidden></p>
+            </div>
+
+            <div class="mk-form-actions">
+              <button class="pf-btn pf-btn--primary pf-btn--lg" id="f-submit" type="submit">Send request</button>
+            </div>
+          </form>
+        </div>
+
+        <aside class="mk-aside" aria-label="Other ways to reach us">
+          <div class="pf-card">
+            <h2 class="mk-h3">Prefer to write or call?</h2>
+            <a href="mailto:sales@parkflows.in"><i data-icon="mail"></i>sales@parkflows.in</a>
+            <a href="tel:+919820603518"><i data-icon="phone"></i>+91 98206 03518</a>
+          </div>
+          <div class="pf-card">
+            <h2 class="mk-h3">What happens next</h2>
+            <p class="mk-text">We contact you the way you choose, ask about your site's layout, and show you ParkFlows with it.</p>
+          </div>
+        </aside>
+      </div>
+    </main>
+<!-- @partial footer -->
+  </body>
+</html>

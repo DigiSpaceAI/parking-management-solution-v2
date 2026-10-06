@@ -13,7 +13,8 @@
     "lint": "tsc --noEmit",
     "test:qa": "node --test tests/qa/*.test.mjs",
     "tokens": "node scripts/build-tokens.mjs",
-    "lint:styles": "node scripts/check-styles.mjs --self-test && node scripts/check-styles.mjs"
+    "lint:styles": "node scripts/check-styles.mjs --self-test && node scripts/check-styles.mjs",
+    "build:marketing": "vite build --config marketing/vite.config.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

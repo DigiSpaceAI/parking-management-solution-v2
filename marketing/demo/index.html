@@ -123,8 +123,10 @@
             </div>
 
             <div class="mk-honeypot" aria-hidden="true">
-              <label for="f-website">Website</label>
-              <input id="f-website" name="website" type="text" tabindex="-1" autocomplete="off" />
+              <!-- Honeypot (05 m-6): a name and label that browser autofill and password managers don't recognise,
+                   so a real person's request is never silently dropped. B6 must read the same field name. -->
+              <label for="f-hp">Leave this empty</label>
+              <input id="f-hp" name="pf_hp_field" type="text" tabindex="-1" autocomplete="off" data-lpignore="true" data-1p-ignore />
             </div>
 
             <div class="pf-field">

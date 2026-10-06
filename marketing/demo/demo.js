@@ -112,7 +112,7 @@ function payload() {
     preferredContact: form.elements.namedItem('preferredContact').value,
     message: message.value.trim() || undefined,
     consent: true,
-    website: form.elements.namedItem('website').value, // honeypot: people leave it empty
+    pf_hp_field: form.elements.namedItem('pf_hp_field').value, // honeypot: people leave it empty (B6 reads this name; 05 m-6)
   };
 }
 

@@ -147,6 +147,10 @@ function updateCounter() {
 }
 
 if (form) {
+  // The markup ships the form hidden and without `novalidate` (05 M-1). Only now that this script owns
+  // submit do we switch native validation off (we show our own messages) and reveal the form.
+  form.noValidate = true;
+  form.hidden = false;
   message.addEventListener('input', updateCounter);
   updateCounter();
 

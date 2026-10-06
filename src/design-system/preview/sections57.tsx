@@ -9,6 +9,9 @@ import { Section, Labeled } from './sections14';
 import { formatDate, formatTime } from '../../utils/format';
 
 /** Sections for components 5–7 (002 T5). Example values only. */
+
+/** Two hours ago, so the preview always shows one "In since" that is today (time only) next to older ones (date + time). */
+const TODAY_EARLIER = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
 export const CardsSection: React.FC = () => (
   <Section title="Cards and KPIs">
     <div className="pf-preview-grid">
@@ -136,7 +139,7 @@ export const SlotsSection: React.FC = () => (
     <span className="pf-preview-label">Compact pallet variant (puzzle view)</span>
     <div className="pf-slot-grid">
         <SlotCard compact code="B2-P03-S3" status="VACANT" decode="Puzzle 03 · Pallet 3" slotType="SEDAN" level={3} heightM={1.6} lengthM={5} />
-        <SlotCard compact code="B2-P03-S2" status="OCCUPIED" decode="Puzzle 03 · Pallet 2" slotType="SEDAN" level={2} plate="KA51Z9988" inSince="2026-10-03T02:05:00Z" heightM={1.6} lengthM={5} onMarkExit={() => undefined} />
+        <SlotCard compact code="B2-P03-S2" status="OCCUPIED" decode="Puzzle 03 · Pallet 2" slotType="SEDAN" level={2} plate="KA51Z9988" inSince={TODAY_EARLIER} heightM={1.6} lengthM={5} onMarkExit={() => undefined} />
     </div>
     <div className="pf-table-wrap">
       <table className="pf-table">

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  formatDate, formatTime, formatDateTime, formatINR, formatNumber, formatDuration,
+  formatDate, formatTime, formatDateTime, formatSince, formatINR, formatNumber, formatDuration,
   formatAgo, formatPlate, enumLabel, statusTone,
 } from '../../src/utils/format.ts';
 
@@ -51,6 +51,15 @@ test('values that round to zero have no sign, and huge values show a dash (05 m-
   assert.equal(formatNumber(-1e21), '—');
   assert.equal(formatINR(1e21), '—');
   assert.equal(formatNumber(999999999999999), '99,99,99,99,99,99,999');
+});
+
+test('"In since" shows the time today (IST) and the date for earlier days (05 m-9)', () => {
+  const now = '2026-10-06T10:00:00Z'; // 15:30 IST, 6 Oct
+  assert.equal(formatSince('2026-10-06T03:44:00Z', now), '09:14');
+  assert.equal(formatSince('2026-10-05T18:31:00Z', now), '00:01'); // just after IST midnight: still today
+  assert.equal(formatSince('2026-10-05T18:29:00Z', now), '5 Oct 2026, 23:59'); // just before: yesterday
+  assert.equal(formatSince('2026-10-03T03:44:00Z', now), '3 Oct 2026, 09:14');
+  assert.equal(formatSince('not a date', now), '—');
 });
 
 test('durations read as days+hours, hours+minutes or minutes', () => {

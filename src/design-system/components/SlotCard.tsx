@@ -1,7 +1,7 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { CircleCheck, CircleX, Clock, Wrench, Zap, MoveVertical, MoveHorizontal } from 'lucide-react';
-import { enumLabel, formatNumber, formatPlate, formatTime } from '../../utils/format';
+import { enumLabel, formatNumber, formatPlate, formatSince } from '../../utils/format';
 import { cx } from './cx';
 import { Icon } from './Icon';
 import { Button } from './Button';
@@ -26,7 +26,7 @@ export interface SlotCardProps {
   ev?: boolean;
   /** Occupied only. */
   plate?: string | null;
-  /** ISO time of the open entry log; missing → "In since —". */
+  /** ISO time of the open entry log: today → "In since 09:14", earlier → "In since 3 Oct 2026, 09:14"; missing → "In since —". */
   inSince?: string | null;
   heightM?: number | null;
   lengthM?: number | null;
@@ -70,7 +70,7 @@ export const SlotCard: React.FC<SlotCardProps> = ({
         {occupied ? (
           <span className="pf-stack">
             <span className="pf-slot-plate">{formatPlate(plate)}</span>
-            <span className="pf-slot-since">In since {inSince ? formatTime(inSince) : '—'}</span>
+            <span className="pf-slot-since">In since {inSince ? formatSince(inSince) : '—'}</span>
           </span>
         ) : null}
         <span className="pf-slot-dims">
@@ -149,7 +149,7 @@ export const SlotRow: React.FC<SlotRowProps> = ({ code, status, slotType, ev, pl
         {occupied ? (
           <span className="pf-stack">
             <span className="pf-plate">{formatPlate(plate)}</span>
-            <span className="pf-slot-since">In since {inSince ? formatTime(inSince) : '—'}</span>
+            <span className="pf-slot-since">In since {inSince ? formatSince(inSince) : '—'}</span>
           </span>
         ) : (
           <span className="pf-slot-since-none">—</span>

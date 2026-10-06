@@ -72,6 +72,17 @@ function groupIndian(intDigits: string): string {
   return `${rest},${last3}`;
 }
 
+/**
+ * "In since …" on a slot (05 round 1, m-9): the time alone when it is today in IST ("09:14"),
+ * otherwise date and time ("3 Oct 2026, 09:14"), so a car parked for days never reads as today.
+ */
+export function formatSince(value: DateInput, now: DateInput = Date.now()): string {
+  const d = toDate(value);
+  const n = toDate(now);
+  if (!d || !n) return '—';
+  return formatDate(d) === formatDate(n) ? formatTime(d) : formatDateTime(d);
+}
+
 /** Above this, toFixed() switches to exponent notation ("1e+21"), which can't be grouped. */
 const MAX_GROUPABLE = 1e21;
 

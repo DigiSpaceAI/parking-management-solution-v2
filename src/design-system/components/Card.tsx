@@ -54,8 +54,9 @@ export const KpiCard: React.FC<KpiCardProps> = ({ label, value, emptyReason, met
           </>
         ) : empty ? (
           <>
-            <span className="pf-kpi-value pf-kpi-value--empty" aria-label="No data">
-              —
+            <span className="pf-kpi-value pf-kpi-value--empty">
+              <span aria-hidden="true">—</span>
+              <span className="pf-sr-only">No data</span>
             </span>
             {emptyReason && <span className="pf-kpi-meta">{emptyReason}</span>}
           </>

@@ -48,8 +48,17 @@ export const CountBadge: React.FC<CountBadgeProps> = ({ count, alert, label, cla
   if (!count) return null;
   const shown = count > 99 ? '99+' : String(count);
   return (
-    <span className={cx('pf-count', alert && 'pf-count--alert', className)} aria-label={label ? `${count} ${label}` : undefined}>
-      {shown}
+    // aria-label on a plain <span> is ignored by most screen readers (05 m-3): the visible "99+" is hidden
+    // from them and the full sentence ("128 pending requests") is real, visually hidden text instead.
+    <span className={cx('pf-count', alert && 'pf-count--alert', className)}>
+      {label ? (
+        <>
+          <span aria-hidden="true">{shown}</span>
+          <span className="pf-sr-only">{`${count} ${label}`}</span>
+        </>
+      ) : (
+        shown
+      )}
     </span>
   );
 };

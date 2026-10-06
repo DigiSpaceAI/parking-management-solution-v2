@@ -38,6 +38,11 @@ export const NavigationSection: React.FC = () => {
       <TabPanel idBase="pv-tabs" id={tab}>
         <p className="pf-state-text">Panel for “{tab}”.</p>
       </TabPanel>
+      <Labeled label="Selection points at a disabled tab: the first enabled tab takes keyboard focus">
+        <Tabs idBase="pv-tabs-fallback" label="Fallback example" value="later" onChange={() => undefined}
+          tabs={[{ id: 'requests', label: 'Requests' }, { id: 'later', label: 'Later', disabled: true }]} />
+        <TabPanel idBase="pv-tabs-fallback" id="later"><p className="pf-state-text">Panel for the disabled selection.</p></TabPanel>
+      </Labeled>
       <Labeled label="Segmented controls">
         <SegmentedControl idBase="pv-view" label="View" value={view} onChange={setView}
           options={[{ id: 'slots', label: 'Live parking slots', count: 1080 }, { id: 'puzzle', label: 'Puzzle wise status', count: 24 }]} />

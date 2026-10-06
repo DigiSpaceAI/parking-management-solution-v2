@@ -33,6 +33,15 @@ function useRovingKeys(items: { id: string; disabled?: boolean }[], onPick: (id:
   return { refs, onKeyDown };
 }
 
+/**
+ * Which item gets tabIndex=0 (05 round 1, m-4): the selected one if it is enabled, otherwise the first
+ * enabled item, so keyboard users can always Tab into the list even when `value` matches nothing or
+ * points at a disabled item.
+ */
+function tabStop(items: { id: string; disabled?: boolean }[], value: string): string | undefined {
+  return items.find((i) => i.id === value && !i.disabled)?.id ?? items.find((i) => !i.disabled)?.id;
+}
+
 export interface TabsProps {
   tabs: TabItem[];
   value: string;
@@ -47,6 +56,7 @@ export interface TabsProps {
 /** Tabs with counts (Requests · Registered · Rejected). Render the panel with <TabPanel>. */
 export const Tabs: React.FC<TabsProps> = ({ tabs, value, onChange, label, idBase, className }) => {
   const { refs, onKeyDown } = useRovingKeys(tabs, onChange);
+  const stop = tabStop(tabs, value);
   return (
     <div className={cx('pf-tabs', className)} role="tablist" aria-label={label}>
       {tabs.map((t) => {
@@ -62,7 +72,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs, value, onChange, label, idBase
             id={`${idBase}-tab-${t.id}`}
             aria-selected={selected}
             aria-controls={`${idBase}-panel-${t.id}`}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={t.id === stop ? 0 : -1}
             disabled={t.disabled}
             className="pf-tab"
             onClick={() => onChange(t.id)}
@@ -92,17 +102,24 @@ export interface SegmentedControlProps {
   label: string;
   idBase: string;
   className?: string;
-  /** Set false when the switcher does not own a <TabPanel> (then aria-controls is left out, so it never points at a missing id). */
+  /**
+   * true (default): the switcher owns <TabPanel>s, so it is a tablist (Live parking slots · Puzzle wise status).
+   * false: it only changes how the same content is shown (Cards | List), so it is a radio group with no panels.
+   */
   hasPanels?: boolean;
 }
 
-/** View switcher: "Live parking slots (n) · Puzzle wise status (n)", "Cards | List". */
+/** View switcher: "Live parking slots (n) · Puzzle wise status (n)" (tabs), "Cards | List" (radio group). */
 export const SegmentedControl: React.FC<SegmentedControlProps> = ({ options, value, onChange, label, idBase, className, hasPanels = true }) => {
   const { refs, onKeyDown } = useRovingKeys(options, onChange);
+  const stop = tabStop(options, value);
   return (
-    <div className={cx('pf-seg', className)} role="tablist" aria-label={label}>
+    <div className={cx('pf-seg', className)} role={hasPanels ? 'tablist' : 'radiogroup'} aria-label={label}>
       {options.map((o) => {
         const selected = o.id === value;
+        const a11y = hasPanels
+          ? { role: 'tab', id: `${idBase}-tab-${o.id}`, 'aria-selected': selected, 'aria-controls': `${idBase}-panel-${o.id}` }
+          : { role: 'radio', 'aria-checked': selected };
         return (
           <button
             key={o.id}
@@ -110,11 +127,8 @@ export const SegmentedControl: React.FC<SegmentedControlProps> = ({ options, val
               refs.current.set(o.id, el);
             }}
             type="button"
-            role="tab"
-            id={`${idBase}-tab-${o.id}`}
-            aria-selected={selected}
-            aria-controls={hasPanels ? `${idBase}-panel-${o.id}` : undefined}
-            tabIndex={selected ? 0 : -1}
+            {...a11y}
+            tabIndex={o.id === stop ? 0 : -1}
             disabled={o.disabled}
             className="pf-seg-btn"
             onClick={() => onChange(o.id)}
@@ -149,6 +163,7 @@ export interface LevelButtonsProps {
 /** Level filter: "All parking · Basement B1 · …" each with "N free / total". One choice (radio group). */
 export const LevelButtons: React.FC<LevelButtonsProps> = ({ levels, value, onChange, label, className }) => {
   const { refs, onKeyDown } = useRovingKeys(levels, onChange);
+  const stop = tabStop(levels, value);
   return (
     <div className={cx('pf-level', className)} role="radiogroup" aria-label={label}>
       {levels.map((l) => {
@@ -162,7 +177,7 @@ export const LevelButtons: React.FC<LevelButtonsProps> = ({ levels, value, onCha
             type="button"
             role="radio"
             aria-checked={checked}
-            tabIndex={checked ? 0 : -1}
+            tabIndex={l.id === stop ? 0 : -1}
             className="pf-level-btn"
             onClick={() => onChange(l.id)}
             onKeyDown={(e) => onKeyDown(e, l.id)}

@@ -322,7 +322,7 @@
     transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard); }
   .pf-seg-btn svg { width: var(--space-4); height: var(--space-4); }
   .pf-seg-btn:hover { color: var(--ink); background: var(--surface-50); }
-  .pf-seg-btn[aria-selected="true"] { background: var(--navy-600); color: var(--on-navy); }
+  .pf-seg-btn[aria-selected="true"], .pf-seg-btn[aria-checked="true"] { background: var(--navy-600); color: var(--on-navy); }
   .pf-seg-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
   /* Level buttons (Live parking: All parking / B1 / B2 … with free / total) — on tokens */

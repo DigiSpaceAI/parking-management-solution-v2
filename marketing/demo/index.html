@@ -22,6 +22,7 @@
     <meta name="twitter:card" content="summary_large_image" />
 <!-- @if demo-form -->
     <script type="module" src="./demo.js"></script>
+    <noscript><style>#demo-form { display: none; }</style></noscript>
 <!-- @endif -->
   </head>
   <body>
@@ -62,10 +63,12 @@
             <a class="pf-btn pf-btn--secondary" href="/">Back to the home page</a>
           </div>
 
-          <!-- Hidden until demo.js has loaded and taken over submit (05 M-1): without JavaScript, or before the
-               module loads, there is no form to submit, so nothing can ever be sent as a GET with the fields in the
-               URL. method="post" is a second guard: a stray native submit never puts personal data in a query string. -->
-          <form class="mk-form" id="demo-form" method="post" hidden aria-describedby="form-required-note">
+          <!-- 05 M-1 + QA BUG-2 (NFR-1): the form is laid out from the start (so revealing it moves nothing, CLS 0)
+               but is invisible and inert — nothing in it can be focused, typed into or submitted — until demo.js
+               has loaded and taken over submit. Without JavaScript the <noscript> rule in <head> removes it
+               entirely, so nothing can ever be sent as a GET with the fields in the URL. method="post" is a second
+               guard: a stray native submit never puts personal data in a query string. -->
+          <form class="mk-form" id="demo-form" method="post" inert data-pending aria-describedby="form-required-note">
             <p class="pf-field-help" id="form-required-note">All fields are required unless marked optional.</p>
             <div class="mk-form-grid">
               <div class="pf-field">

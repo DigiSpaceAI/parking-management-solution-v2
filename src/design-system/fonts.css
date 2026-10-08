@@ -3,6 +3,29 @@
    Only the weights the design system uses. font-display: swap everywhere.
    Sources, versions and checksums: fonts/README.md. */
 
+/* "Sora Fallback" (NFR-1 / QA BUG-2): a local Arial-metric bold scaled to Sora's widths and vertical
+   metrics, used only while Sora is still loading. Headings then wrap the same in both fonts, so the swap
+   moves nothing (CLS). Values computed from sora-600/700-latin.woff2 vs Liberation Sans Bold (metric-
+   compatible with Arial) over the site's heading text; Roboto Bold on Android is a close approximation. */
+@font-face {
+  font-family: "Sora Fallback";
+  font-weight: 700;
+  src: local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("LiberationSans-Bold"), local("Helvetica Bold"), local("Roboto Bold"), local("Roboto-Bold");
+  size-adjust: 106.47%;
+  ascent-override: 91.11%;
+  descent-override: 27.24%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Sora Fallback";
+  font-weight: 600;
+  src: local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("LiberationSans-Bold"), local("Helvetica Bold"), local("Roboto Bold"), local("Roboto-Bold");
+  size-adjust: 105.77%;
+  ascent-override: 91.71%;
+  descent-override: 27.42%;
+  line-gap-override: 0%;
+}
+
 /* Sora: display (headings, KPI numbers). Latin subset made from the OFL release. */
 @font-face {
   font-family: "Sora";

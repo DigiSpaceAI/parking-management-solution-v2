@@ -134,6 +134,8 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: none; bo
 @media (min-width: 1024px) { .mk-page { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; } }
 .mk-page-head { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-6); }
 .mk-form { display: flex; flex-direction: column; gap: var(--space-5); }
+/* Until demo.js takes over: keeps its space (no layout shift on reveal) but is invisible and, with `inert`, unusable (05 M-1, BUG-2). */
+.mk-form[data-pending] { visibility: hidden; }
 .mk-form-grid { display: grid; gap: var(--space-5); }
 @media (min-width: 768px) { .mk-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mk-fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }

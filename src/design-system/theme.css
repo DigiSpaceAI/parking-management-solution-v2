@@ -34,7 +34,7 @@
   --color-neutral-600: var(--color-text-secondary);
   --color-overlay: rgba(18, 33, 63, 0.48);
 
-  --font-display: "Sora", "IBM Plex Sans", system-ui, sans-serif;
+  --font-display: "Sora", "Sora Fallback", "IBM Plex Sans", system-ui, sans-serif;
   --font-text: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 

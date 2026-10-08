@@ -1,0 +1,928 @@
+// Backend API tests — feature 001-parkflows-platform-v1, Phase 1 backend tasks B1–B11
+// (docs/features/001-parkflows-platform-v1/03-tech-design.md). Owner: backend-dev.
+// QA's acceptance suite is 001-platform-v1.api.test.mjs; this file covers the
+// server behaviour each backend task promises (its "Done-when").
+// Runner: node:test + global fetch, no dependencies. Run: npm run test:qa
+// Boots server.ts via tsx in a throw-away dir with Firestore disabled, so it
+// never touches real data.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO = process.env.PF_REPO || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const MASTER_EMAIL = 'digisolutions.fm@gmail.com';
+const PW = 'BackendTestPassword#2026';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function startServer(extraEnv = {}) {
+  const port = 4000 + Math.floor(Math.random() * 900);
+  const workDir = mkdtempSync(path.join(tmpdir(), 'pf-be-'));
+  const env = { ...process.env, NODE_ENV: 'production', PORT: String(port), BOOTSTRAP_ADMIN_PASSWORD: PW,
+    SEED_DEMO_USERS: 'false', FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', GEMINI_API_KEY: '',
+    K_SERVICE: '', SITE_SCOPE_MODE: '', ...extraEnv };
+  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [path.join(REPO, 'server.ts')], { cwd: workDir, env, stdio: 'pipe' });
+  let log = ''; proc.stdout.on('data', (d) => (log += d)); proc.stderr.on('data', (d) => (log += d));
+  let exited = null; proc.on('exit', (c) => (exited = c));
+  const base = `http://127.0.0.1:${port}/api/v1`;
+  for (let i = 0; i < 120; i++) {
+    if (exited !== null) break;
+    try { if ((await fetch(base + '/health')).ok) break; } catch {}
+    await sleep(500);
+  }
+  return { base, proc, workDir, getLog: () => log, exitCode: () => exited,
+    stop: () => { proc.kill(); try { rmSync(workDir, { recursive: true, force: true }); } catch {} } };
+}
+
+let srv;
+const tok = {};
+const F = {};
+
+async function call(who, method, url, { body, site, headers: extra } = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(extra || {}) };
+  if (who) headers['x-session-token'] = typeof who === 'string' && tok[who] ? tok[who] : who;
+  if (site) headers['x-site-id'] = site;
+  const res = await fetch(srv.base + url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const text = await res.text();
+  let json; try { json = JSON.parse(text); } catch { json = text; }
+  return { status: res.status, body: json };
+}
+const get = (who, url, opts) => call(who, 'GET', url, opts);
+const post = (who, url, body, opts = {}) => call(who, 'POST', url, { ...opts, body });
+
+async function login(identifier, password = PW) {
+  const r = await post(null, '/auth/login', { identifier, password });
+  assert.equal(r.status, 200, `login ${identifier}: ${JSON.stringify(r.body)}`);
+  return r.body.token;
+}
+async function mkUser(key, roleId, sites, extra = {}) {
+  await sleep(5);
+  const email = `be.${key.toLowerCase()}@be-parkflows.test`;
+  const r = await post('master', '/rbac/users', {
+    username: `be.${key.toLowerCase()}`, fullName: `BE ${key}`, email, roleId,
+    siteScopeType: 'SPECIFIC_SITES', assignedSiteIds: sites, status: 'ACTIVE', plainPassword: PW, ...extra,
+  });
+  assert.ok(r.body.success, `create user ${key}: ${JSON.stringify(r.body)}`);
+  F[key + 'User'] = r.body.user;
+  tok[key] = await login(email);
+}
+async function onboard(code, name) {
+  await sleep(5);
+  const r = await post('master', '/sites/onboard', { siteName: name, siteCode: code, city: 'Pune', totalSlots: 3,
+    pricing: { hourlyRate: 40, dailyMaxRate: 300, monthlyPassRate: 2500, currency: 'INR', taxPercentage: 18 } });
+  assert.ok(r.body.success, JSON.stringify(r.body));
+  return r.body.site;
+}
+const mkSlots = (site, prefix, n) => Array.from({ length: n }, (_, i) => ({ siteId: site.id, slotNumber: `${prefix}-0${i + 1}`,
+  basement: 'B1', floorLocation: 'Level 1', slotType: 'SEDAN', height: '2.0m', parkingType: 'FLAT', allocation: 'EMPLOYEE', status: 'VACANT' }));
+const onlySite = (rows, siteId) => rows.length > 0 && rows.every((r) => (r.siteId || 'site-default') === siteId);
+async function auditEntries(action) {
+  const r = await get('master', '/security/audit-logs?limit=1000');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  return r.body.logs.filter((l) => l.action === action);
+}
+
+before(async () => {
+  srv = await startServer();
+  tok.master = await login(MASTER_EMAIL);
+  F.A = await onboard('BEA', 'BE Site A');
+  F.B = await onboard('BEB', 'BE Site B');
+  for (const [s, p] of [[F.A, 'A'], [F.B, 'B']]) {
+    const r = await post('master', '/slots/bulk-upload', { slots: mkSlots(s, p, 3) }, { site: s.id });
+    assert.ok(r.body.success, JSON.stringify(r.body));
+  }
+  await mkUser('adminA', 'role-site-manager', [F.A.id]);
+  await mkUser('adminAB', 'role-site-manager', [F.A.id, F.B.id]);
+  await mkUser('attA', 'role-gate-attendant', [F.A.id]);
+  await mkUser('attB', 'role-gate-attendant', [F.B.id]);
+});
+after(() => srv?.stop());
+
+// ---------------------------------------------------------------- B1 / B2
+test('B1 strict: list without a site -> 400 ERR_SITE_REQUIRED (Master and Site Admin)', async () => {
+  for (const who of ['master', 'adminA']) {
+    const r = await get(who, '/slots');
+    assert.equal(r.status, 400, `${who}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.errorCode, 'ERR_SITE_REQUIRED');
+  }
+});
+
+test('B1 strict: ALL is Master-only, and lists only', async () => {
+  const m = await get('master', '/slots?siteId=ALL');
+  assert.equal(m.status, 200);
+  const sites = new Set(m.body.slots.map((s) => s.siteId));
+  assert.ok(sites.has(F.A.id) && sites.has(F.B.id), 'ALL returns every site with siteId on each row');
+  const a = await get('adminAB', '/slots?siteId=ALL');
+  assert.equal(a.status, 400); assert.equal(a.body.errorCode, 'ERR_SITE_ALL_NOT_ALLOWED');
+  const rep = await get('master', '/reports/mix?siteId=ALL');
+  assert.equal(rep.status, 400); assert.equal(rep.body.errorCode, 'ERR_SITE_ALL_NOT_ALLOWED');
+});
+
+test('B1 strict: foreign site -> 403 ERR_SITE_FORBIDDEN and a CROSS_SITE_ACCESS_DENIED audit row with siteId', async () => {
+  const r = await get('adminA', `/slots?siteId=${F.B.id}`);
+  assert.equal(r.status, 403); assert.equal(r.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  const rows = await auditEntries('CROSS_SITE_ACCESS_DENIED');
+  assert.ok(rows.some((l) => l.siteId === F.B.id && l.actor === F.adminAUser.email), 'audit row carries the target siteId');
+});
+
+test('B1 strict: site code is normalised to the site id; header and query both work (query wins)', async () => {
+  const byCode = await get('adminA', '/slots', { site: 'BEA' });
+  assert.equal(byCode.status, 200); assert.ok(onlySite(byCode.body.slots, F.A.id));
+  const both = await get('adminAB', `/slots?siteId=${F.B.id}`, { site: F.A.id });
+  assert.equal(both.status, 200); assert.ok(onlySite(both.body.slots, F.B.id), '?siteId= wins over x-site-id');
+  const unknown = await get('master', '/slots?siteId=no-such-site');
+  assert.equal(unknown.status, 403);
+});
+
+test('B1 fallback: SITE_SCOPE_MODE=fallback restores the legacy first-site behaviour', async () => {
+  const fb = await startServer({ SITE_SCOPE_MODE: 'fallback' });
+  try {
+    const t = (await (await fetch(fb.base + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: MASTER_EMAIL, password: PW }) })).json()).token;
+    const r = await fetch(fb.base + '/slots', { headers: { 'x-session-token': t } });
+    assert.equal(r.status, 200, 'no site -> legacy: every site for a Master Admin');
+    const rep = await fetch(fb.base + '/reports/mix', { headers: { 'x-session-token': t } });
+    assert.equal(rep.status, 200, 'reports fall back to the default site');
+  } finally { fb.stop(); }
+});
+
+test('B2 every scoped list/report route requires a site (400 without one)', async () => {
+  const routes = ['/slots', '/employees', '/logs', '/alerts/non-parked', '/registrations', '/valet/tickets',
+    '/slots/change-notifications', '/invoices', '/export/reports', '/reports/mix', '/reports/violations',
+    '/reports/utilization', '/reports/occupancy-trend', '/reports/peak-hours', '/reports/overnight-requests',
+    '/analytics/prediction'];
+  for (const url of routes) {
+    const r = await get('master', url);
+    assert.equal(r.status, 400, `${url}: ${JSON.stringify(r.body).slice(0, 200)}`);
+    assert.equal(r.body.errorCode, 'ERR_SITE_REQUIRED', url);
+  }
+  const ai = await post('master', '/ai/recommend', { prompt: 'x' });
+  assert.equal(ai.status, 400, '/ai/recommend');
+});
+
+test('B2 lists return only the selected site; Site Admin A never sees Site B rows', async () => {
+  for (const url of ['/slots', '/employees', '/logs', '/alerts/non-parked', '/registrations', '/valet/tickets']) {
+    const r = await get('adminA', url, { site: F.A.id });
+    assert.equal(r.status, 200, url);
+    const rows = r.body.slots || r.body.employees || r.body.logs || r.body.alerts || r.body.requests || r.body.tickets || [];
+    assert.ok(rows.every((x) => (x.siteId || 'site-default') === F.A.id), `${url} leaked another site`);
+  }
+});
+
+test('B2/H1 /logs ignores maskPII & userRole query params; masking follows the server-side role', async () => {
+  const r = await get('attA', '/logs?maskPII=false&userRole=MASTER_ADMIN', { site: F.A.id });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.piiMasked, true, 'attendant stays masked whatever the query says');
+  const m = await get('master', '/logs', { site: F.A.id });
+  assert.equal(m.body.piiMasked, false);
+});
+
+test('B2/H6 change-notifications need FLOOR_PLAN or MOBILE_APP view and are site-scoped', async () => {
+  const r = await get('attA', '/slots/change-notifications', { site: F.A.id });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.notifications.every((n) => (n.siteId || 'site-default') === F.A.id));
+  const f = await get('attA', `/slots/change-notifications?siteId=${F.B.id}`);
+  assert.equal(f.status, 403);
+});
+
+test('B2/L2 slot-daily-vehicles refuses a slot of another site', async () => {
+  const bSlot = (await get('master', '/slots', { site: F.B.id })).body.slots[0];
+  const r = await get('adminAB', `/reports/slot-daily-vehicles?slotId=${bSlot.id}`, { site: F.A.id });
+  assert.equal(r.status, 403);
+  const ok = await get('adminAB', `/reports/slot-daily-vehicles?slotId=${bSlot.id}`, { site: F.B.id });
+  assert.equal(ok.status, 200);
+});
+
+test('B2 prediction is computed from the selected site only', async () => {
+  const r = await get('master', '/analytics/prediction', { site: F.A.id });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.totalSlots, 3, 'Site A has 3 slots');
+});
+
+// ---------------------------------------------------------------- B3
+const slotsAt = async (siteId) => (await get('master', '/slots', { site: siteId })).body.slots;
+
+test('B3/H4 slot save by id of another site -> 403, record unchanged, audit-logged', async () => {
+  const bSlot = (await slotsAt(F.B.id))[0];
+  const r = await post('adminAB', '/slots/save', { slot: { id: bSlot.id, slotNumber: bSlot.slotNumber, siteId: F.A.id, status: 'MAINTENANCE' } }, { site: F.A.id });
+  assert.equal(r.status, 403, JSON.stringify(r.body)); assert.equal(r.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  const after = (await slotsAt(F.B.id)).find((s) => s.id === bSlot.id);
+  assert.equal(after.status, bSlot.status); assert.equal(after.siteId, F.B.id);
+  assert.ok((await auditEntries('CROSS_SITE_ACCESS_DENIED')).some((l) => l.siteId === F.B.id && l.targetResource.includes('/slots/save')));
+});
+
+test('B3/H4 non-Master cannot move a record with body siteId; Master can and it is audit-logged', async () => {
+  const mk = await post('master', '/slots/save', { slot: { slotNumber: 'B-MOVE-1', basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN' } }, { site: F.B.id });
+  assert.equal(mk.status, 200); assert.equal(mk.body.slot.siteId, F.B.id, 'create takes the resolved site');
+  const id = mk.body.slot.id;
+  const na = await post('adminAB', '/slots/save', { slot: { id, slotNumber: 'B-MOVE-1', siteId: F.A.id } }, { site: F.B.id });
+  assert.equal(na.status, 200); assert.equal(na.body.slot.siteId, F.B.id, 'non-Master: stored site wins');
+  const m = await post('master', '/slots/save', { slot: { id, slotNumber: 'B-MOVE-1', siteId: F.A.id } }, { site: F.B.id });
+  assert.equal(m.status, 200); assert.equal(m.body.slot.siteId, F.A.id, 'Master may move');
+  assert.ok((await auditEntries('RECORD_SITE_MOVED')).some((l) => l.targetResource === `slot/${id}` && l.siteId === F.A.id));
+  await post('master', '/slots/delete', { slotId: id }, { site: F.A.id });
+});
+
+test('B3 create in a site other than the selected one is refused', async () => {
+  const r = await post('adminAB', '/slots/save', { slot: { slotNumber: 'X-1', siteId: F.B.id } }, { site: F.A.id });
+  assert.equal(r.status, 403);
+});
+
+test('B3/H4 bulk upload: one foreign row rejects the whole batch and nothing is written', async () => {
+  const bSlot = (await slotsAt(F.B.id))[0];
+  const before = (await slotsAt(F.A.id)).length;
+  const byId = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }, { id: bSlot.id, slotNumber: bSlot.slotNumber }] }, { site: F.A.id });
+  assert.equal(byId.status, 403, JSON.stringify(byId.body));
+  const bySite = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }, { slotNumber: 'A-NEW-2', siteId: F.B.id }] }, { site: F.A.id });
+  assert.equal(bySite.status, 403);
+  assert.equal((await slotsAt(F.A.id)).length, before, 'no row of a refused batch was written');
+  const noSite = await post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }] });
+  assert.equal(noSite.status, 400);
+  const ok = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }] }, { site: F.A.id });
+  assert.equal(ok.status, 200);
+  assert.ok((await slotsAt(F.A.id)).some((s) => s.slotNumber === 'A-NEW-1'), 'rows without siteId get the selected site');
+});
+
+test('B3/H4 employee save by id of another site -> 403 and record unchanged', async () => {
+  const e = await post('master', '/employees/save', { employee: { name: 'B Emp', employeeId: 'BE-B-1', email: 'b.emp@be-b.test', vehicleNumber: 'MH12AB1001', status: 'ACTIVE' } }, { site: F.B.id });
+  assert.equal(e.status, 200, JSON.stringify(e.body)); assert.equal(e.body.employee.siteId, F.B.id);
+  F.empB = e.body.employee;
+  const r = await post('adminAB', '/employees/save', { employee: { id: F.empB.id, name: 'Hijacked', vehicleNumber: 'MH12AB1001' } }, { site: F.A.id });
+  assert.equal(r.status, 403);
+  const bulk = await post('adminAB', '/employees/bulk-upload', { employees: [{ id: F.empB.id, name: 'Hijacked', vehicleNumber: 'MH12AB1001' }] }, { site: F.A.id });
+  assert.equal(bulk.status, 403);
+  const list = (await get('master', '/employees', { site: F.B.id })).body.employees;
+  assert.equal(list.find((x) => x.id === F.empB.id).name, 'B Emp');
+});
+
+test('B3/L3 update-status validates the status and checks the slot site; delete checks the site', async () => {
+  const aSlot = (await slotsAt(F.A.id))[0];
+  const bad = await post('adminA', '/slots/update-status', { slotId: aSlot.id, newStatus: 'HACKED' }, { site: F.A.id });
+  assert.equal(bad.status, 400);
+  const bSlot = (await slotsAt(F.B.id))[0];
+  const foreign = await post('adminAB', '/slots/update-status', { slotId: bSlot.id, newStatus: 'MAINTENANCE' }, { site: F.A.id });
+  assert.equal(foreign.status, 403);
+  const byNumber = await post('adminAB', '/slots/update-status', { slotId: bSlot.slotNumber, newStatus: 'MAINTENANCE' }, { site: F.A.id });
+  assert.equal(byNumber.status, 404, 'slot number is looked up within the selected site only');
+  const del = await post('adminAB', '/slots/delete', { slotId: bSlot.id }, { site: F.A.id });
+  assert.equal(del.status, 403);
+  assert.ok((await slotsAt(F.B.id)).some((s) => s.id === bSlot.id && s.status === bSlot.status));
+});
+
+test('B3 approve / reject / registration bulk of another site -> 403', async () => {
+  const sub = await post(null, '/registrations/submit', { name: 'Reg B', email: 'reg.b@company.com', vehicleNumber: 'MH12AB2002', siteId: F.B.id });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  F.regB = sub.body.request;
+  assert.equal((await post('adminAB', '/registrations/approve', { requestId: F.regB.id }, { site: F.A.id })).status, 403);
+  assert.equal((await post('adminAB', '/registrations/reject', { requestId: F.regB.id, reason: 'x' }, { site: F.A.id })).status, 403);
+  // Since B17 a bulk row matching another site's request becomes a new request
+  // at the row's own site (see "B17 (3)"); a foreign row siteId is still refused:
+  const bulk = await post('adminAB', '/registrations/bulk-upload', { requests: [{ name: 'Overwrite', email: 'reg.b@company.com', vehicleNumber: 'MH12AB2002', siteId: F.B.id }] }, { site: F.A.id });
+  assert.equal(bulk.status, 403, 'a row carrying another site is refused');
+});
+
+test('B3 valet: status and retrieval never touch another site\'s ticket', async () => {
+  const t = await post('master', '/valet/checkin', { vehicleNumber: 'MH12AB3003', guestName: 'Guest B', guestPhone: '9800011111', keyTagNumber: 'K-777' }, { site: F.B.id });
+  assert.ok(t.body.success, JSON.stringify(t.body)); assert.equal(t.body.ticket.siteId, F.B.id);
+  const st = await post('adminAB', '/valet/status', { ticketId: t.body.ticket.id, status: 'PARKED' }, { site: F.A.id });
+  assert.equal(st.status, 403);
+  const rr = await post('adminAB', '/valet/request-retrieval', { query: 'K-777' }, { site: F.A.id });
+  assert.equal(rr.body.success, false, 'site A query finds no site B ticket');
+  const tickets = (await get('master', '/valet/tickets', { site: F.B.id })).body.tickets;
+  assert.notEqual(tickets.find((x) => x.id === t.body.ticket.id).status, 'RETRIEVAL_REQUESTED');
+});
+
+// ---------------------------------------------------------------- B4
+test('B4/H5 exit and relocation match plates within the selected site only', async () => {
+  const inB = await post('attB', '/vehicles/entry', { vehicleNumber: 'MH12AB4004' }, { site: F.B.id });
+  assert.equal(inB.status, 200, JSON.stringify(inB.body));
+  const exitA = await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB4004' }, { site: F.A.id });
+  assert.equal(exitA.status, 404);
+  assert.ok(!JSON.stringify(exitA.body).includes(inB.body.slot.slotNumber), 'no foreign slot data echoed');
+  const aSlot = (await slotsAt(F.A.id)).find((s) => s.status === 'VACANT');
+  const move = await post('attA', '/slots/change', { vehicleNumberOrSlot: 'MH12AB4004', newSlotNumber: aSlot.slotNumber }, { site: F.A.id });
+  assert.equal(move.status, 400);
+  const still = (await slotsAt(F.B.id)).find((s) => s.id === inB.body.slot.id);
+  assert.equal(still.status, 'OCCUPIED'); assert.equal(still.currentVehicle, 'MH12AB4004');
+  const exitB = await post('attB', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB4004' }, { site: F.B.id });
+  assert.equal(exitB.status, 200);
+});
+
+test('B4/H5 entry: dup check is per site; a plate parked elsewhere enters here, reply hides the other site, audit-logged', async () => {
+  const inB = await post('attB', '/vehicles/entry', { vehicleNumber: 'MH12AB5005' }, { site: F.B.id });
+  assert.equal(inB.status, 200);
+  const inA = await post('attA', '/vehicles/entry', { vehicleNumber: 'MH12AB5005' }, { site: F.A.id });
+  assert.equal(inA.status, 200, JSON.stringify(inA.body));
+  assert.equal(inA.body.slot.siteId, F.A.id);
+  assert.ok(!('activeAtOtherSiteId' in inA.body));
+  assert.ok(!JSON.stringify(inA.body).includes(F.B.id), 'reply never mentions site B');
+  assert.ok((await auditEntries('VEHICLE_ACTIVE_AT_OTHER_SITE')).some((l) => l.siteId === F.A.id && l.targetResource === 'vehicle/MH12AB5005'));
+  const dupA = await post('attA', '/vehicles/entry', { vehicleNumber: 'MH12AB5005' }, { site: F.A.id });
+  assert.equal(dupA.status, 400, 'same-site duplicate is still refused');
+  await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB5005' }, { site: F.A.id });
+  await post('attB', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB5005' }, { site: F.B.id });
+});
+
+test('B4/AC-06 gate employee lookup is per site: site B\'s pass is not an employee at site A', async () => {
+  const inA = await post('attA', '/vehicles/entry', { vehicleNumber: F.empB.vehicleNumber }, { site: F.A.id });
+  assert.equal(inA.status, 200);
+  assert.notEqual(inA.body.log.employeeName, F.empB.name, 'no site B employee data at site A');
+  await post('attA', '/vehicles/exit', { vehicleNumberOrSlot: F.empB.vehicleNumber }, { site: F.A.id });
+});
+
+test('B4/BUG-10 scan-plate never returns a mock plate', async () => {
+  const r = await post('attA', '/vehicles/scan-plate', {}, { site: F.A.id });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.message, 'No plate detected. Type it in.');
+  const img = await post('attA', '/vehicles/scan-plate', { imageBase64: 'data:image/jpeg;base64,AAAA' }, { site: F.A.id });
+  assert.equal(img.status, 400, 'no GEMINI_API_KEY -> type it in, not a random plate');
+  const noSite = await post('attA', '/vehicles/scan-plate', {});
+  assert.equal(noSite.status, 400); assert.equal(noSite.body.errorCode, 'ERR_SITE_REQUIRED');
+});
+
+// ---------------------------------------------------------------- B5
+test('B5/H7 /sites returns only the caller\'s sites, without contact or pricing for non-Master', async () => {
+  const a = await get('adminA', '/sites');
+  assert.equal(a.status, 200);
+  assert.deepEqual(a.body.sites.map((s) => s.id), [F.A.id]);
+  for (const s of a.body.sites) {
+    for (const k of ['contactPerson', 'contactEmail', 'contactPhone', 'pricing']) assert.ok(!(k in s), `${k} stripped`);
+  }
+  const att = await get('attB', '/sites');
+  assert.deepEqual(att.body.sites.map((s) => s.id), [F.B.id]);
+  const m = await get('master', '/sites');
+  assert.ok(m.body.sites.length >= 2 && m.body.sites.every((s) => 'pricing' in s), 'Master keeps the full list and fields');
+  const my = await get('adminAB', '/my-sites');
+  assert.deepEqual(my.body.sites.map((s) => s.id).sort(), [F.A.id, F.B.id].sort());
+});
+
+// ---------------------------------------------------------------- B6
+test('B6 setup: an employee user with a pass at site A', async () => {
+  await mkUser('empA', 'role-gate-attendant', [F.A.id]);
+  const e = await post('master', '/employees/save', { employee: { name: 'Emp A', employeeId: 'BE-A-9', email: F.empAUser.email, vehicleNumber: 'MH12AB6006', status: 'ACTIVE' } }, { site: F.A.id });
+  assert.equal(e.status, 200, JSON.stringify(e.body));
+  F.empA = e.body.employee;
+});
+
+test('B6/H2 profile: own record only for non-admins; `query` is gone; admins pass the site check', async () => {
+  const own = await get('empA', `/employees/profile?email=${encodeURIComponent(F.empAUser.email)}`);
+  assert.equal(own.status, 200); assert.equal(own.body.employee.id, F.empA.id);
+  assert.equal(own.body.employee.vehicleNumber, 'MH12AB6006', 'own record unmasked');
+  assert.equal((await get('empA', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`)).status, 403);
+  assert.equal((await get('empA', `/employees/profile?employeeId=${F.empB.employeeId}`)).status, 403);
+  assert.equal((await get('empA', `/employees/profile?query=${F.empB.vehicleNumber}`)).status, 400, 'query param removed');
+  const cross = await get('adminAB', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`, { site: F.A.id });
+  assert.equal(cross.status, 403, 'admin: record at another site than the selected one');
+  const ok = await get('adminAB', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`, { site: F.B.id });
+  assert.equal(ok.status, 200); assert.equal(ok.body.employee.id, F.empB.id);
+  const other = await get('adminA', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`, { site: F.A.id });
+  assert.equal(other.status, 403);
+});
+
+test('B6/H3 update-vehicle: {email: mine, employeeId: victim} is refused and the victim is unchanged', async () => {
+  const r = await post('empA', '/employees/update-vehicle', { email: F.empAUser.email, employeeId: F.empB.employeeId, vehicleNumber: 'MH12ZZ9999' });
+  assert.equal(r.status, 403, JSON.stringify(r.body));
+  const b = (await get('master', '/employees', { site: F.B.id })).body.employees.find((x) => x.id === F.empB.id);
+  assert.equal(b.vehicleNumber, F.empB.vehicleNumber);
+});
+
+test('B6/H3 update-vehicle: no auto-create; own update works and audits old + new plate', async () => {
+  const before = (await get('master', '/employees?siteId=ALL')).body.total;
+  const none = await post('attB', '/employees/update-vehicle', { vehicleNumber: 'MH12AB7007' });
+  assert.equal(none.status, 404); assert.equal(none.body.message, 'No pass found — register first.');
+  assert.equal((await get('master', '/employees?siteId=ALL')).body.total, before, 'no employee created');
+  const own = await post('empA', '/employees/update-vehicle', { email: F.empAUser.email, employeeId: 'BE-A-9', vehicleNumber: 'MH12AB6116' });
+  assert.equal(own.status, 200, JSON.stringify(own.body)); assert.equal(own.body.employee.vehicleNumber, 'MH12AB6116');
+  const rows = await auditEntries('VEHICLE_UPDATE_SUCCESS');
+  assert.ok(rows.some((l) => l.details.includes('MH12AB6006') && l.details.includes('MH12AB6116') && l.siteId === F.A.id));
+});
+
+// ---------------------------------------------------------------- B7
+test('B7/BUG-12 approval creates the pass in the request\'s site and is audit-logged with siteId', async () => {
+  const sub = await post(null, '/registrations/submit', { name: 'Reg A', email: 'reg.a@company.com', vehicleNumber: 'MH12AB8008', siteId: F.A.id });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  const ap = await post('adminA', '/registrations/approve', { requestId: sub.body.request.id }, { site: F.A.id });
+  assert.equal(ap.status, 200, JSON.stringify(ap.body));
+  assert.equal(ap.body.employee.siteId, F.A.id);
+  assert.ok((await auditEntries('REGISTRATION_APPROVED')).some((l) => l.siteId === F.A.id));
+  const rj = await post('adminAB', '/registrations/reject', { requestId: F.regB.id, reason: 'Not eligible' }, { site: F.B.id });
+  assert.equal(rj.status, 200);
+  assert.ok((await auditEntries('REGISTRATION_REJECTED')).some((l) => l.siteId === F.B.id));
+});
+
+test('B7/H9 public registration never discloses a plate owner', async () => {
+  // Same-site duplicate (B17: the check is per site).
+  const r = await post(null, '/registrations/submit', { name: 'Someone', email: 'someone@company.com', vehicleNumber: F.empB.vehicleNumber, siteId: F.B.id });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.message, "This vehicle can't be registered. Contact your site admin.");
+  assert.ok(!JSON.stringify(r.body).includes(F.empB.name) && !JSON.stringify(r.body).includes(F.empB.employeeId));
+});
+
+test('B7/H9 registration fails closed when no domain is whitelisted', async () => {
+  const s2 = await startServer();
+  try {
+    const j = async (method, url, body, t) => {
+      const r = await fetch(s2.base + url, { method, headers: { 'Content-Type': 'application/json', ...(t ? { 'x-session-token': t } : {}) }, body: body ? JSON.stringify(body) : undefined });
+      return { status: r.status, body: await r.json() };
+    };
+    const t = (await j('POST', '/auth/login', { identifier: MASTER_EMAIL, password: PW })).body.token;
+    for (const d of (await j('GET', '/domains/manage?siteId=ALL', null, t)).body.domains) await j('POST', '/domains/remove', { domainId: d.id }, t);
+    const r = await j('POST', '/registrations/submit', { name: 'X', email: 'x@anything.com', vehicleNumber: 'MH12AB9009' });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.message, "Registration isn't open for this site yet.");
+    // m-1: bulk upload fails closed too.
+    const site = (await j('POST', '/sites/onboard', { siteName: 'Closed', siteCode: 'BECL', city: 'Pune', totalSlots: 1,
+      pricing: { hourlyRate: 1, dailyMaxRate: 1, monthlyPassRate: 1, currency: 'INR', taxPercentage: 0 } }, t)).body.site;
+    const bulkR = await fetch(s2.base + '/registrations/bulk-upload', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': t, 'x-site-id': site.id },
+      body: JSON.stringify({ requests: [{ name: 'Y', email: 'y@anything.com', vehicleNumber: 'MH12AB9010' }] }) });
+    const bulk = await bulkR.json();
+    assert.equal(bulk.added, 0);
+    assert.match(bulk.errors[0], /Registration isn't open for this site yet/);
+  } finally { s2.stop(); }
+});
+
+// ---------------------------------------------------------------- B8
+const FULL = { enabled: true, canCreate: true, canEdit: true, canDelete: true, canExport: true };
+test('B8 setup: a non-Master user at site A with USER_MANAGEMENT', async () => {
+  const r = await post('master', '/rbac/roles', { roleName: 'BE User Admin', roleCode: 'BE_UM', modulePermissions: { HOME: FULL, USER_MANAGEMENT: FULL } });
+  assert.ok(r.body.success, JSON.stringify(r.body));
+  F.umRole = r.body.role;
+  await mkUser('umA', F.umRole.id, [F.A.id]);
+});
+
+test('B8/H8 role edits: own role, built-in roles and privileged rights are Master-only', async () => {
+  const own = await post('umA', '/rbac/roles', { id: F.umRole.id, modulePermissions: { HOME: FULL, USER_MANAGEMENT: FULL, MASTER_CONFIG: FULL } });
+  assert.equal(own.status, 403); assert.equal(own.body.errorCode, 'ERR_MASTER_ONLY');
+  const sys = await post('umA', '/rbac/roles', { id: 'role-gate-attendant', roleName: 'Gate' });
+  assert.equal(sys.status, 403);
+  const priv = await post('umA', '/rbac/roles', { roleName: 'Sneaky', modulePermissions: { SECURITY_AUDIT: { enabled: true } } });
+  assert.equal(priv.status, 403);
+  const roles = (await get('master', '/rbac/roles')).body.roles;
+  assert.equal(roles.find((r) => r.id === F.umRole.id).modulePermissions.MASTER_CONFIG, undefined, 'own role unchanged');
+  // Since round 2 (M-2) every role change is Master-only; see the M-2 test.
+});
+
+test('B8/H8 toggle-module and reset tokens respect the target\'s sites and forbid self', async () => {
+  const self = await post('umA', '/rbac/users/toggle-module', { userId: F.umAUser.id, moduleId: 'MASTER_CONFIG', enabled: true });
+  assert.equal(self.status, 403);
+  const foreign = await post('umA', '/rbac/users/toggle-module', { userId: F.attBUser.id, moduleId: 'LOGS', enabled: false });
+  assert.equal(foreign.status, 403);
+  const priv = await post('umA', '/rbac/users/toggle-module', { userId: F.attAUser.id, moduleId: 'USER_MANAGEMENT', enabled: true });
+  assert.equal(priv.status, 403);
+  const ok = await post('umA', '/rbac/users/toggle-module', { userId: F.attAUser.id, moduleId: 'VALET_SERVICE', enabled: false });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attBUser.id })).status, 403);
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.umAUser.id })).status, 403);
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attAUser.id })).status, 200);
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).length >= 5);
+});
+
+// ---------------------------------------------------------------- B9
+test('B9/AC-52 test tools and audit reads are Master Admin only', async () => {
+  const calls = [
+    ['POST', '/security/simulate-attack', { attackType: 'BOLA_EXPLOIT' }],
+    ['POST', '/admin/clear-history', { collections: ['logs'] }],
+    ['POST', '/admin/migrate-site-data', { fromSiteId: F.A.id, toSiteId: F.B.id }],
+    ['GET', '/security/audit-logs'],
+    ['GET', '/security/compliance-summary'],
+    ['POST', '/security/verify-audit-chain', {}],
+  ];
+  for (const [m, url, body] of calls) {
+    const r = await call('adminA', m, url, { body });
+    assert.equal(r.status, 403, `${m} ${url}`);
+    assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY', url);
+  }
+  assert.equal((await get('master', '/security/audit-logs')).status, 200);
+});
+
+test('B9/M1 security audit logs can no longer be cleared', async () => {
+  const r = await post('master', '/admin/clear-history', { collections: ['securityAuditLogs'] });
+  assert.equal(r.status, 400);
+  assert.ok((await get('master', '/security/audit-logs')).body.logs.length > 0);
+});
+
+// ---------------------------------------------------------------- B10
+test('B10/AC-55 view-as: Master sees exactly what the target sees, read-only, audit actor stays Master', async () => {
+  const va = { 'x-view-as': F.adminAUser.id };
+  const a = await get('master', '/slots', { site: F.A.id, headers: va });
+  assert.equal(a.status, 200); assert.ok(onlySite(a.body.slots, F.A.id));
+  const b = await get('master', `/slots?siteId=${F.B.id}`, { headers: va });
+  assert.equal(b.status, 403, 'scope is the target\'s');
+  const all = await get('master', '/slots?siteId=ALL', { headers: va });
+  assert.equal(all.status, 400, 'ALL is not available to the target');
+  const my = await get('master', '/my-sites', { headers: va });
+  assert.deepEqual(my.body.sites.map((s) => s.id), [F.A.id]);
+  const write = await post('master', '/slots/update-status', { slotId: a.body.slots[0].id, newStatus: 'MAINTENANCE' }, { site: F.A.id, headers: va });
+  assert.equal(write.status, 403); assert.equal(write.body.errorCode, 'ERR_VIEW_AS_READ_ONLY');
+  const denied = (await auditEntries('CROSS_SITE_ACCESS_DENIED')).filter((l) => l.siteId === F.B.id);
+  assert.ok(denied.some((l) => l.actor === MASTER_EMAIL), 'audit actor is the real Master Admin');
+  const att = await get('master', '/logs', { site: F.A.id, headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(att.body.piiMasked, true, 'masking follows the target role');
+  const noPerm = await get('master', '/export/reports', { site: F.A.id, headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(noPerm.status, 403, 'module permissions follow the target role');
+});
+
+test('B10 view-as is refused for non-Masters and unknown users; ignored on /auth', async () => {
+  const r = await get('adminAB', '/slots', { site: F.A.id, headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(r.status, 403); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY');
+  const u = await get('master', '/slots', { site: F.A.id, headers: { 'x-view-as': 'usr-nope' } });
+  assert.equal(u.status, 404);
+  const me = await get('master', '/auth/me', { headers: { 'x-view-as': F.attAUser.id } });
+  assert.equal(me.body.user.email, MASTER_EMAIL);
+});
+
+// ---------------------------------------------------------------- B11
+test('B11 auth errors carry ERR_SESSION_EXPIRED / ERR_ACCOUNT_INACTIVE', async () => {
+  const none = await get(null, '/slots', { site: F.A.id });
+  assert.equal(none.status, 401); assert.equal(none.body.errorCode, 'ERR_SESSION_EXPIRED');
+  const bad = await get('not-a-real-token', '/slots', { site: F.A.id });
+  assert.equal(bad.status, 401); assert.equal(bad.body.errorCode, 'ERR_SESSION_EXPIRED');
+  await mkUser('susp', 'role-gate-attendant', [F.A.id]);
+  const s = await post('master', '/rbac/users', { ...F.suspUser, status: 'SUSPENDED' });
+  assert.ok(s.body.success, JSON.stringify(s.body));
+  const r = await get('susp', '/slots', { site: F.A.id });
+  assert.equal(r.status, 403); assert.equal(r.body.errorCode, 'ERR_ACCOUNT_INACTIVE');
+});
+
+test('B11/M4 logout destroys an x-session-token session', async () => {
+  await mkUser('logoutA', 'role-gate-attendant', [F.A.id]);
+  assert.equal((await get('logoutA', '/slots', { site: F.A.id })).status, 200);
+  assert.equal((await post('logoutA', '/auth/logout', {})).status, 200);
+  const after = await get('logoutA', '/slots', { site: F.A.id });
+  assert.equal(after.status, 401); assert.equal(after.body.errorCode, 'ERR_SESSION_EXPIRED');
+});
+
+test('B11/R4 on Cloud Run (K_SERVICE set) the server refuses to start without AUDIT_HMAC_SECRET', async () => {
+  const cr = await startServer({ K_SERVICE: 'parkflows-test', AUDIT_HMAC_SECRET: '' });
+  try {
+    assert.notEqual(cr.exitCode(), null, 'process exited');
+    assert.notEqual(cr.exitCode(), 0);
+    assert.match(cr.getLog(), /AUDIT_HMAC_SECRET is not set on Cloud Run/);
+  } finally { cr.stop(); }
+  const ok = await startServer({ K_SERVICE: 'parkflows-test', AUDIT_HMAC_SECRET: 'x'.repeat(64) });
+  try { assert.equal(ok.exitCode(), null, 'starts when the secret is set'); } finally { ok.stop(); }
+});
+
+// ------------------------------------------------ Per-site domain whitelist (user decision 28 Sep, PERM-02)
+test('Domains: Site Admin allows a domain for their own site only; registration honours it per site', async () => {
+  const add = await post('adminA', '/domains/add', { domain: 'alpha-a.com' }, { site: F.A.id });
+  assert.equal(add.status, 200, JSON.stringify(add.body)); assert.equal(add.body.domain.siteId, F.A.id);
+  F.domA = add.body.domain;
+  assert.ok((await auditEntries('DOMAIN_WHITELIST_ADDED')).some((l) => l.siteId === F.A.id));
+  const foreign = await post('adminA', '/domains/add', { domain: 'alpha-b.com' }, { site: F.B.id });
+  assert.equal(foreign.status, 403);
+  const noSite = await post('adminA', '/domains/add', { domain: 'alpha-c.com' });
+  assert.equal(noSite.status, 400); assert.equal(noSite.body.errorCode, 'ERR_SITE_REQUIRED');
+  const atA = await post(null, '/registrations/submit', { name: 'Dom A', email: 'dom.a@alpha-a.com', vehicleNumber: 'MH12AC1001', siteId: F.A.id });
+  assert.equal(atA.status, 200, JSON.stringify(atA.body));
+  const atB = await post(null, '/registrations/submit', { name: 'Dom B', email: 'dom.b@alpha-a.com', vehicleNumber: 'MH12AC1002', siteId: F.B.id });
+  assert.equal(atB.status, 400, 'site A domain does not open site B');
+  const listB = (await get(null, `/domains?siteId=${F.B.id}`)).body.domains;
+  assert.ok(!listB.some((d) => d.domain === 'alpha-a.com'));
+  assert.ok(listB.some((d) => d.domain === 'company.com'), 'platform-wide domains still listed');
+});
+
+test('Domains: platform-wide entries are Master-only; another site\'s entry cannot be removed', async () => {
+  const company = (await get('adminA', '/domains/manage', { site: F.A.id })).body.domains.find((d) => d.domain === 'company.com' && !d.siteId);
+  const g = await post('adminA', '/domains/remove', { domainId: company.id }, { site: F.A.id });
+  assert.equal(g.status, 403); assert.equal(g.body.errorCode, 'ERR_MASTER_ONLY');
+  const x = await post('adminAB', '/domains/remove', { domainId: F.domA.id }, { site: F.B.id });
+  assert.equal(x.status, 403);
+  const m = await post('master', '/domains/add', { domain: 'everyone.example.com' });
+  assert.equal(m.status, 200); assert.equal(m.body.domain.siteId, undefined, 'Master without a site = all sites');
+  const own = await post('adminA', '/domains/remove', { domainId: 'alpha-a.com' }, { site: F.A.id });
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+});
+
+// ---------------------------------------------------------------- Round 2
+test('C-1 public GET /domains needs a site and returns only domain names for that site + platform-wide', async () => {
+  const add = await post('master', '/domains/add', { domain: 'acme-b.com' }, { site: F.B.id });
+  assert.equal(add.status, 200, JSON.stringify(add.body));
+  const none = await get(null, '/domains');
+  assert.equal(none.status, 400); assert.equal(none.body.errorCode, 'ERR_SITE_REQUIRED');
+  const allQ = await get(null, '/domains?siteId=ALL');
+  assert.equal(allQ.status, 400);
+  const atA = await get(null, `/domains?siteId=${F.A.id}`);
+  assert.equal(atA.status, 200);
+  assert.ok(!atA.body.domains.some((d) => d.domain === 'acme-b.com'), 'no other site\'s domains');
+  assert.ok(atA.body.domains.some((d) => d.domain === 'company.com'), 'platform-wide listed');
+  for (const d of atA.body.domains) assert.deepEqual(Object.keys(d), ['domain'], 'only { domain }: no id, siteId, addedBy, createdAt');
+  const atB = await get(null, `/domains?siteId=${F.B.id}`);
+  assert.ok(atB.body.domains.some((d) => d.domain === 'acme-b.com'));
+});
+
+test('C-1 GET /domains/manage: authenticated, REGISTRATION view, full rows scoped to the site', async () => {
+  assert.equal((await get(null, '/domains/manage', { site: F.A.id })).status, 401);
+  const a = await get('adminA', '/domains/manage', { site: F.A.id });
+  assert.equal(a.status, 200);
+  assert.ok(a.body.domains.every((d) => !d.siteId || d.siteId === F.A.id));
+  assert.ok(a.body.domains.some((d) => 'addedBy' in d && 'id' in d), 'full rows for admins');
+  assert.equal((await get('adminA', `/domains/manage?siteId=${F.B.id}`)).status, 403);
+  assert.equal((await get('adminA', '/domains/manage?siteId=ALL')).status, 400);
+  assert.equal((await get('attA', '/domains/manage', { site: F.A.id })).status, 403, 'attendant has no REGISTRATION');
+  const m = await get('master', '/domains/manage?siteId=ALL');
+  assert.ok(m.body.domains.some((d) => d.domain === 'acme-b.com' && d.siteId === F.B.id));
+});
+
+test('M-1 /rbac/users: a non-Master cannot raise their own or anyone\'s privileges', async () => {
+  const me = F.umAUser;
+  // Reviewer repro 1: self-override to privileged modules.
+  const selfOv = await post('umA', '/rbac/users', { ...me, customModuleOverrides: { MASTER_CONFIG: true, SECURITY_AUDIT: true, USER_MANAGEMENT: true } });
+  assert.equal(selfOv.status, 403, JSON.stringify(selfOv.body)); assert.equal(selfOv.body.errorCode, 'ERR_MASTER_ONLY');
+  // Reviewer repro 2: assign themself a stronger (non-privileged) role.
+  const inv = await post('master', '/rbac/roles', { roleName: 'BE Inventory', modulePermissions: { HOME: FULL, INVENTORY: FULL } });
+  assert.ok(inv.body.success);
+  const selfRole = await post('umA', '/rbac/users', { ...me, roleId: inv.body.role.id });
+  assert.equal(selfRole.status, 403);
+  for (const field of [{ assignedSiteIds: [F.A.id, F.B.id] }, { status: 'ACTIVE', siteScopeType: 'ALL_SITES' }]) {
+    const r = await post('umA', '/rbac/users', { ...me, ...field });
+    assert.equal(r.status, 403, JSON.stringify(field));
+  }
+  // Privileged override / privileged or all-sites role for someone else.
+  const ov = await post('umA', '/rbac/users', { ...F.attAUser, customModuleOverrides: { USER_MANAGEMENT: true } });
+  assert.equal(ov.status, 403);
+  const priv = await post('umA', '/rbac/users', { ...F.attAUser, roleId: 'role-master-admin' });
+  assert.equal(priv.status, 403);
+  const allSites = await post('master', '/rbac/roles', { roleName: 'BE All Sites Viewer', siteScope: 'ALL_SITES', modulePermissions: { HOME: FULL } });
+  const asg = await post('umA', '/rbac/users', { ...F.attAUser, roleId: allSites.body.role.id });
+  assert.equal(asg.status, 403);
+  // Unchanged record and ordinary edits still work.
+  const users = (await get('master', '/rbac/users')).body.users;
+  const meNow = users.find((u) => u.id === me.id);
+  assert.equal(meNow.roleId, me.roleId); assert.equal(meNow.customModuleOverrides?.MASTER_CONFIG, undefined);
+  const ok = await post('umA', '/rbac/users', { ...meNow, fullName: 'BE umA renamed' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const other = await post('umA', '/rbac/users', { ...users.find((u) => u.id === F.attAUser.id), roleId: inv.body.role.id });
+  assert.equal(other.status, 200, 'a non-privileged role for someone else at my site is fine');
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `user/${me.id}`));
+});
+
+test('M-2 creating, editing and deleting roles is Master-only (roles are shared by every site)', async () => {
+  const mk = await post('master', '/rbac/roles', { roleName: 'BE Shared Role', modulePermissions: { HOME: FULL } });
+  assert.ok(mk.body.success);
+  const id = mk.body.role.id;
+  const create = await post('umA', '/rbac/roles', { roleName: 'Plain helper', modulePermissions: { HOME: FULL } });
+  assert.equal(create.status, 403); assert.equal(create.body.errorCode, 'ERR_MASTER_ONLY');
+  const edit = await post('umA', '/rbac/roles', { id, roleName: 'Renamed by site admin' });
+  assert.equal(edit.status, 403);
+  const del = await call('umA', 'DELETE', `/rbac/roles/${id}`);
+  assert.equal(del.status, 403, JSON.stringify(del.body)); assert.equal(del.body.errorCode, 'ERR_MASTER_ONLY');
+  const roles = (await get('master', '/rbac/roles')).body.roles;
+  assert.equal(roles.find((r) => r.id === id).roleName, 'BE Shared Role', 'role unchanged and not deleted');
+  const mDel = await call('master', 'DELETE', `/rbac/roles/${id}`);
+  assert.equal(mDel.status, 200, 'Master can still delete');
+});
+
+test('m-2 a Master Admin cannot move a record to a site that does not exist', async () => {
+  const mk = await post('master', '/slots/save', { slot: { slotNumber: 'B-ORPHAN-1', basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN' } }, { site: F.B.id });
+  assert.equal(mk.status, 200);
+  const mv = await post('master', '/slots/save', { slot: { id: mk.body.slot.id, slotNumber: 'B-ORPHAN-1', siteId: 'site-does-not-exist' } }, { site: F.B.id });
+  assert.equal(mv.status, 400);
+  assert.equal((await slotsAt(F.B.id)).find((s) => s.id === mk.body.slot.id).siteId, F.B.id, 'record stays in its site');
+  await post('master', '/slots/delete', { slotId: mk.body.slot.id }, { site: F.B.id });
+});
+
+test('m-3 self / privileged refusals are ERR_MASTER_ONLY; outside-site refusals stay ERR_SITE_FORBIDDEN', async () => {
+  const self = await post('umA', '/rbac/users/toggle-module', { userId: F.umAUser.id, moduleId: 'LOGS', enabled: true });
+  assert.equal(self.body.errorCode, 'ERR_MASTER_ONLY');
+  const priv = await post('umA', '/rbac/users/toggle-module', { userId: F.attAUser.id, moduleId: 'SECURITY_AUDIT', enabled: true });
+  assert.equal(priv.body.errorCode, 'ERR_MASTER_ONLY');
+  const foreign = await post('umA', '/rbac/users/toggle-module', { userId: F.attBUser.id, moduleId: 'LOGS', enabled: false });
+  assert.equal(foreign.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.umAUser.id })).body.errorCode, 'ERR_MASTER_ONLY');
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attBUser.id })).body.errorCode, 'ERR_SITE_FORBIDDEN');
+});
+
+// ---------------------------------------------------------------- Round 3
+test('N-1 setup: a same-site account with a privileged role, and one with a privileged override', async () => {
+  const ops = await post('master', '/rbac/roles', { roleName: 'BE Site Ops Plus', modulePermissions: { HOME: FULL, MASTER_CONFIG: FULL } });
+  assert.ok(ops.body.success);
+  await mkUser('opsA', ops.body.role.id, [F.A.id]);
+  await mkUser('ovA', 'role-gate-attendant', [F.A.id]);
+  const ov = await post('master', '/rbac/users/toggle-module', { userId: F.ovAUser.id, moduleId: 'SECURITY_AUDIT', enabled: true });
+  assert.ok(ov.body.success, JSON.stringify(ov.body));
+});
+
+test('N-1 (a) a non-Master cannot set another account\'s password; points to the reset-token flow', async () => {
+  const users = (await get('master', '/rbac/users')).body.users;
+  const att = users.find((u) => u.id === F.attAUser.id);
+  const r = await post('umA', '/rbac/users', { ...att, plainPassword: 'Taken0verPassword#1' });
+  assert.equal(r.status, 403, JSON.stringify(r.body)); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY');
+  assert.match(r.body.message, /generate-reset-token/);
+  // The old password still works: nothing was changed.
+  assert.equal((await post(null, '/auth/login', { identifier: F.attAUser.email, password: PW })).status, 200);
+  assert.equal((await post(null, '/auth/login', { identifier: F.attAUser.email, password: 'Taken0verPassword#1' })).status, 401);
+});
+
+test('N-1 (b) a non-Master cannot edit an account with a privileged role or override (reviewer repro)', async () => {
+  const users = (await get('master', '/rbac/users')).body.users;
+  const ops = users.find((u) => u.id === F.opsAUser.id);
+  const ov = users.find((u) => u.id === F.ovAUser.id);
+  const pw = await post('umA', '/rbac/users', { id: ops.id, plainPassword: 'Taken0verPassword#2' });
+  assert.equal(pw.status, 403);
+  assert.equal((await post(null, '/auth/login', { identifier: F.opsAUser.email, password: 'Taken0verPassword#2' })).status, 401, 'no takeover sign-in');
+  const rename = await post('umA', '/rbac/users', { ...ops, fullName: 'Renamed by HR' });
+  assert.equal(rename.status, 403); assert.equal(rename.body.errorCode, 'ERR_MASTER_ONLY');
+  const ovEdit = await post('umA', '/rbac/users', { ...ov, fullName: 'Renamed by HR' });
+  assert.equal(ovEdit.status, 403);
+  const plain = await post('umA', '/rbac/users', { ...users.find((u) => u.id === F.attAUser.id), fullName: 'BE attA renamed' });
+  assert.equal(plain.status, 200, 'ordinary same-site accounts are still editable');
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `user/${ops.id}`));
+});
+
+test('N-1 (c) generate-reset-token refuses privileged same-site accounts', async () => {
+  for (const u of [F.opsAUser, F.ovAUser]) {
+    const r = await post('umA', '/auth/admin/generate-reset-token', { userId: u.id });
+    assert.equal(r.status, 403, u.email); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY');
+  }
+  assert.equal((await post('umA', '/auth/admin/generate-reset-token', { userId: F.attAUser.id })).status, 200);
+  assert.equal((await post('master', '/auth/admin/generate-reset-token', { userId: F.opsAUser.id })).status, 200, 'Master still can');
+  assert.ok((await auditEntries('RBAC_PRIVILEGE_ESCALATION_BLOCKED')).some((l) => l.targetResource === `auth/reset-token/${F.opsAUser.id}`));
+});
+
+// B17 (N-2): registration duplicate checks are per site (03 v1.0.1).
+const requestsAt = async (siteId) => (await get('master', '/registrations', { site: siteId })).body.requests;
+
+test('B17 (1) a plate active at Site B, or pending at Site B, does not block Site A', async () => {
+  const r = await post(null, '/registrations/submit', { name: 'Multi Site', email: 'multi.a@company.com', vehicleNumber: F.empB.vehicleNumber, siteId: F.A.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.request.status, 'PENDING'); assert.equal(r.body.request.siteId, F.A.id);
+  // (Site B side made through the admin bulk upload: the public route is rate-limited to 10/min.)
+  const pb = await post('master', '/registrations/bulk-upload', { requests: [{ name: 'Pend B', email: 'pend.b@company.com', vehicleNumber: 'KA01AB1234' }] }, { site: F.B.id });
+  assert.equal(pb.status, 200); assert.equal(pb.body.added, 1);
+  const pa = await post(null, '/registrations/submit', { name: 'Pend A', email: 'pend.a@company.com', vehicleNumber: 'KA01AB1234', siteId: F.A.id });
+  assert.equal(pa.status, 200, 'pending at another site does not block (reviewer repro)');
+  const dupA = await post(null, '/registrations/submit', { name: 'Pend A2', email: 'pend.a2@company.com', vehicleNumber: 'KA01AB1234', siteId: F.A.id });
+  assert.equal(dupA.status, 400, 'pending at the same site still blocks');
+  assert.ok(!JSON.stringify(dupA.body).includes('pend.a@company.com') && !JSON.stringify(dupA.body).includes('KA01AB1234'), 'generic message');
+});
+
+test('B17 (2) a plate active at Site A refuses a Site A registration with the generic message', async () => {
+  const r = await post(null, '/registrations/submit', { name: 'Clash', email: 'clash@company.com', vehicleNumber: 'MH12AB6116', siteId: F.A.id });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.message, "This vehicle can't be registered. Contact your site admin.");
+});
+
+test('B17 (3) a Site A bulk row with a Site B request\'s plate/email makes a new Site A request; Site B untouched (also autoApprove)', async () => {
+  const bUp = await post('master', '/registrations/bulk-upload', { requests: [{ name: 'Bulk B', email: 'bulk.b@company.com', vehicleNumber: 'MH12AC3001' }] }, { site: F.B.id });
+  assert.equal(bUp.status, 200);
+  const b = { body: { request: (await requestsAt(F.B.id)).find((x) => x.email === 'bulk.b@company.com') } };
+  const row = { name: 'Bulk A', email: 'bulk.b@company.com', vehicleNumber: 'MH12AC3001' };
+  const r1 = await post('adminAB', '/registrations/bulk-upload', { requests: [row] }, { site: F.A.id });
+  assert.equal(r1.status, 200, JSON.stringify(r1.body)); assert.equal(r1.body.added, 1); assert.equal(r1.body.updated, 0);
+  const r2 = await post('adminAB', '/registrations/bulk-upload', { requests: [row], autoApprove: true }, { site: F.A.id });
+  assert.equal(r2.status, 200); assert.equal(r2.body.updated, 1, 'second upload updates the Site A request only');
+  const aReq = (await requestsAt(F.A.id)).filter((x) => x.vehicleNumber === 'MH12AC3001');
+  assert.equal(aReq.length, 1); assert.equal(aReq[0].status, 'APPROVED');
+  const bReq = (await requestsAt(F.B.id)).find((x) => x.id === b.body.request.id);
+  assert.equal(bReq.status, 'PENDING'); assert.equal(bReq.name, 'Bulk B', 'Site B request unchanged');
+  const bPasses = (await get('master', '/employees', { site: F.B.id })).body.employees.filter((e) => e.vehicleNumber === 'MH12AC3001');
+  assert.equal(bPasses.length, 0, 'nothing approved at Site B');
+});
+
+test('B17 (4) approve refuses a same-site duplicate active pass', async () => {
+  const up = await post('adminA', '/registrations/bulk-upload', { requests: [{ name: 'Dup A', email: 'dup.a@company.com', vehicleNumber: 'MH12AB6116', employeeId: 'BE-DUP-1' }] }, { site: F.A.id });
+  assert.equal(up.status, 200); assert.equal(up.body.added, 1, JSON.stringify(up.body));
+  const reqA = (await requestsAt(F.A.id)).find((x) => x.email === 'dup.a@company.com');
+  const ap = await post('adminA', '/registrations/approve', { requestId: reqA.id }, { site: F.A.id });
+  assert.equal(ap.status, 400);
+  assert.equal(ap.body.message, 'This vehicle is already on an active pass at this site.');
+  assert.equal((await requestsAt(F.A.id)).find((x) => x.id === reqA.id).status, 'PENDING', 'nothing changed');
+});
+
+// ---------------------------------------------------------------- Round 4
+test('R4-1 a non-Master cannot delete an account at another site, or a privileged same-site account', async () => {
+  await mkUser('delB', 'role-gate-attendant', [F.B.id]);
+  const cross = await call('umA', 'DELETE', `/rbac/users/${F.delBUser.id}`);
+  assert.equal(cross.status, 403, JSON.stringify(cross.body)); assert.equal(cross.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  assert.ok((await get('master', '/rbac/users')).body.users.some((u) => u.id === F.delBUser.id), 'Site B account still exists');
+  assert.ok((await auditEntries('CROSS_SITE_ACCESS_DENIED')).some((l) => l.details.includes(F.delBUser.id)));
+  const priv = await call('umA', 'DELETE', `/rbac/users/${F.opsAUser.id}`);
+  assert.equal(priv.status, 403); assert.equal(priv.body.errorCode, 'ERR_MASTER_ONLY');
+  assert.ok((await get('master', '/rbac/users')).body.users.some((u) => u.id === F.opsAUser.id), 'privileged account still exists');
+  const self = await call('umA', 'DELETE', `/rbac/users/${F.umAUser.id}`);
+  assert.equal(self.body.success, false, 'self-delete still refused by the existing check');
+  await mkUser('delA', 'role-gate-attendant', [F.A.id]);
+  const ok = await call('umA', 'DELETE', `/rbac/users/${F.delAUser.id}`);
+  assert.equal(ok.status, 200); assert.equal(ok.body.success, true, 'ordinary same-site account can be removed');
+  const m = await call('master', 'DELETE', `/rbac/users/${F.delBUser.id}`);
+  assert.equal(m.body.success, true, 'Master is unaffected');
+});
+
+test('R4-2 a non-Master cannot re-point their own or an in-scope account\'s email at a Site B pass', async () => {
+  const users = (await get('master', '/rbac/users')).body.users;
+  const me = users.find((u) => u.id === F.umAUser.id);
+  const self = await post('umA', '/rbac/users', { ...me, email: F.empB.email });
+  assert.equal(self.status, 403, JSON.stringify(self.body)); assert.equal(self.body.errorCode, 'ERR_MASTER_ONLY');
+  const selfUser = await post('umA', '/rbac/users', { ...me, username: 'be.renamed' });
+  assert.equal(selfUser.status, 403, 'own username is locked too');
+  const att = users.find((u) => u.id === F.attAUser.id);
+  const other = await post('umA', '/rbac/users', { ...att, email: F.empB.email });
+  assert.equal(other.status, 403);
+  assert.ok(!JSON.stringify(other.body).includes(F.B.id), 'message does not reveal the other site');
+  const created = await post('umA', '/rbac/users', { username: 'be.sneaky', fullName: 'Sneaky', email: F.empB.email,
+    roleId: 'role-gate-attendant', siteScopeType: 'SPECIFIC_SITES', assignedSiteIds: [F.A.id], status: 'ACTIVE', plainPassword: PW });
+  assert.equal(created.status, 403, 'a new account cannot take a Site B employee\'s email either');
+  const after = (await get('master', '/rbac/users')).body.users;
+  assert.equal(after.find((u) => u.id === F.umAUser.id).email, F.umAUser.email);
+  assert.equal(after.find((u) => u.id === F.attAUser.id).email, F.attAUser.email);
+  const fine = await post('umA', '/rbac/users', { ...after.find((u) => u.id === F.attAUser.id), email: 'be.atta.new@be-parkflows.test' });
+  assert.equal(fine.status, 200, 'an unused email is still fine');
+});
+
+test('R4-2 an email re-pointed by a Master still cannot reach another site\'s pass through self-service', async () => {
+  await mkUser('repA', 'role-gate-attendant', [F.A.id]);
+  const users = (await get('master', '/rbac/users')).body.users;
+  const rep = await post('master', '/rbac/users', { ...users.find((u) => u.id === F.repAUser.id), email: F.empB.email });
+  assert.equal(rep.status, 200, 'Master is unaffected by the new refusals');
+  const prof = await get('repA', `/employees/profile?email=${encodeURIComponent(F.empB.email)}`);
+  assert.ok(!prof.body.employee, `no Site B pass returned: ${JSON.stringify(prof.body).slice(0, 200)}`);
+  const upd = await post('repA', '/employees/update-vehicle', { email: F.empB.email, vehicleNumber: 'KA05ZZ9999' });
+  assert.equal(upd.status, 404, JSON.stringify(upd.body));
+  const b = (await get('master', '/employees', { site: F.B.id })).body.employees.find((e) => e.id === F.empB.id);
+  assert.equal(b.vehicleNumber, F.empB.vehicleNumber, 'Site B plate unchanged');
+});
+
+// ---------------------------------------------------------------- Hotfix 2 Oct (first patch item 0)
+// Cold start against EXISTING Firestore data (an in-memory fake, see
+// tests/qa/support): nothing seeded at boot may overwrite production records.
+async function runColdStart(extraEnv = {}) {
+  const workDir = mkdtempSync(path.join(tmpdir(), 'pf-cold-'));
+  const harness = path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs');
+  const env = { ...process.env, PF_REPO: REPO, NODE_ENV: 'production', SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
+    K_SERVICE: '', AUDIT_HMAC_SECRET: 'x'.repeat(64), BOOTSTRAP_ADMIN_PASSWORD: PW, ...extraEnv };
+  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [harness, 'store'], { cwd: workDir, env, stdio: 'pipe' });
+  let out = ''; proc.stdout.on('data', (d) => (out += d)); proc.stderr.on('data', (d) => (out += d));
+  await new Promise((r) => proc.on('exit', r));
+  try { rmSync(workDir, { recursive: true, force: true }); } catch {}
+  const line = out.split('\n').find((l) => l.startsWith('REPORT '));
+  assert.ok(line, 'harness report missing:\n' + out.slice(-2000));
+  return JSON.parse(line.slice(7));
+}
+
+test('Hotfix-1 a cold start with existing Firestore data does not overwrite a changed default role, a removed domain or the Master', async () => {
+  // The load takes 5 s here, longer than the 3 s full-sync debounce, as on Cloud Run.
+  const r = await runColdStart({ FAKE_LOAD_DELAY_MS: '5000' });
+  assert.equal(r.writesBeforeLoad, 0, 'initDB wrote to Firestore before the load');
+  const seeded = r.writes.filter((w) => ['appRoles', 'appUsers', 'whitelistedDomains'].includes(w.collection));
+  assert.deepEqual(seeded, [], 'boot-time seed records written to Firestore: ' + JSON.stringify(seeded));
+  assert.equal(r.siteManager.modulePermissions.ALERTS.canEdit, false, 'changed default role kept');
+  assert.equal(r.siteManager.description, 'changed in prod');
+  assert.equal(r.master.fullName, 'Prod Master (edited)', 'bootstrap Master not reset');
+  assert.deepEqual(r.domains.map((d) => d.domain), ['parkflows.in'], 'removed company.com did not come back');
+});
+
+test('Hotfix-1 an EMPTY Firestore is still seeded by bootstrapFirestore (accounts and default roles)', async () => {
+  const r = await runColdStart({ EMPTY_FIRESTORE: '1' });
+  assert.equal(r.writesBeforeLoad, 0, 'nothing written before bootstrap');
+  const roles = r.writes.filter((w) => w.collection === 'appRoles').map((w) => w.id);
+  assert.ok(roles.includes('role-site-manager') && roles.includes('role-master-admin'), 'default roles seeded: ' + JSON.stringify(roles));
+  assert.ok(r.writes.some((w) => w.collection === 'appUsers' && w.id === 'usr-digi-master'), 'bootstrap Master seeded');
+});
+
+test('Hotfix-2 no Firestore sync runs before the load finishes, even if something calls saveDB() early', async () => {
+  const r = await runColdStart({ FAKE_LOAD_DELAY_MS: '5000', SAVE_BEFORE_LOAD: '1' });
+  assert.equal(r.writesBeforeLoad, 0, 'a pre-load saveDB() reached Firestore');
+  assert.deepEqual(r.writes.filter((w) => ['appRoles', 'appUsers', 'whitelistedDomains'].includes(w.collection)), []);
+  assert.equal(r.siteManager.modulePermissions.ALERTS.canEdit, false);
+  assert.deepEqual(r.domains.map((d) => d.domain), ['parkflows.in']);
+  assert.equal(r.ready, true, 'ready once loaded');
+});
+
+test('Hotfix-2 until the store is loaded, /api/v1/* answers 503 ERR_STARTING; /health stays 200', async () => {
+  const workDir = mkdtempSync(path.join(tmpdir(), 'pf-cold-'));
+  const port = 4900 + Math.floor(Math.random() * 90);
+  const base = `http://127.0.0.1:${port}`;
+  const env = { ...process.env, PF_REPO: REPO, NODE_ENV: 'production', PORT: String(port), SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
+    K_SERVICE: '', AUDIT_HMAC_SECRET: 'x'.repeat(64), BOOTSTRAP_ADMIN_PASSWORD: PW, FAKE_LOAD_DELAY_MS: '8000', SITE_SCOPE_MODE: '' };
+  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs'), 'server'],
+    { cwd: workDir, env, stdio: 'pipe' });
+  let log = ''; proc.stdout.on('data', (d) => (log += d)); proc.stderr.on('data', (d) => (log += d));
+  try {
+    let health;
+    for (let i = 0; i < 60 && !health; i++) { try { const h = await fetch(base + '/api/v1/health'); if (h.ok) health = await h.json(); } catch {} if (!health) await sleep(250); }
+    assert.ok(health, 'server did not listen:\n' + log.slice(-1500));
+    assert.equal(health.ready, false, '/health reports not ready yet');
+    const early = [
+      ['GET', '/api/v1/slots?siteId=site-alpha'],
+      ['POST', '/api/v1/auth/login'],
+      ['POST', '/login'],
+      ['GET', '/api/v1/domains?siteId=site-alpha'],
+    ];
+    for (const [method, url] of early) {
+      const r = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify({ identifier: MASTER_EMAIL, password: PW }) : undefined });
+      assert.equal(r.status, 503, `${method} ${url}`);
+      assert.equal((await r.json()).errorCode, 'ERR_STARTING', url);
+    }
+    let ready = false;
+    for (let i = 0; i < 80 && !ready; i++) { await sleep(250); ready = (await (await fetch(base + '/api/v1/health')).json()).ready; }
+    assert.ok(ready, 'became ready after the load:\n' + log.slice(-1500));
+    const after = await fetch(base + '/api/v1/slots?siteId=site-alpha');
+    assert.equal(after.status, 401, 'normal answers once loaded');
+    const dom = await fetch(base + '/api/v1/domains?siteId=site-alpha');
+    assert.deepEqual((await dom.json()).domains.map((d) => d.domain), ['parkflows.in'], 'loaded production data is served (no company.com)');
+  } finally { proc.kill(); try { rmSync(workDir, { recursive: true, force: true }); } catch {} }
+});

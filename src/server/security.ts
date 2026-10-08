@@ -13,6 +13,15 @@ import { getFirestoreDb } from './firestoreClient';
 // which defeats the entire point of a tamper-evident audit trail.
 const AUDIT_HMAC_SECRET = process.env.AUDIT_HMAC_SECRET || 'pms-enterprise-sec-token-2026-sha256-k9x';
 
+// On Cloud Run (K_SERVICE is set by the platform) the fallback is never
+// acceptable: refuse to start, so the old revision keeps serving instead of a
+// new one with forgeable audit hashes (001 design B11 / R4). Local and test
+// runs without K_SERVICE still start, with the warning below.
+if (process.env.K_SERVICE && !process.env.AUDIT_HMAC_SECRET) {
+  console.error('[SECURITY] AUDIT_HMAC_SECRET is not set on Cloud Run. Refusing to start. Set it in the service\'s environment (openssl rand -hex 32).');
+  process.exit(1);
+}
+
 if (!process.env.AUDIT_HMAC_SECRET) {
   console.error(
     '[SECURITY WARNING] AUDIT_HMAC_SECRET is not set — falling back to a ' +
@@ -129,6 +138,7 @@ export function logSecurityEvent(params: {
   targetResource: string;
   status: 'SUCCESS' | 'BLOCKED_UNAUTHORIZED' | 'RATE_LIMITED' | 'VALIDATION_FAILED';
   details: string;
+  siteId?: string;
 }): SecurityAuditLog {
   const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const timestamp = new Date().toISOString();
@@ -150,8 +160,12 @@ export function logSecurityEvent(params: {
   };
 
   const integrityHash = generateIntegrityHash(partialEntry);
+  // siteId is attached after hashing on purpose: it is not part of the
+  // integrity payload (see generateIntegrityHash), so older entries without
+  // it verify exactly as before.
   const fullEntry: SecurityAuditLog = {
     ...partialEntry,
+    ...(params.siteId ? { siteId: params.siteId } : {}),
     integrityHash,
   };
 
@@ -749,6 +763,12 @@ declare global {
   namespace Express {
     interface Request {
       user?: AppUser;
+      // Set only when a Master Admin sends a valid x-view-as header (read-only
+      // Role View Simulator). effectiveUser = viewAs ?? user: scope, module
+      // permissions and PII masking are evaluated against it, while audit
+      // entries keep the real signed-in user as the actor.
+      viewAs?: AppUser;
+      effectiveUser?: AppUser;
     }
   }
 }
@@ -791,7 +811,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const token = extractSessionToken(req);
 
   if (!token) {
-    return res.status(401).json({ success: false, message: 'Not signed in.' });
+    return res.status(401).json({ success: false, message: 'Not signed in.', errorCode: 'ERR_SESSION_EXPIRED' });
   }
 
   const store = getStore();
@@ -815,18 +835,19 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   // follow-up, not a reason to keep this fallback in the meantime.
 
   if (!userId) {
-    return res.status(401).json({ success: false, message: 'Session expired or invalid. Please sign in again.' });
+    return res.status(401).json({ success: false, message: 'Session expired or invalid. Please sign in again.', errorCode: 'ERR_SESSION_EXPIRED' });
   }
 
   const user = store.appUsers.find((u) => u.id === userId);
   if (!user) {
-    return res.status(401).json({ success: false, message: 'Account no longer exists.' });
+    return res.status(401).json({ success: false, message: 'Account no longer exists.', errorCode: 'ERR_SESSION_EXPIRED' });
   }
   if (user.status !== 'ACTIVE') {
-    return res.status(403).json({ success: false, message: `Account is ${user.status.toLowerCase()}.` });
+    return res.status(403).json({ success: false, message: `Account is ${user.status.toLowerCase()}.`, errorCode: 'ERR_ACCOUNT_INACTIVE' });
   }
 
   req.user = user;
+  req.effectiveUser = user;
   next();
 }
 
@@ -835,38 +856,49 @@ export type PermissionAction = 'view' | 'canCreate' | 'canEdit' | 'canDelete' | 
 /**
  * Validates role and module permissions for the authenticated user.
  */
+// Why a user may not perform `action` in `moduleId`, or null when allowed.
+// Shared by requirePermission / requireAnyPermission and by routes that need
+// a permission check inline.
+export function modulePermissionDenial(user: AppUser, moduleId: AppModuleId, action: PermissionAction): string | null {
+  const store = getStore();
+  const role = store.appRoles.find((r) => r.id === user.roleId || r.roleCode === user.roleId);
+  if (!role) return 'No role assigned to this account.';
+
+  const rights = role.modulePermissions?.[moduleId];
+  const override = user.customModuleOverrides?.[moduleId];
+  const moduleEnabled = override !== undefined ? override : rights?.enabled;
+
+  if (!moduleEnabled) return `You don't have access to ${moduleId.replace(/_/g, ' ')}.`;
+  if (action !== 'view' && !rights?.[action]) return `Your role can't perform this action in ${moduleId.replace(/_/g, ' ')}.`;
+  return null;
+}
+
+export function hasModulePermission(user: AppUser | undefined, moduleId: AppModuleId, action: PermissionAction): boolean {
+  return !!user && modulePermissionDenial(user, moduleId, action) === null;
+}
+
 export function requirePermission(moduleId: AppModuleId, action: PermissionAction) {
+  return requireAnyPermission([[moduleId, action]]);
+}
+
+/**
+ * Passes when the user holds at least one of the given (module, action)
+ * rights. Evaluated against req.effectiveUser, so a Master Admin viewing as
+ * another user sees exactly what that user can see.
+ */
+export function requireAnyPermission(options: [AppModuleId, PermissionAction][]) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const user = req.user;
+    const user = req.effectiveUser || req.user;
     if (!user) {
-      return res.status(401).json({ success: false, message: 'Not signed in.' });
+      return res.status(401).json({ success: false, message: 'Not signed in.', errorCode: 'ERR_SESSION_EXPIRED' });
     }
-
-    const store = getStore();
-    const role = store.appRoles.find((r) => r.id === user.roleId || r.roleCode === user.roleId);
-    if (!role) {
-      return res.status(403).json({ success: false, message: 'No role assigned to this account.' });
+    let firstDenial: string | null = null;
+    for (const [moduleId, action] of options) {
+      const denial = modulePermissionDenial(user, moduleId, action);
+      if (denial === null) return next();
+      firstDenial = firstDenial || denial;
     }
-
-    const rights = role.modulePermissions?.[moduleId];
-    const override = user.customModuleOverrides?.[moduleId];
-    const moduleEnabled = override !== undefined ? override : rights?.enabled;
-
-    if (!moduleEnabled) {
-      return res.status(403).json({
-        success: false,
-        message: `You don't have access to ${moduleId.replace(/_/g, ' ')}.`,
-      });
-    }
-
-    if (action !== 'view' && !rights?.[action]) {
-      return res.status(403).json({
-        success: false,
-        message: `Your role can't perform this action in ${moduleId.replace(/_/g, ' ')}.`,
-      });
-    }
-
-    next();
+    return res.status(403).json({ success: false, message: firstDenial });
   };
 }
 

@@ -46,7 +46,12 @@ const PRESET: Record<'F' | 'R' | 'D', ModuleRights> = {
   D: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },
 };
 
-export const MasterAdminRoles: React.FC = () => {
+interface MasterAdminRolesProps {
+  /** Phase 1: only a Master Admin creates, edits or deletes roles (code review M-2; the server refuses others). */
+  canEditRoles?: boolean;
+}
+
+export const MasterAdminRoles: React.FC<MasterAdminRolesProps> = ({ canEditRoles = false }) => {
   const [roles, setRoles] = useState<AppRole[]>([]);
   const [activeRoleId, setActiveRoleId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,7 +84,7 @@ export const MasterAdminRoles: React.FC = () => {
   }, [load]);
 
   const activeRole = useMemo(() => roles.find((r) => r.id === activeRoleId) || null, [roles, activeRoleId]);
-  const locked = !!activeRole?.isSystemDefault && activeRole.roleCode === 'MASTER_ADMIN';
+  const locked = !canEditRoles || (!!activeRole?.isSystemDefault && activeRole.roleCode === 'MASTER_ADMIN');
 
   const grantCount = useMemo(() => {
     if (!activeRole) return 0;
@@ -163,8 +168,14 @@ export const MasterAdminRoles: React.FC = () => {
             </button>
           );
         })}
-        <button style={{ marginLeft: 'auto', padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#eef1f6', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>Clone role</button>
-        <button style={{ padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#eef1f6', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>New custom role</button>
+        {canEditRoles ? (
+          <>
+            <button style={{ marginLeft: 'auto', padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#eef1f6', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>Clone role</button>
+            <button style={{ padding: '8px 16px', border: '1px solid #cbd3e0', borderRadius: 8, background: '#eef1f6', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>New custom role</button>
+          </>
+        ) : (
+          <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b' }}>Roles can be changed by a Master Admin only.</span>
+        )}
       </div>
 
       {activeRole && (
@@ -172,7 +183,7 @@ export const MasterAdminRoles: React.FC = () => {
           <div style={{ border: '1px solid #e2e6ee', borderRadius: 8, padding: 18, display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 18 }}>
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, color: '#1d4ed8' }}>{activeRole.roleCode}</div>
-              <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 22 }}>{activeRole.roleName}{locked ? ' — locked' : ''}</div>
+              <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 22 }}>{activeRole.roleName}{activeRole.isSystemDefault && activeRole.roleCode === 'MASTER_ADMIN' ? ' — locked' : ''}</div>
               <div style={{ fontSize: 12, color: '#64748b' }}>{activeRole.description}</div>
             </div>
             <div>
@@ -191,6 +202,7 @@ export const MasterAdminRoles: React.FC = () => {
               <div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 26 }}>{grantCount}</div>
               <div style={{ fontSize: 11, color: '#64748b' }}>rights granted of {MODULES.length * RIGHTS.length}</div>
             </div>
+            {canEditRoles && (
             <button
               onClick={saveRole}
               disabled={saving || locked}
@@ -198,6 +210,7 @@ export const MasterAdminRoles: React.FC = () => {
             >
               {saving ? 'Saving…' : 'Save role'}
             </button>
+            )}
           </div>
 
           {saveMessage && (

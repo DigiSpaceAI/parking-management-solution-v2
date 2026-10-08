@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { SiteCodeChip } from './SiteCodeChip';
 
 /**
  * Master Admin — Relocation Logs
@@ -24,6 +25,7 @@ interface SlotChangeNotification {
   employeeName?: string;
   mobile?: string;
   changedAt: string;
+  siteId?: string;
 }
 
 export const MasterAdminRelocationLogs: React.FC = () => {
@@ -89,6 +91,7 @@ export const MasterAdminRelocationLogs: React.FC = () => {
             >
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 13 }}>
+                  <SiteCodeChip siteId={n.siteId} />
                   <span style={{ fontWeight: 700 }}>{n.vehicleNumber}</span>
                   <span style={{ color: '#cbd5e1' }}>•</span>
                   <span style={{ color: '#92400e', fontWeight: 600 }}>

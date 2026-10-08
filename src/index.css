@@ -24,3 +24,10 @@
 .custom-sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #3b82f6;
 }
+
+/* Write actions disabled in All sites mode or while viewing as another user (001 F4/F7). */
+[data-write-guard]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}

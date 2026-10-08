@@ -19,18 +19,19 @@ import React, { useState, useEffect, useCallback } from 'react';
  *   matching endpoints anywhere.
  *
  * What IS real and genuinely deployed: the clearHistoricalRecords
- * feature (Parking Logs, Slot Change Notifications, Valet Tickets,
- * Security Audit Log — each independently selectable, with an optional
+ * feature (Parking Logs, Slot Change Notifications, Valet Tickets —
+ * each independently selectable, with an optional
  * "older than" date). That's what powers the danger zone below, in
  * place of the design's non-functional named buttons — real capability
  * standing in for placeholder ones, not a literal re-skin of the design.
+ * The Security Audit Log is not offered: the server refuses to clear the
+ * tamper-evident trail (001 design B9).
  */
 
 const CLEANUP_COLLECTIONS = [
   { key: 'logs', label: 'Parking Logs', hint: 'Only completed (already exited) entries.' },
   { key: 'slotChangeNotifications', label: 'Slot Change Notifications', hint: 'Relocation/change history.' },
   { key: 'valetTickets', label: 'Valet Tickets', hint: 'Only delivered or cancelled tickets.' },
-  { key: 'securityAuditLogs', label: 'Security Audit Log', hint: 'The tamper-evident admin action trail itself.' },
 ] as const;
 
 export const MasterAdminData: React.FC = () => {

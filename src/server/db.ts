@@ -913,7 +913,25 @@ function generate1080Inventory(): StoreData {
 }
 
 // Ensure database file exists or generate fresh with absolute preservation of existing data
+// HOTFIX (2 Oct, 08 P2-3): the store is "ready" only once the real data is
+// in memory. With Firestore configured that is after bootstrapFirestore() has
+// loaded it (or seeded an empty project); without Firestore, right after
+// initDB(). Until then NO Firestore sync (full or targeted) runs, and the API
+// answers 503 ERR_STARTING (server.ts), so the boot-time seed can never
+// overwrite production data and nobody is served an almost-empty store.
+let storeReady = false;
+let storeInitialized = false;
+export function isStoreReady(): boolean {
+  return storeReady;
+}
+
+const BOOTSTRAP_RETRY_MIN_MS = 10_000;
+const BOOTSTRAP_RETRY_MAX_MS = 60_000;
+let bootstrapRetryMs = BOOTSTRAP_RETRY_MIN_MS;
+
 export function initDB(): StoreData {
+  storeInitialized = true;
+  storeReady = !isFirestoreConfigured();
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1197,7 +1215,12 @@ export function initDB(): StoreData {
         overnightRequests: [],
         lastUpdated: new Date().toISOString(),
       };
-      saveDB();
+      // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
+      // boot-time seed (default roles, bootstrap Master, dom-1 company.com)
+      // into Firestore with merge:true on every cold start, resetting changed
+      // default roles, re-adding removed domains and resetting the Master.
+      // An empty Firestore is still seeded from this store by
+      // bootstrapFirestore() ("No existing data found").
     } else {
       // Firestore genuinely isn't configured for this environment (no
       // project ID resolvable) — this is the local/dev case, where full
@@ -1368,23 +1391,34 @@ export function rotateKnownDefaultPasswords(): void {
 
 export async function bootstrapFirestore(): Promise<void> {
   const db = getFirestoreDb();
-  if (!db) return;
+  if (!db) {
+    // Firestore unavailable this run (not configured, or disabled after a
+    // fatal config error): nothing can be written to it, so the local store
+    // is all there is.
+    storeReady = true;
+    return;
+  }
 
   const { data: remote, failed } = await loadStoreFromFirestore();
   if (remote) {
     store = remote;
+    storeReady = true;
     console.log('[firestore] Loaded existing data from Firestore.');
     rotateKnownDefaultPasswords();
   } else if (failed) {
-    // Loading genuinely failed (quota, timeout, network) — do NOT
-    // reseed. Keep running on whatever's already in the in-memory
-    // local store and let the next natural write cycle sync normally,
-    // rather than hammering an already-struggling Firestore with a
-    // full reseed write right now.
-    console.warn('[firestore] Load failed (see error above) — continuing with local store in memory, NOT reseeding, to avoid making quota pressure worse.');
+    // Loading genuinely failed (quota, timeout, network): do NOT reseed,
+    // and do NOT go "ready" on the boot-time seed store (a later sync of it
+    // would overwrite real data). Stay at 503 and retry with backoff.
+    const wait = bootstrapRetryMs;
+    bootstrapRetryMs = Math.min(bootstrapRetryMs * 2, BOOTSTRAP_RETRY_MAX_MS);
+    console.warn(`[firestore] Load failed (see error above) — NOT reseeding; API stays at 503 ERR_STARTING; retrying in ${wait / 1000}s.`);
+    setTimeout(() => {
+      bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
+    }, wait).unref?.();
   } else {
     console.log('[firestore] No existing data found — seeding Firestore from local store.');
     await syncStoreToFirestore(store);
+    storeReady = true;
   }
 }
 
@@ -1498,6 +1532,7 @@ function scheduleDebouncedFullSync() {
   if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
   fullSyncDebounceTimer = setTimeout(() => {
     fullSyncDebounceTimer = null;
+    if (!storeReady) return; // never sync the boot-time seed (hotfix 2 Oct)
     void syncStoreToFirestore(store);
   }, FULL_SYNC_DEBOUNCE_MS);
 }
@@ -1511,6 +1546,13 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
     fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2));
   } catch (err) {
     console.error('Error saving PMS database:', err);
+  }
+
+  // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
+  // loaded. The local JSON copy above is still written.
+  if (!storeReady) {
+    console.warn('[firestore] Store not loaded yet — Firestore sync skipped (local copy only).');
+    return;
   }
 
   if (targetedSync && targetedSync.length > 0) {
@@ -1609,7 +1651,11 @@ export async function clearHistoricalRecords(
 }
 
 export function getStore(): StoreData {
-  if (store.slots.length === 0) {
+  // Hotfix (2 Oct): initialise once only. This used to re-run initDB()
+  // whenever the store had no slots, which threw away a loaded production
+  // store with no slots (and, before this hotfix, full-synced the boot seed
+  // over Firestore) and reset storeReady.
+  if (!storeInitialized) {
     initDB();
   }
   return store;
@@ -1622,7 +1668,7 @@ export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2
   // at one site could get auto-assigned a vacant slot that actually
   // belongs to a different site entirely. Same reasoning as the
   // identical fix already applied to the valet auto-assignment path.
-  const vacantSlots = storeData.slots.filter(s => s.status === 'VACANT' && (!siteId || s.siteId === siteId));
+  const vacantSlots = storeData.slots.filter(s => s.status === 'VACANT' && (!siteId || (s.siteId || DEFAULT_SITE_ID) === siteId));
 
   if (vacantSlots.length === 0) return null;
 
@@ -1667,13 +1713,19 @@ export function processVehicleEntry(params: {
   targetSlotNumber?: string;
   remarks?: string;
   siteId?: string;
-}): { success: boolean; message: string; slot?: ParkingSlot; log?: ParkingLog } {
+}): { success: boolean; message: string; slot?: ParkingSlot; log?: ParkingLog; activeAtOtherSiteId?: string } {
   const storeData = getStore();
   const cleanVehicleNum = params.vehicleNumber.trim().toUpperCase();
   const requestSiteId = params.siteId || DEFAULT_SITE_ID;
+  const atThisSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === requestSiteId;
 
-  // Check if already parked
-  const alreadyParked = storeData.slots.find(s => s.currentVehicle === cleanVehicleNum && s.status === 'OCCUPIED');
+  // "Already parked" is checked at THIS site only (H5): the reply must never
+  // reveal a slot at another site. A plate also occupied elsewhere is
+  // reported back to the caller as activeAtOtherSiteId, for the audit log
+  // only (the route strips it from the response).
+  const occupiedBy = (s: ParkingSlot) => s.status === 'OCCUPIED' && (s.currentVehicle || '').toUpperCase() === cleanVehicleNum;
+  const alreadyParked = storeData.slots.find(s => occupiedBy(s) && atThisSite(s));
+  const parkedElsewhere = alreadyParked ? undefined : storeData.slots.find(s => occupiedBy(s) && !atThisSite(s));
   if (alreadyParked) {
     return {
       success: false,
@@ -1682,8 +1734,9 @@ export function processVehicleEntry(params: {
     };
   }
 
-  // Look up employee record
-  const employee = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === cleanVehicleNum);
+  // Look up the employee record at this site only (a pass at another site
+  // is not a pass here).
+  const employee = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === cleanVehicleNum && atThisSite(e));
   const detectedType = params.vehicleType || (employee ? employee.vehicleType : 'SEDAN');
 
   let targetSlot: ParkingSlot | null = null;
@@ -1754,6 +1807,7 @@ export function processVehicleEntry(params: {
     message: `Entry Granted! Assigned Slot: ${targetSlot.slotNumber} (${targetSlot.floorLocation})`,
     slot: targetSlot,
     log: newLog,
+    ...(parkedElsewhere ? { activeAtOtherSiteId: parkedElsewhere.siteId || DEFAULT_SITE_ID } : {}),
   };
 }
 
@@ -1763,13 +1817,12 @@ export function processVehicleExit(vehicleNumberOrSlot: string, siteId?: string)
   const searchKey = vehicleNumberOrSlot.trim().toUpperCase();
   const requestSiteId = siteId || DEFAULT_SITE_ID;
 
-  // Vehicle number is safe to match globally (genuinely unique regardless
-  // of site), but slotNumber alone isn't — scoped to the requesting site
-  // for that part of the match, same reasoning as everywhere else this
-  // session.
+  // Both the plate and the slot number are matched within the requesting
+  // site only (H5 / BUG-3): an attendant at one site can never check out a
+  // vehicle parked at another.
   const slot = storeData.slots.find(
-    s => (s.currentVehicle && s.currentVehicle.toUpperCase() === searchKey) ||
-      (s.slotNumber.toUpperCase() === searchKey && (s.siteId || DEFAULT_SITE_ID) === requestSiteId)
+    s => (s.siteId || DEFAULT_SITE_ID) === requestSiteId &&
+      ((s.currentVehicle && s.currentVehicle.toUpperCase() === searchKey) || s.slotNumber.toUpperCase() === searchKey)
   );
 
   if (!slot || slot.status !== 'OCCUPIED' || !slot.currentVehicle) {
@@ -1823,9 +1876,12 @@ export function processVehicleExit(vehicleNumberOrSlot: string, siteId?: string)
 }
 
 // Predictive Analytics Hourly Time-Series Forecast Generator
-export function generate24HourPredictiveForecast(): PredictiveAnalyticsReport {
+export function generate24HourPredictiveForecast(siteId: string): PredictiveAnalyticsReport {
   const storeData = getStore();
-  const totalSlots = storeData.slots.length; // 1080
+  // Scoped to one site (001 design B2): slot counts and floor breakdown come
+  // from that site's own inventory, never the whole platform.
+  const siteSlots = storeData.slots.filter(s => (s.siteId || DEFAULT_SITE_ID) === siteId);
+  const totalSlots = siteSlots.length;
 
   const hours = [
     '00:00', '01:00', '02:00', '03:00', '04:00', '05:00',
@@ -1890,17 +1946,27 @@ export function generate24HourPredictiveForecast(): PredictiveAnalyticsReport {
     projectedPeakOccupied,
     hourlyForecast,
     aiRecommendations: [
-      'Morning Peak Notice: High demand expected between 09:15 AM - 10:00 AM reaching 96% occupancy (1,036 slots).',
+      `Morning Peak Notice: High demand expected between 09:15 AM - 10:00 AM reaching ${peakOccupancyPct}% occupancy (${projectedPeakOccupied.toLocaleString('en-IN')} slots).`,
       'EV Charging Demand Alert: B1 EV Hub projected at 100% capacity by 10:15 AM. Recommend 3-hour dwell time limit rule.',
       'Puzzle Stacker Optimization: B1 & B2 Puzzle stackers should pre-sequence lower pallets before 08:30 AM arrival wave.',
       'Non-Parked Roster Verification: Schedule FCM cutoff alert scan at 10:30 AM for off-site or unregistered employee vehicles.',
     ],
-    floorBreakdown: [
-      { floor: 'Basement B1', totalSlots: 320, projectedPeakOccupied: 314, peakPct: 98 },
-      { floor: 'Basement B2', totalSlots: 360, projectedPeakOccupied: 345, peakPct: 96 },
-      { floor: 'Basement B3', totalSlots: 320, projectedPeakOccupied: 288, peakPct: 90 },
-      { floor: 'Ground & Driveway', totalSlots: 80, projectedPeakOccupied: 72, peakPct: 90 },
-    ],
+    floorBreakdown: (() => {
+      // Same peak profile per floor as before, applied to this site's
+      // real per-floor slot counts; floors the site doesn't have are omitted.
+      const floors: { floor: string; match: (b: string) => boolean; peakPct: number }[] = [
+        { floor: 'Basement B1', match: b => b === 'B1', peakPct: 98 },
+        { floor: 'Basement B2', match: b => b === 'B2', peakPct: 96 },
+        { floor: 'Basement B3', match: b => b === 'B3', peakPct: 90 },
+        { floor: 'Ground & Driveway', match: b => b === 'Ground' || b === 'Driveway', peakPct: 90 },
+      ];
+      return floors
+        .map(f => {
+          const count = siteSlots.filter(s => f.match(s.basement)).length;
+          return { floor: f.floor, totalSlots: count, projectedPeakOccupied: Math.round(count * (f.peakPct / 100)), peakPct: f.peakPct };
+        })
+        .filter(f => f.totalSlots > 0);
+    })(),
   };
 }
 
@@ -2078,15 +2144,17 @@ export function getEmployeeByEmailOrId(query: string): Employee | undefined {
   );
 }
 
-// Update Employee Vehicle directly from Mobile App
+// Update an employee's registered vehicle (mobile self-service / admin).
+// The caller (server.ts) has already resolved WHICH record and checked access;
+// this only updates that one record. It never creates an employee (H3): a new
+// pass goes through registration + approval. A linked registration request
+// gets the new vehicle but keeps its own status (no silent approval).
 export function updateEmployeeVehicle(params: {
-  employeeId?: string;
-  email?: string;
+  employeeRecordId: string;
   vehicleNumber: string;
-  vehicleType: VehicleType;
+  vehicleType?: VehicleType;
   vehicleBrand?: string;
-  updateReason?: string;
-}): { success: boolean; message: string; employee?: Employee } {
+}): { success: boolean; message: string; employee?: Employee; oldPlate?: string } {
   const storeData = getStore();
   const cleanPlate = (params.vehicleNumber || '').trim().toUpperCase();
 
@@ -2094,72 +2162,42 @@ export function updateEmployeeVehicle(params: {
     return { success: false, message: 'Valid vehicle license plate number is required.' };
   }
 
-  // Find employee by employeeId or email
-  let emp = storeData.employees.find(e =>
-    (params.employeeId && e.employeeId.toUpperCase() === params.employeeId.toUpperCase()) ||
-    (params.email && e.email.toLowerCase() === params.email.toLowerCase())
-  );
+  const emp = storeData.employees.find(e => e.id === params.employeeRecordId);
+  if (!emp) return { success: false, message: 'Employee record not found.' };
 
   const now = new Date().toISOString();
+  const oldPlate = emp.vehicleNumber;
+  emp.vehicleNumber = cleanPlate;
+  emp.vehicleType = params.vehicleType || emp.vehicleType;
+  if (params.vehicleBrand) {
+    emp.vehicleBrand = params.vehicleBrand;
+  }
+  emp.updatedAt = now;
 
-  if (!emp && params.email) {
-    // Create new active employee on the fly if not in roster
-    emp = saveOrUpdateEmployee({
-      email: params.email,
-      name: params.email.includes('@') ? params.email.split('@')[0].replace('.', ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'Corporate Employee',
-      employeeId: params.employeeId || `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-      vehicleNumber: cleanPlate,
-      vehicleType: params.vehicleType || 'SEDAN',
-      vehicleBrand: params.vehicleBrand || 'Personal Vehicle',
-      status: 'ACTIVE',
-      isActive: true,
-      registrationType: 'EMPLOYEE_SELF',
-    });
-
-    return {
-      success: true,
-      message: `New vehicle ${cleanPlate} registered and whitelisted successfully for ${emp.name}!`,
-      employee: emp,
-    };
+  const targetedSync: { collection: keyof StoreData; ids: string[] }[] = [
+    { collection: 'employees', ids: [emp.id] },
+  ];
+  const empSite = emp.siteId || DEFAULT_SITE_ID;
+  const activeReq = (storeData.registrationRequests || []).find(
+    r => (r.siteId || DEFAULT_SITE_ID) === empSite &&
+      ((r.email || '').toLowerCase() === (emp.email || '').toLowerCase() || r.employeeId === emp.employeeId)
+  );
+  if (activeReq) {
+    activeReq.vehicleNumber = cleanPlate;
+    activeReq.vehicleType = params.vehicleType || activeReq.vehicleType;
+    if (params.vehicleBrand) activeReq.vehicleBrand = params.vehicleBrand;
+    activeReq.updatedAt = now;
+    targetedSync.push({ collection: 'registrationRequests', ids: [activeReq.id] });
   }
 
-  if (emp) {
-    const oldPlate = emp.vehicleNumber;
-    emp.vehicleNumber = cleanPlate;
-    emp.vehicleType = params.vehicleType || emp.vehicleType;
-    if (params.vehicleBrand) {
-      emp.vehicleBrand = params.vehicleBrand;
-    }
-    emp.updatedAt = now;
+  saveDB(targetedSync);
 
-    // Sync any active registration requests for this user
-    const targetedSync: { collection: keyof StoreData; ids: string[] }[] = [
-      { collection: 'employees', ids: [emp.id] },
-    ];
-    if (storeData.registrationRequests) {
-      const activeReq = storeData.registrationRequests.find(
-        r => r.email.toLowerCase() === emp!.email.toLowerCase() || r.employeeId === emp!.employeeId
-      );
-      if (activeReq) {
-        activeReq.vehicleNumber = cleanPlate;
-        activeReq.vehicleType = params.vehicleType || activeReq.vehicleType;
-        if (params.vehicleBrand) activeReq.vehicleBrand = params.vehicleBrand;
-        activeReq.status = 'APPROVED';
-        activeReq.updatedAt = now;
-        targetedSync.push({ collection: 'registrationRequests', ids: [activeReq.id] });
-      }
-    }
-
-    saveDB(targetedSync);
-
-    return {
-      success: true,
-      message: `Vehicle successfully updated from ${oldPlate || 'N/A'} to ${cleanPlate} (${emp.vehicleType} - ${emp.vehicleBrand}). Gate ANPR passes updated!`,
-      employee: emp,
-    };
-  }
-
-  return { success: false, message: 'Employee record not found.' };
+  return {
+    success: true,
+    message: `Vehicle successfully updated from ${oldPlate || 'N/A'} to ${cleanPlate} (${emp.vehicleType} - ${emp.vehicleBrand}). Gate ANPR passes updated!`,
+    employee: emp,
+    oldPlate,
+  };
 }
 
 // Single Slot Save/Update
@@ -2292,7 +2330,16 @@ export function getWhitelistedDomains(): WhitelistedDomain[] {
   return getStore().whitelistedDomains || [];
 }
 
-export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Parking Admin'): { success: boolean; message: string; domain?: WhitelistedDomain } {
+// Domains that allow registration at a site: the site's own + platform-wide.
+export function domainsAllowedForSite(siteId: string): string[] {
+  return getWhitelistedDomains()
+    .filter(d => d.isActive && (!d.siteId || d.siteId === siteId))
+    .map(d => d.domain.toLowerCase());
+}
+
+// siteId undefined = platform-wide entry. The same domain may exist once
+// platform-wide and/or once per site.
+export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Parking Admin', siteId?: string): { success: boolean; message: string; domain?: WhitelistedDomain } {
   const storeData = getStore();
   const cleanDomain = domainInput.replace(/^@/, '').trim().toLowerCase();
 
@@ -2304,7 +2351,12 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
     storeData.whitelistedDomains = [];
   }
 
-  const existing = storeData.whitelistedDomains.find(d => d.domain.toLowerCase() === cleanDomain);
+  const global = storeData.whitelistedDomains.find(d => !d.siteId && d.isActive && d.domain.toLowerCase() === cleanDomain);
+  if (siteId && global) {
+    return { success: false, message: `Domain @${cleanDomain} is already allowed for every site.` };
+  }
+
+  const existing = storeData.whitelistedDomains.find(d => (d.siteId || undefined) === siteId && d.domain.toLowerCase() === cleanDomain);
   if (existing) {
     if (!existing.isActive) {
       existing.isActive = true;
@@ -2315,8 +2367,9 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
   }
 
   const newDom: WhitelistedDomain = {
-    id: `dom-${Date.now()}`,
+    id: `dom-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     domain: cleanDomain,
+    ...(siteId ? { siteId } : {}),
     addedBy,
     createdAt: new Date().toISOString(),
     isActive: true,
@@ -2327,16 +2380,25 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
 
   return {
     success: true,
-    message: `Domain @${cleanDomain} successfully added to Whitelist!`,
+    message: `Domain @${cleanDomain} successfully added to Whitelist${siteId ? ' for this site' : ' for all sites'}!`,
     domain: newDom,
   };
+}
+
+// Finds the entry to remove: by id, or by name within the given scope
+// (siteId undefined = platform-wide).
+export function findWhitelistedDomain(domainIdOrName: string, siteId?: string): WhitelistedDomain | undefined {
+  const list = getWhitelistedDomains();
+  const key = domainIdOrName.replace(/^@/, '').trim().toLowerCase();
+  return list.find(d => d.id === domainIdOrName) ||
+    list.find(d => (d.siteId || undefined) === siteId && d.domain.toLowerCase() === key);
 }
 
 export function removeWhitelistedDomain(domainId: string): { success: boolean; message: string } {
   const storeData = getStore();
   if (!storeData.whitelistedDomains) return { success: false, message: 'No domains registered.' };
 
-  const idx = storeData.whitelistedDomains.findIndex(d => d.id === domainId || d.domain.toLowerCase() === domainId.toLowerCase());
+  const idx = storeData.whitelistedDomains.findIndex(d => d.id === domainId);
   if (idx < 0) {
     return { success: false, message: 'Whitelisted domain not found.' };
   }
@@ -2371,9 +2433,17 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
 
   // Domain Authentication Verification
   const emailDomain = email && email.includes('@') ? (email.split('@')[1]?.toLowerCase() || '') : '';
-  const allowedDomains = (storeData.whitelistedDomains || []).filter(d => d.isActive).map(d => d.domain.toLowerCase());
+  // The site's own domains plus platform-wide ones.
+  const requestSite = data.siteId || DEFAULT_SITE_ID;
+  const allowedDomains = domainsAllowedForSite(requestSite);
 
-  if (!emailDomain || (allowedDomains.length > 0 && !allowedDomains.includes(emailDomain))) {
+  // Fail closed (H9): with no active whitelisted domain, self-registration
+  // is not open at all, rather than open to every domain.
+  if (allowedDomains.length === 0) {
+    return { success: false, message: "Registration isn't open for this site yet." };
+  }
+
+  if (!emailDomain || !allowedDomains.includes(emailDomain)) {
     return {
       success: false,
       message: `DOMAIN AUTHENTICATION FAILED: Email domain '@${emailDomain || 'unknown'}' is NOT whitelisted. Registration is strictly restricted to authorized corporate domains (${allowedDomains.map(d => '@' + d).join(', ')}).`,
@@ -2381,23 +2451,31 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
   }
 
   // Check if vehicle already exists in active employees whitelist
-  const existingEmp = storeData.employees.find(e => e.vehicleNumber.toUpperCase() === vehicleNumber);
+  // B17 (m-6): duplicate checks look at the REQUEST's site only. A plate or
+  // email known at another site neither blocks this site nor is revealed.
+  const atRequestSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === requestSite;
+  const isActivePass = (e: Employee) => (e.status ? e.status === 'ACTIVE' : !!e.isActive);
+  const existingEmp = storeData.employees.find(
+    e => atRequestSite(e) && isActivePass(e) && e.vehicleNumber.toUpperCase() === vehicleNumber
+  );
   if (existingEmp) {
+    // Public endpoint: never disclose who owns a plate (H9).
     return {
       success: false,
-      message: `Vehicle ${vehicleNumber} is ALREADY registered in the Active Employee Whitelist (${existingEmp.name}, ${existingEmp.employeeId}).`,
+      message: "This vehicle can't be registered. Contact your site admin.",
     };
   }
 
   // Check if already submitted pending request
   const existingReq = (storeData.registrationRequests || []).find(
-    r => r.email.toLowerCase() === email || r.vehicleNumber.toUpperCase() === vehicleNumber
+    r => atRequestSite(r) && r.status === 'PENDING' &&
+      (r.email.toLowerCase() === email || r.vehicleNumber.toUpperCase() === vehicleNumber)
   );
 
-  if (existingReq && existingReq.status === 'PENDING') {
+  if (existingReq) {
     return {
       success: false,
-      message: `A registration request for ${email} / ${vehicleNumber} is ALREADY pending Parking Admin review.`,
+      message: 'A request for this vehicle or email is already waiting for review at this site.',
     };
   }
 
@@ -2446,12 +2524,27 @@ export function approveRegistrationRequest(requestId: string): { success: boolea
     return { success: false, message: 'This registration request has already been APPROVED.' };
   }
 
+  // B17: never create a second active pass for the same plate at the same
+  // site (the same person's own pass, matched by employeeId, is updated).
+  const reqSite = req.siteId || DEFAULT_SITE_ID;
+  const duplicatePass = storeData.employees.find(
+    e => (e.siteId || DEFAULT_SITE_ID) === reqSite &&
+      (e.status ? e.status === 'ACTIVE' : !!e.isActive) &&
+      e.vehicleNumber.toUpperCase() === (req.vehicleNumber || '').toUpperCase() &&
+      e.employeeId.toUpperCase() !== (req.employeeId || '').toUpperCase()
+  );
+  if (duplicatePass) {
+    return { success: false, message: 'This vehicle is already on an active pass at this site.' };
+  }
+
   // Update status
   req.status = 'APPROVED';
   req.reviewedAt = new Date().toISOString();
 
-  // Automatically add to Employee Whitelist Master
+  // Automatically add to Employee Whitelist Master — in the REQUEST's own
+  // site (BUG-12); it previously landed in the default site.
   const newEmp = saveOrUpdateEmployee({
+    siteId: req.siteId || DEFAULT_SITE_ID,
     employeeId: req.employeeId,
     name: req.name,
     department: req.department,
@@ -2850,9 +2943,6 @@ export function bulkUploadRegistrations(
   let updated = 0;
   const errors: string[] = [];
 
-  const allowedDomains = (storeData.whitelistedDomains || [])
-    .filter(d => d.isActive)
-    .map(d => d.domain.toLowerCase());
 
   items.forEach((item, index) => {
     const email = (item.email || '').trim().toLowerCase();
@@ -2865,13 +2955,24 @@ export function bulkUploadRegistrations(
     }
 
     const emailDomain = email.split('@')[1]?.toLowerCase();
-    if (allowedDomains.length > 0 && emailDomain && !allowedDomains.includes(emailDomain)) {
+    const allowedDomains = domainsAllowedForSite(item.siteId || DEFAULT_SITE_ID);
+    // Fail closed, as single registration does (H9 / m-1).
+    if (allowedDomains.length === 0) {
+      errors.push(`Row ${index + 1} (${email}): Registration isn't open for this site yet.`);
+      return;
+    }
+    if (!emailDomain || !allowedDomains.includes(emailDomain)) {
       errors.push(`Row ${index + 1} (${email}): Domain '@${emailDomain}' is not whitelisted.`);
       return;
     }
 
+    // B17 (gap 13): upsert only within the row's own site. A request at
+    // another site with the same plate/email is never updated or approved;
+    // this row becomes a new request at its own site.
+    const rowSite = item.siteId || DEFAULT_SITE_ID;
     const existingIndex = storeData.registrationRequests.findIndex(
-      r => r.vehicleNumber.toUpperCase() === vehicleNumber || r.email.toLowerCase() === email
+      r => (r.siteId || DEFAULT_SITE_ID) === rowSite &&
+        (r.vehicleNumber.toUpperCase() === vehicleNumber || r.email.toLowerCase() === email)
     );
 
     const now = new Date().toISOString();
@@ -2928,6 +3029,7 @@ export function bulkUploadRegistrations(
 
       if (isApproved) {
         saveOrUpdateEmployee({
+          siteId: newReq.siteId,
           employeeId: newReq.employeeId,
           name: newReq.name,
           department: newReq.department,
@@ -2980,14 +3082,12 @@ export function changeVehicleSlot(
     return { success: false, message: 'Vehicle number (or current slot) and Target Slot Number are required.' };
   }
 
-  // 1. Find the current slot and vehicle number. Vehicle number is
-  // matched globally, same as processVehicleExit (genuinely unique
-  // regardless of site); slot number alone is scoped to the requesting
-  // site — this route previously scoped neither, so an attendant could
-  // relocate a vehicle using another site's slot numbers.
+  // 1. Find the current slot and vehicle number, both within the
+  // requesting site only (BUG-4), same as processVehicleExit.
+  const atThisSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === requestSiteId;
   let currentSlot = storeData.slots.find(
-    (s) => (s.currentVehicle && s.currentVehicle.toUpperCase() === query) ||
-      (s.slotNumber.toUpperCase() === query && (s.siteId || DEFAULT_SITE_ID) === requestSiteId)
+    (s) => atThisSite(s) &&
+      ((s.currentVehicle && s.currentVehicle.toUpperCase() === query) || s.slotNumber.toUpperCase() === query)
   );
 
   let vehicleNum = query;
@@ -3033,7 +3133,7 @@ export function changeVehicleSlot(
 
   // 4. Update active Parking Log
   const activeLog = storeData.logs.find(
-    (l) => l.vehicleNumber.toUpperCase() === vehicleNum && (l.status === 'ACTIVE' || !l.exitTime)
+    (l) => l.vehicleNumber.toUpperCase() === vehicleNum && (l.status === 'ACTIVE' || !l.exitTime) && atThisSite(l)
   );
 
   if (activeLog) {
@@ -3044,7 +3144,7 @@ export function changeVehicleSlot(
   }
 
   // 5. Check if vehicle belongs to a registered employee for mobile SMS dispatch
-  const emp = storeData.employees.find((e) => e.vehicleNumber.toUpperCase() === vehicleNum);
+  const emp = storeData.employees.find((e) => e.vehicleNumber.toUpperCase() === vehicleNum && atThisSite(e));
   const smsText = `PARKFLOW DRIVER ALERT: Vehicle ${vehicleNum} slot updated from ${oldSlotNumber} to ${newSlot.slotNumber} (${newSlot.basement}, ${newSlot.parkingType} Level, ${newSlot.height}). Reason: ${reason}. Attendant: ${attendantName}.`;
 
   const notification: SlotChangeNotification = {
@@ -3404,7 +3504,7 @@ export function createValetTicket(data: {
     // otherwise a valet ticket for one site could get handed a vacant
     // slot that actually belongs to a different site.
     const vacantSlot = storeData.slots.find(
-      (s) => s.status === 'VACANT' && (!data.siteId || s.siteId === data.siteId)
+      (s) => s.status === 'VACANT' && (!data.siteId || (s.siteId || DEFAULT_SITE_ID) === data.siteId)
     );
     slotNumber = vacantSlot ? vacantSlot.slotNumber : 'B1-VIP-VALET';
     derivedSiteId = vacantSlot?.siteId;
@@ -3482,17 +3582,20 @@ export function updateValetStatus(data: {
   };
 }
 
-export function requestValetRetrieval(query: string): { success: boolean; message: string; ticket?: ValetTicket } {
+export function requestValetRetrieval(query: string, siteId?: string): { success: boolean; message: string; ticket?: ValetTicket } {
   const storeData = getStore();
   if (!storeData.valetTickets) return { success: false, message: 'No tickets found.' };
 
   const cleanQuery = query.toUpperCase().trim();
+  // Scoped to the requesting site when given, so a query can never match
+  // (and flip) another site's ticket.
   const ticket = storeData.valetTickets.find(
     (t) =>
+      (!siteId || (t.siteId || DEFAULT_SITE_ID) === siteId) && (
       t.ticketNumber.toUpperCase() === cleanQuery ||
       t.keyTagNumber.toUpperCase() === cleanQuery ||
       t.vehicleNumber.replace(/\s+/g, '').includes(cleanQuery.replace(/\s+/g, '')) ||
-      t.guestPhone.includes(cleanQuery)
+      t.guestPhone.includes(cleanQuery))
   );
 
   if (!ticket) {

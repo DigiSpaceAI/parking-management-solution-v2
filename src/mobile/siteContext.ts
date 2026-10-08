@@ -9,7 +9,7 @@ import { getUserPrimarySite } from '../utils/rbac';
  * read it, so every attendant transacted against one shared global slot
  * pool regardless of which real site they were assigned to.
  *
- * Call resolveSiteContext() once, right after login (see ParkFlowsApp.tsx)
+ * Call resolveSiteContext() right after login (see ParkFlowsApp.tsx)
  * — it fetches the sites this attendant is actually permitted to see
  * (GET /api/v1/my-sites — a permission-light endpoint, unlike
  * /api/v1/sites which requires the MASTER_CONFIG module an attendant
@@ -39,24 +39,45 @@ export function clearSiteContext(): void {
   currentSiteName = null;
 }
 
-export async function resolveSiteContext(user: AppUser, apiFetchFn: (path: string) => Promise<Response>): Promise<void> {
+/**
+ * Outcome of resolving the attendant's site (001 design M1).
+ * - `ok`: a site was chosen; apiFetch() now sends it as x-site-id.
+ * - `no-site`: /my-sites answered, but this user has no permitted site.
+ * - `error`: /my-sites failed (network, timeout, 5xx, bad JSON).
+ * - `session-expired`: /my-sites returned 401; the caller should go back
+ *   to sign-in rather than offer Try again.
+ * Anything other than `ok` leaves the site context cleared. The server
+ * rejects site-scoped calls without a site (strict mode, 400 "Choose a
+ * site first."), so the app must not let the attendant reach the gate.
+ */
+export type SiteResolveResult =
+  | { status: 'ok'; siteId: string; siteName: string | null }
+  | { status: 'no-site' }
+  | { status: 'error' }
+  | { status: 'session-expired' };
+
+export async function resolveSiteContext(
+  user: AppUser,
+  apiFetchFn: (path: string) => Promise<Response>
+): Promise<SiteResolveResult> {
+  clearSiteContext();
   try {
     const res = await apiFetchFn('/api/v1/my-sites');
-    if (!res.ok) return;
+    if (res.status === 401) return { status: 'session-expired' };
+    if (!res.ok) return { status: 'error' };
     const data = await res.json();
     const sites = Array.isArray(data?.sites) ? data.sites : [];
     const primary = getUserPrimarySite(user, sites);
-    if (primary) {
-      setSiteId(primary.id);
-      // Real, visible confirmation of which site an attendant is
-      // working in matters — flagged directly by testing: with no site
-      // name shown anywhere in the app, there was no way to actually
-      // confirm which site a shift was scoped to just by looking at the
-      // screen, even though the underlying data was correctly scoped.
-      currentSiteName = primary.siteName || null;
-    }
+    if (!primary || !primary.id) return { status: 'no-site' };
+    setSiteId(primary.id);
+    // Shown in the header so the attendant can confirm which site the
+    // shift is scoped to.
+    currentSiteName = primary.siteName || null;
+    return { status: 'ok', siteId: primary.id, siteName: currentSiteName };
   } catch {
-    // Non-fatal — requests simply fall back to the platform default site
-    // if this fails, same as before this fix existed at all.
+    // Network failure, timeout (apiFetch aborts after 15 s) or bad JSON.
+    // No fallback site: the caller shows the blocking screen.
+    clearSiteContext();
+    return { status: 'error' };
   }
 }

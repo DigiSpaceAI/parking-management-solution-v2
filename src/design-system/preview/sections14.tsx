@@ -68,6 +68,10 @@ export const FieldsSection: React.FC = () => {
         <Select label="Status" error="Choose a status." options={[{ value: '', label: 'Choose…' }]} />
         <Select label="Level" disabled options={[{ value: 'B1', label: 'Basement B1' }]} />
       </div>
+      <p className="pf-field-help">
+        A link inside a sentence, like <a className="pf-link pf-link--inline" href="#help">the help page</a>, keeps its text size;
+        a standalone link such as "Forgot password?" is a 44×44 target on touch.
+      </p>
       <Labeled label="Checkbox and radio">
         <Checkbox label="Unchecked" />
         <Checkbox label="Checked" defaultChecked />

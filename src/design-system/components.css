@@ -291,6 +291,12 @@
   .pf-link { color: var(--navy-600); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
   .pf-link:hover { color: var(--navy-700); }
   .pf-link:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+  /* .pf-link is a standalone link by default (UX 02, 2026-10-08): a 24px target with a mouse, 44px on touch
+     or below 768px (touch rule at the end of this layer); the text and underline don't move, the box grows.
+     Exempt (WCAG 2.2 2.5.8 inline exception): .pf-link--inline, or a .pf-link inside help or state text,
+     i.e. a link that is part of a sentence of running text. */
+  .pf-link:not(.pf-link--inline) { display: inline-flex; align-items: center; min-height: var(--space-6); }
+  .pf-link--inline, .pf-field-help .pf-link, .pf-state-text .pf-link { display: inline; min-height: 0; min-width: 0; }
   .pf-btn:disabled { cursor: not-allowed; }
   .pf-btn[aria-busy="true"] .pf-spinner { margin-right: 0; }
   .pf-page-select { display: inline-flex; align-items: center; gap: var(--space-2); }
@@ -461,5 +467,16 @@
     .pf-pager-ellipsis { min-width: var(--touch-min); }
     .pf-page { min-width: var(--touch-min); height: var(--touch-min); }
     .pf-toast-close, .pf-banner-close { width: var(--touch-min); height: var(--touch-min); }
+    /* NFR-4 / QA BUG-1: checkbox and radio rows are 44 wide even with no visible text (table-card and
+       table-column row checkboxes); a box-only row centres its box in the 44×44 target. */
+    .pf-check { min-width: var(--touch-min); }
+    .pf-table-card .pf-check, .pf-col-check .pf-check { justify-content: center; }
+    /* On desktop the table row is the target (.pf-table .pf-check has no min-height); on touch the
+       row checkbox and the sort header buttons are 44px targets themselves (QA re-check at 768 touch). */
+    .pf-table .pf-check { min-height: var(--touch-min); }
+    .pf-table th button.pf-sort { min-height: var(--touch-min); }
+    /* Standalone links ("Forgot password?" under a field) are 44×44 targets too. A link inside a running
+       sentence is exempt: give it .pf-link--inline (or use a plain <a> in prose). */
+    .pf-link:not(.pf-link--inline):not(.pf-field-help .pf-link):not(.pf-state-text .pf-link) { min-height: var(--touch-min); min-width: var(--touch-min); }
   }
 }

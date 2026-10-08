@@ -149,6 +149,9 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: none; bo
 .mk-aside .pf-card { display: flex; flex-direction: column; gap: var(--space-3); }
 .mk-aside a { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--touch-min); font-weight: 600; }
 .mk-success { display: flex; flex-direction: column; gap: var(--space-4); align-items: flex-start; }
+/* R1a contact panel on /demo/ (form switched off) */
+.mk-contact { display: flex; flex-direction: column; gap: var(--space-4); }
+.mk-contact-list { display: flex; flex-wrap: wrap; gap: var(--space-3); list-style: none; }
 .mk-prose { display: flex; flex-direction: column; gap: var(--space-4); max-width: 46rem; }
 .mk-prose h2 { font: var(--type-title-2); margin-top: var(--space-4); }
 .mk-prose ul { padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); }

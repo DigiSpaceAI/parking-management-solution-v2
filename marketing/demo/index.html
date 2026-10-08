@@ -3,16 +3,26 @@
   <head>
 <!-- @partial head -->
     <title>Book a demo — ParkFlows</title>
+<!-- @if demo-form -->
     <meta name="description" content="Tell us about your site and we'll contact you within one working day to set up a ParkFlows demo." />
+<!-- @else -->
+    <meta name="description" content="Email or call ParkFlows to arrange a demo with your own site's layout." />
+<!-- @endif -->
     <link rel="canonical" href="https://parkflows.in/demo/" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ParkFlows" />
     <meta property="og:title" content="Book a ParkFlows demo" />
+<!-- @if demo-form -->
     <meta property="og:description" content="Tell us about your site and we'll contact you within one working day." />
+<!-- @else -->
+    <meta property="og:description" content="Email or call us to arrange a demo with your own site's layout." />
+<!-- @endif -->
     <meta property="og:url" content="https://parkflows.in/demo/" />
     <meta property="og:image" content="https://parkflows.in/og-image.png" />
     <meta name="twitter:card" content="summary_large_image" />
+<!-- @if demo-form -->
     <script type="module" src="./demo.js"></script>
+<!-- @endif -->
   </head>
   <body>
 <!-- @partial header -->
@@ -21,9 +31,14 @@
         <div>
           <div class="mk-page-head">
             <h1 class="mk-h2">Book a demo</h1>
+<!-- @if demo-form -->
             <p class="mk-lead">Tell us about your site. We'll contact you within one working day to arrange a demo with your own site's layout.</p>
+<!-- @else -->
+            <p class="mk-lead">Tell us about your site, and we'll arrange a demo with your own site's layout.</p>
+<!-- @endif -->
           </div>
 
+<!-- @if demo-form -->
           <noscript>
             <div class="pf-banner pf-banner--info mk-noscript" role="status">
               <div class="pf-stack"><p class="pf-banner-title">This form needs JavaScript</p>
@@ -142,14 +157,28 @@
               <button class="pf-btn pf-btn--primary pf-btn--lg" id="f-submit" type="submit">Send request</button>
             </div>
           </form>
+<!-- @else -->
+          <!-- R1a (01 v1.3): until B6 + the D1 rewrite are live the page is built without the form and without
+               demo.js (PF_DEMO_FORM off, the default); people book a demo by email or phone. -->
+          <section class="pf-card mk-contact" aria-labelledby="contact-title">
+            <h2 class="mk-h3" id="contact-title">Write or call us</h2>
+            <p class="mk-text">Tell us your company, city, the kind of site and roughly how many parking slots and sites you have.</p>
+            <ul class="mk-contact-list">
+              <li><a class="pf-btn pf-btn--primary pf-btn--lg" href="mailto:sales@parkflows.in?subject=Demo%20request"><i data-icon="mail"></i>sales@parkflows.in</a></li>
+              <li><a class="pf-btn pf-btn--secondary pf-btn--lg" href="tel:+919820603518"><i data-icon="phone"></i>+91 98206 03518</a></li>
+            </ul>
+          </section>
+<!-- @endif -->
         </div>
 
         <aside class="mk-aside" aria-label="Other ways to reach us">
+<!-- @if demo-form -->
           <div class="pf-card">
             <h2 class="mk-h3">Prefer to write or call?</h2>
             <a href="mailto:sales@parkflows.in"><i data-icon="mail"></i>sales@parkflows.in</a>
             <a href="tel:+919820603518"><i data-icon="phone"></i>+91 98206 03518</a>
           </div>
+<!-- @endif -->
           <div class="pf-card">
             <h2 class="mk-h3">What happens next</h2>
             <p class="mk-text">We contact you the way you choose, ask about your site's layout, and show you ParkFlows with it.</p>

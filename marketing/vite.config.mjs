@@ -15,6 +15,26 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { defineConfig } from 'vite';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * R1a build flag (01 v1.3): the Book-a-demo form ships switched OFF until B6 (/api/v1/demo-requests) and the
+ * D1 hosting rewrite are live. Off (default): /demo/ is built with the email + phone contact panel only, and
+ * demo.js is neither bundled nor loaded. On: the form page exactly as specified in AC-32 / 05 M-1.
+ *   PF_DEMO_FORM=1 npm run build:marketing      (also accepts on / true / yes)
+ * In the HTML: <!-- @if demo-form --> … <!-- @else --> … <!-- @endif --> (no nesting).
+ */
+export const DEMO_FORM = /^(1|on|true|yes)$/i.test(process.env.PF_DEMO_FORM ?? '');
+const FLAGS = { 'demo-form': DEMO_FORM };
+const IF_BLOCK = /<!--\s*@if\s+([\w-]+)\s*-->([\s\S]*?)(?:<!--\s*@else\s*-->([\s\S]*?))?<!--\s*@endif\s*-->/g;
+
+function applyFlags(html, file) {
+  const out = html.replace(IF_BLOCK, (_, flag, yes, no = '') => {
+    if (!(flag in FLAGS)) throw new Error(`marketing: unknown build flag "${flag}" in ${file}`);
+    return FLAGS[flag] ? yes : no;
+  });
+  if (/<!--\s*@(if|else|endif)\b/.test(out)) throw new Error(`marketing: unbalanced @if/@else/@endif in ${file}`);
+  return out;
+}
 const dsDir = path.resolve(here, '../src/design-system');
 const lucideDir = path.resolve(here, '../node_modules/lucide-react/dist/esm/icons');
 
@@ -38,6 +58,7 @@ function marketingHtml() {
       async handler(html, ctx) {
         let out = html.replace(/<!--\s*@partial\s+([\w-]+)\s*-->/g, (_, name) =>
           fs.readFileSync(path.join(here, 'partials', `${name}.html`), 'utf8'));
+        out = applyFlags(out, ctx.filename);
         const rel = path.relative(path.dirname(ctx.filename), dsDir).split(path.sep).join('/');
         out = out.replaceAll('~ds/', `${rel}/`);
         const ICON = /<i data-icon="([\w-]+)"(?: class="([^"]*)")?><\/i>/g;

@@ -16,3 +16,10 @@ data/
 
 # Deploy installs with bun.lock (d42af6f); keep a single lockfile (T0d)
 package-lock.json
+
+# Build output of the mobile and marketing builds (002 QA O-4)
+dist-mobile/
+dist-marketing/
+
+# Git bundles used to move release code into Cloud Shell; never commit them
+*.bundle

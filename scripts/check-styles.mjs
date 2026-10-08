@@ -13,10 +13,11 @@
  *       oklch()/oklab()/lab()/lch()/hwb()/color-mix()/color(), the 148 CSS named colours in CSS
  *       declarations (and HTML <style> blocks), in colour attributes (fill/stroke/color/stop-color/…)
  *       and as bare string literals in code
- *   - arbitrary Tailwind values (`-[…]`)
+ *   - arbitrary Tailwind values (`-[…]`), arbitrary properties (`[color:red]`) and the Tailwind 4
+ *       variable shorthand (`p-(--x)`) — any of them lets a non-token value through (R2-1)
  *   - Tailwind defaults that are not tokens (K3 step 1): colours (text-rose-600, bg-white, …),
  *       text sizes (text-xs … text-9xl), radii (rounded, rounded-3xl; tokens: sm md lg xl full),
- *       shadows (shadow, shadow-2xl; tokens: 1 2 3 focus-ring), leading-*, tracking-*,
+ *       shadows (shadow, shadow-2xl; tokens: 1 2 3 focus-ring), drop-/text-/inset-shadow-* (R2-1), leading-*, tracking-*,
  *       font weights (font-thin … font-black) and font-sans / font-serif; also inside CSS `@apply`
  *   - `font-mono` / `pf-mono` outside the data-text components (PlateText,
  *     SlotCode, IdText) — mono is for plates, slot codes, IDs and times only (AC-22)
@@ -62,8 +63,15 @@ const TW_LEADING_TRACKING = /(?<![\w-])(?:[a-z0-9]+:)*(?:leading|tracking)-[a-z0
 const TW_FONT_DEFAULT = /(?<![\w-])(?:[a-z0-9]+:)*font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black|sans|serif)(?![\w-])/g;
 /** Bare `rounded` / `shadow` (Tailwind's default radius / shadow) — only inside class strings, since they are English words. */
 const CLASS_STRING = /\bclass(?:Name)?\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*[`'"]([^`'"]*)[`'"]\s*\})/g;
-const TW_BARE = /(?<![\w-])(?:[a-z0-9]+:)*(rounded|shadow)(?![\w-])/g;
+const TW_BARE = /(?<![\w-])(?:[a-z0-9]+:)*(rounded|shadow|drop-shadow|text-shadow|inset-shadow)(?![\w-])/g;
 const ARBITRARY = /(?<![\w-])(?:[a-z0-9]+:)*[a-z][\w-]*-\[[^\]\s]+\]/g;
+/** Tailwind 4 arbitrary properties `[color:red]` / `hover:![border-radius:7px]` (05 round 2, R2-1). No whitespace inside,
+ *  so a TypeScript index signature `[key: string]` is not mistaken for one. */
+const ARBITRARY_PROP = /(?<![\w-])(?:[a-z0-9-]+:)*!?\[[a-z][a-z-]*:[^\]\s]+\]/g;
+/** Tailwind 4 CSS-variable shorthand `p-(--x)`, `bg-(--brand)`: any value, so it bypasses every token rule (R2-1). */
+const VAR_SHORTHAND = /(?<![\w-])(?:[a-z0-9-]+:)*!?[a-z][\w-]*-\(--[\w-]+\)/g;
+/** drop-shadow-*, text-shadow-*, inset-shadow-* (Tailwind 4.x defaults): tokens.json defines only box shadows (R2-1). */
+const TW_OTHER_SHADOW = /(?<![\w-])(?:[a-z0-9-]+:)*!?((?:drop|text|inset)-shadow)(?:-([a-z0-9-]+?))?(?:\/\d+)?(?![\w-])/g;
 const HEX = /(?<![\w&%-])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/g;
 const FUNC_COLOUR = /\b(?:rgba?|hsla?|oklch|oklab|lab|lch|hwb|color-mix|color)\(/g;
 const MONO = /(?<![\w-])(?:font-mono|pf-mono)(?![\w-])/g;
@@ -88,11 +96,46 @@ const NAMED_STRING = new RegExp(String.raw`["'\`](?:${NAMED_ALT})["'\`]`, 'gi');
 /** CSS declarations: property: value; (value scanned for named colours). */
 const CSS_DECL = /([\w-]+)\s*:\s*([^;{}]*)(?=[;}])/g;
 
-/** Strip comments so documentation can mention the forbidden things. */
+/**
+ * Strip comments so documentation can mention the forbidden things.
+ * Code files go through a small scanner that knows string and template literals (05 round 2, R2-2):
+ * a `//` or `/*` inside "a//b", 'x', `…` or src="//cdn…" is text, not a comment, so the rest of the
+ * line is still checked. ' and " strings end at the line end (JS strings can't span lines), so a stray
+ * apostrophe in JSX text can only make the scanner keep more text, never hide code. A `//` right after
+ * `:` (a URL in JSX text, "https://…") is not treated as a comment either.
+ */
+function stripCodeComments(t) {
+  let out = '';
+  let quote = null; // ', " or `
+  for (let i = 0; i < t.length; ) {
+    const c = t[i];
+    const d = t[i + 1];
+    if (quote) {
+      if (c === '\\') { out += c + (d ?? ''); i += 2; continue; }
+      if (c === '\n' && quote !== '`') quote = null;
+      else if (c === quote) quote = null;
+      out += c; i++; continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; out += c; i++; continue; }
+    if (c === '/' && d === '/' && t[i - 1] !== ':') {
+      let j = t.indexOf('\n', i);
+      if (j < 0) j = t.length;
+      out += ' '.repeat(j - i); i = j; continue;
+    }
+    if (c === '/' && d === '*') {
+      let j = t.indexOf('*/', i + 2);
+      j = j < 0 ? t.length : j + 2;
+      out += t.slice(i, j).replace(/[^\n]/g, ' '); i = j; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 function stripComments(text, ext) {
+  if (CODE_EXTS.has(ext)) return stripCodeComments(text);
   let t = text.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
   if (ext === '.html') t = t.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
-  if (ext !== '.css' && ext !== '.html') t = t.replace(/(^|[^:"'`\\])\/\/[^\n]*/g, (m, p) => p + m.slice(p.length).replace(/[^\n]/g, ' '));
   return t;
 }
 const lineOf = (text, idx) => text.slice(0, idx).split('\n').length;
@@ -120,6 +163,9 @@ function styleObjectProblems(text) {
 /** Tailwind defaults that are not tokens (K3) in one piece of class-bearing text. */
 function tailwindProblems(t, add, offset = 0) {
   for (const m of t.matchAll(ARBITRARY)) add(offset + m.index, `arbitrary Tailwind value ${m[0]}`);
+  for (const m of t.matchAll(ARBITRARY_PROP)) add(offset + m.index, `arbitrary Tailwind property ${m[0]} (use a token class)`);
+  for (const m of t.matchAll(VAR_SHORTHAND)) add(offset + m.index, `Tailwind variable shorthand ${m[0]} (use a token class)`);
+  for (const m of t.matchAll(TW_OTHER_SHADOW)) if (m[2] && m[2] !== 'none' && !TOKEN_COLOURS.has(m[2])) add(offset + m.index, `Tailwind default ${m[0]} (tokens define box shadows only: shadow-1/2/3)`);
   for (const m of t.matchAll(COLOUR_UTIL)) if (!TOKEN_COLOURS.has(m[1])) add(offset + m.index, `non-token colour class ${m[0]}`);
   for (const m of t.matchAll(TW_TEXT_SIZE)) add(offset + m.index, `Tailwind default text size ${m[0]} (use a type token, e.g. text-body)`);
   for (const m of t.matchAll(TW_ROUNDED)) if (!RADIUS_OK.has(m[1])) add(offset + m.index, `Tailwind default radius ${m[0]} (tokens: rounded-${[...RADIUS_OK].join('/')})`);
@@ -253,6 +299,26 @@ function selfTest() {
     ['x/bad.css', '.a { @apply rounded-3xl shadow-2xl; }', /default radius/],
     ['x/Ok.tsx', 'const a = <p className="rounded-md rounded-t-lg rounded-full shadow-1 shadow-3 shadow-none font-display font-text" />;', null],
     ['x/Ok.tsx', 'const a = <p>A rounded card with a soft shadow, leading the way.</p>;', null],
+    // R2-1 (05 round 2): Tailwind 4 escape hatches
+    ['x/Bad.tsx', 'const a = <p className="[color:red]" />;', /arbitrary Tailwind property/],
+    ['x/Bad.tsx', 'const a = <p className="hover:![border-radius:7px]" />;', /arbitrary Tailwind property/],
+    ['x/Bad.tsx', 'const a = <p className="p-(--x)" />;', /variable shorthand p-\(--x\)/],
+    ['x/Bad.tsx', 'const a = <p className="md:bg-(--brand)" />;', /variable shorthand/],
+    ['x/Bad.tsx', 'const a = <p className="drop-shadow-lg" />;', /Tailwind default drop-shadow-lg/],
+    ['x/Bad.tsx', 'const a = <p className="text-shadow-md" />;', /Tailwind default text-shadow-md/],
+    ['x/Bad.tsx', 'const a = <p className="inset-shadow-sm" />;', /Tailwind default inset-shadow-sm/],
+    ['x/Bad.tsx', 'const a = <p className="drop-shadow" />;', /Tailwind default drop-shadow/],
+    ['x/bad.html', '<p class="[color:red] p-(--x)">x</p>', /arbitrary Tailwind property/],
+    ['x/Ok.tsx', 'const a = <p className="drop-shadow-none text-shadow-none" />; interface M { [key: string]: number }', null],
+    // R2-2 (05 round 2): // and /* inside strings are not comments
+    ['x/Bad.tsx', 'const u = "a//b"; const a = <p style={{ color: "red" }} className="text-rose-600" />;', /inline style/],
+    ['x/Bad.tsx', 'const u = "a//b"; const a = <p className="text-rose-600" />;', /non-token colour class/],
+    ['x/Bad.tsx', "const u = 'x/*y'; const a = <p className=\"text-rose-600\" />; const v = '*/';", /non-token colour class/],
+    ['x/Bad.tsx', 'const a = <img src="//cdn.example/x.png" className="text-rose-600" />;', /non-token colour class/],
+    ['x/Bad.tsx', 'const t = `a//b ${x}`; const a = <p className="rounded-3xl" />;', /default radius/],
+    ['x/Ok.tsx', 'const a = 1; // a comment may mention text-rose-600 and style={{ color: "red" }}', null],
+    ['x/Ok.tsx', 'const a = 1; /* block comment: #ff0000 rounded-3xl */ const b = 2;', null],
+    ['x/Ok.tsx', 'const a = <a href="https://example.com/x">Docs</a>;', null],
   ];
   let failed = 0;
   for (const [file, text, expect] of cases) {

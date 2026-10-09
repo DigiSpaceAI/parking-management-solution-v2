@@ -474,7 +474,7 @@
     /* On desktop the table row is the target (.pf-table .pf-check has no min-height); on touch the
        row checkbox and the sort header buttons are 44px targets themselves (QA re-check at 768 touch). */
     .pf-table .pf-check { min-height: var(--touch-min); }
-    .pf-table th button.pf-sort { min-height: var(--touch-min); }
+    .pf-table th button.pf-sort { min-height: var(--touch-min); min-width: var(--touch-min); } /* R3-3: 44×44, not label-wide */
     /* Standalone links ("Forgot password?" under a field) are 44×44 targets too. A link inside a running
        sentence is exempt: give it .pf-link--inline (or use a plain <a> in prose). */
     .pf-link:not(.pf-link--inline):not(.pf-field-help .pf-link):not(.pf-state-text .pf-link) { min-height: var(--touch-min); min-width: var(--touch-min); }

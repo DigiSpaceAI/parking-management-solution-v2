@@ -22,7 +22,7 @@
     <meta name="twitter:card" content="summary_large_image" />
 <!-- @if demo-form -->
     <script type="module" src="./demo.js"></script>
-    <noscript><style>#demo-form { display: none; }</style></noscript>
+    <noscript><link rel="stylesheet" href="/demo-noscript.css" /></noscript>
 <!-- @endif -->
   </head>
   <body>
@@ -65,7 +65,8 @@
 
           <!-- 05 M-1 + QA BUG-2 (NFR-1): the form is laid out from the start (so revealing it moves nothing, CLS 0)
                but is invisible and inert — nothing in it can be focused, typed into or submitted — until demo.js
-               has loaded and taken over submit. Without JavaScript the <noscript> rule in <head> removes it
+               has loaded and taken over submit. Without JavaScript the <noscript> stylesheet in <head> (BUG-3: a file, not an inline style
+               element, so the CSP allows it) removes it
                entirely, so nothing can ever be sent as a GET with the fields in the URL. method="post" is a second
                guard: a stray native submit never puts personal data in a query string. -->
           <form class="mk-form" id="demo-form" method="post" inert data-pending aria-describedby="form-required-note">

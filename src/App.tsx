@@ -676,7 +676,9 @@ export default function App() {
   };
   const userCanOpenModule = (m: string) => canOpenTab(viewer, currentRole, m);
 
-  const landingReady = rolesReady && (sitePhase === 'ready' || sitePhase === 'no-site');
+  // Wait until the site is settled too: Overview is only the landing page with one site chosen,
+  // so a landing picked while the site is still resolving (sign-in, view-as) would skip it.
+  const landingReady = rolesReady && (sitePhase === 'no-site' || (sitePhase === 'ready' && (!!currentSiteId || isMasterViewer)));
 
   // Grouped nav (AC-07): only the pages this role may open; counts only.
   const counts: Partial<Record<RouteId, { count: number; label: string; alert?: boolean }>> = {

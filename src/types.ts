@@ -162,6 +162,10 @@ export interface ParkingSlot {
   status: SlotStatus;
   currentVehicle?: string | null;
   updatedAt?: string;
+  // 002 B1 (optional; old records have neither). Slot length in metres
+  // (0 < lengthM <= 20) and level within a puzzle stacker (1 = ground, 1-10).
+  lengthM?: number;
+  palletLevel?: number;
 }
 
 export interface ParkingLog {

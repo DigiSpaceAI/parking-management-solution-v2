@@ -2202,10 +2202,59 @@ export function updateEmployeeVehicle(params: {
 
 // Single Slot Save/Update
 
+// 002 B1: optional slot dimensions. A value that is present but invalid is an
+// error (never a silent default); null or '' clears the stored value.
+export type SlotDimensionInput = { lengthM?: unknown; palletLevel?: unknown };
+export type SlotDimensions = { lengthM?: number | null; palletLevel?: number | null };
+
+export function parseSlotDimensions(input: SlotDimensionInput): { values: SlotDimensions; errors: Record<string, string> } {
+  const values: SlotDimensions = {};
+  const errors: Record<string, string> = {};
+
+  if (input.lengthM !== undefined) {
+    const raw = input.lengthM;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      values.lengthM = null;
+    } else {
+      // Accepts 5, 5.0, "5", "5.0", "5.0m", "5.0 m".
+      const m = typeof raw === 'number' ? [String(raw), String(raw)] : typeof raw === 'string' ? raw.trim().match(/^(\d+(?:\.\d+)?)\s*m?$/i) : null;
+      const n = m ? Number(m[1]) : NaN;
+      if (!Number.isFinite(n)) errors.lengthM = 'Length must be a number of metres.';
+      else if (!(n > 0 && n <= 20)) errors.lengthM = 'Length must be more than 0 and at most 20 metres.';
+      else values.lengthM = n;
+    }
+  }
+
+  if (input.palletLevel !== undefined) {
+    const raw = input.palletLevel;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      values.palletLevel = null;
+    } else {
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+      if (!Number.isInteger(n) || n < 1 || n > 10) errors.palletLevel = 'Pallet level must be a whole number from 1 to 10.';
+      else values.palletLevel = n;
+    }
+  }
+
+  return { values, errors };
+}
+
+function applyDimensions(slot: ParkingSlot, dims: SlotDimensions) {
+  if (dims.lengthM === null) delete slot.lengthM;
+  else if (dims.lengthM !== undefined) slot.lengthM = dims.lengthM;
+  if (dims.palletLevel === null) delete slot.palletLevel;
+  else if (dims.palletLevel !== undefined) slot.palletLevel = dims.palletLevel;
+}
+
+// 002 B1: the client-settable slot fields. Everything else (currentVehicle,
+// cameraNumber, updatedAt, …) comes from the stored record or the server,
+// never from the request body (closes the mass-assignment gap of the old
+// `...slotData` spread). siteId is decided by the route (siteForSave).
 export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: boolean = false): ParkingSlot {
   const storeData = getStore();
   const now = new Date().toISOString();
   let existingIndex = -1;
+  const dims = parseSlotDimensions(slotData).values; // routes validate first; invalid values are ignored here
 
   if (slotData.id) {
     existingIndex = storeData.slots.findIndex(s => s.id === slotData.id);
@@ -2225,19 +2274,25 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
 
   if (existingIndex >= 0) {
     const existing = storeData.slots[existingIndex];
+    const status = slotData.status || existing.status;
     const updated: ParkingSlot = {
       ...existing,
-      ...slotData,
+      siteId: slotData.siteId || existing.siteId,
       slotNumber: (slotData.slotNumber || existing.slotNumber).trim().toUpperCase(),
       basement: slotData.basement || existing.basement,
       floorLocation: slotData.floorLocation || existing.floorLocation,
+      puzzleNumber: slotData.puzzleNumber !== undefined ? (slotData.puzzleNumber || undefined) : existing.puzzleNumber,
       slotType: slotData.slotType || existing.slotType,
       height: slotData.height || existing.height,
       parkingType: slotData.parkingType || existing.parkingType,
       allocation: slotData.allocation || existing.allocation,
-      status: slotData.status || existing.status,
-      currentVehicle: slotData.status === 'VACANT' ? undefined : (slotData.currentVehicle ?? existing.currentVehicle),
+      status,
+      // Only the stored vehicle is kept (a vehicle is set by entry/exit, never
+      // by a slot save); a VACANT slot has none.
+      currentVehicle: status === 'VACANT' ? undefined : existing.currentVehicle,
+      updatedAt: now,
     };
+    applyDimensions(updated, dims);
     storeData.slots[existingIndex] = updated;
     // deferSync lets a caller doing many updates in a loop (bulkUploadSlots)
     // batch them into one sync at the end, instead of each iteration
@@ -2252,13 +2307,15 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
       slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
       basement: slotData.basement || 'B1',
       floorLocation: slotData.floorLocation || 'Level 1 Stacker',
+      ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
       slotType: slotData.slotType || 'SEDAN',
       height: slotData.height || 'Standard (2.0m)',
       parkingType: slotData.parkingType || 'PUZZLE',
       allocation: slotData.allocation || 'EMPLOYEE',
       status: slotData.status || 'VACANT',
-      currentVehicle: slotData.currentVehicle,
+      updatedAt: now,
     };
+    applyDimensions(newSlot, dims);
     storeData.slots.unshift(newSlot);
     if (!deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
     return newSlot;
@@ -2289,13 +2346,20 @@ export function deleteSlot(slotId: string, force: boolean = false): { success: b
 }
 
 // Bulk Upload Slot Inventory
-export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number } {
+export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[] } {
   let added = 0;
   let updated = 0;
   const changedIds: string[] = [];
+  const errors: string[] = [];
 
-  for (const item of list) {
+  for (const [index, item] of list.entries()) {
     if (!item.slotNumber) continue;
+    // 002 B1: a bad Length / Pallet level is a row error; the row is skipped.
+    const dimErrors = parseSlotDimensions(item).errors;
+    if (Object.keys(dimErrors).length > 0) {
+      errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${Object.values(dimErrors).join(' ')}`);
+      continue;
+    }
     const storeData = getStore();
     const cleanSlotNum = item.slotNumber.trim().toUpperCase();
 
@@ -2322,7 +2386,7 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
     saveDB([{ collection: 'slots', ids: changedIds }]);
   }
 
-  return { added, updated, total: getStore().slots.length };
+  return { added, updated, total: getStore().slots.length, errors };
 }
 
 // Domain Whitelist Management

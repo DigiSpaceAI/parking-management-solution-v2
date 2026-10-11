@@ -20,6 +20,7 @@ import {
   getEmployeeByEmailOrId,
   updateEmployeeVehicle,
   saveOrUpdateSlot,
+  parseSlotDimensions,
   bulkUploadSlots,
   deleteSlot,
   getWhitelistedDomains,
@@ -681,9 +682,16 @@ app.get('/api/v1/slots', (req, res) => {
   res.json({
     summary,
     totalReturned: slots.length,
-    slots,
+    slots: slots.map(withSlotExtras),
   });
 });
+
+// 002 B1: response-only fields (nothing stored). heightM = the first number
+// in the stored height string ("Standard (2.0m)" -> 2), so cards show "2.0 m".
+function withSlotExtras<T extends { height?: string }>(slot: T): T & { heightM?: number } {
+  const m = String(slot.height || '').match(/\d+(?:\.\d+)?/);
+  return m ? { ...slot, heightM: parseFloat(m[0]) } : { ...slot };
+}
 
 // 3. Employee Master Data Endpoint (with PII Privacy Masking & Audit)
 // Field-level PII exposure by role. vehicleNumber is deliberately treated
@@ -1511,6 +1519,12 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
     const writeSite = siteForSave(req, res, site, storedSlot, rawData.siteId, `slot/${rawData.id || slotNumber}`);
     if (writeSite === null) return;
 
+    // 002 B1: validate the optional dimensions (400 per field).
+    const dimErrors = parseSlotDimensions(rawData).errors;
+    if (Object.keys(dimErrors).length > 0) {
+      return res.status(400).json({ success: false, message: Object.values(dimErrors)[0], errors: dimErrors });
+    }
+
     const slotData = {
       ...rawData,
       siteId: writeSite,
@@ -1569,7 +1583,8 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
     const result = bulkUploadSlots(list);
     res.json({
       success: true,
-      message: `Bulk slot upload successful! Added ${result.added} new slots, updated ${result.updated} existing slots. Total slot inventory: ${result.total}`,
+      message: `Bulk slot upload successful! Added ${result.added} new slots, updated ${result.updated} existing slots. Total slot inventory: ${result.total}`
+        + (result.errors.length ? ` ${result.errors.length} row(s) skipped with errors.` : ''),
       result,
     });
   } catch (err: any) {

@@ -461,9 +461,77 @@
   .pf-slot-since-none { color: var(--text-muted); }
   .pf-panel-close { margin-left: auto; }
 
+  /* App shell layout (002 F1): top bar over a permanent nav (≥ 1024px) or a drawer (< 1024px) */
+  .pf-app { min-height: 100dvh; display: flex; flex-direction: column; background: var(--surface-25); }
+  .pf-app-top { position: sticky; top: 0; z-index: var(--z-header); }
+  .pf-topbar-spacer { flex: 1 1 auto; }
+  .pf-topbar-menu { flex: none; }
+  .pf-app-body { flex: 1 1 auto; display: flex; min-height: 0; }
+  .pf-app-nav { flex: none; display: none; }
+  .pf-app-nav .pf-nav { position: sticky; top: var(--header-h); height: calc(100dvh - var(--header-h)); overflow-y: auto; }
+  .pf-main { flex: 1 1 auto; min-width: 0; padding: var(--space-6) var(--space-8) var(--space-12); display: flex; flex-direction: column; gap: var(--space-6); }
+  .pf-main:focus { outline: none; }
+  .pf-page-head h1:focus { outline: none; }
+  @media (min-width: 1024px) {
+    .pf-app-nav { display: flex; }
+    .pf-topbar-menu { display: none; }
+  }
+  @media (max-width: 1279.98px) { .pf-main { padding: var(--space-6) var(--space-6) var(--space-12); } }
+  @media (max-width: 767.98px) {
+    .pf-main { padding: var(--space-4) var(--space-4) var(--space-8); gap: var(--space-4); }
+    .pf-topbar { gap: var(--space-2); padding: 0 var(--space-2); }
+  }
+  .pf-skip { position: absolute; left: var(--space-2); top: var(--space-2); z-index: var(--z-toast); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+    background: var(--ink); color: var(--on-navy); font: var(--type-body-strong); transform: translateY(-200%); }
+  .pf-skip:focus { transform: none; outline: none; box-shadow: var(--focus-ring); }
+
+  /* Brand in the top bar: full logo from 768px, the mark alone below */
+  .pf-brand { flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); }
+  .pf-brand img { display: block; height: var(--control-sm); width: auto; }
+  .pf-brand .pf-brand-mark { display: none; }
+  .pf-brand:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  @media (max-width: 767.98px) {
+    .pf-brand .pf-brand-logo { display: none; }
+    .pf-brand .pf-brand-mark { display: block; }
+  }
+
+  /* Nav sections, account button, popups */
+  .pf-nav-section { display: flex; flex-direction: column; gap: var(--space-1); }
+  .pf-nav-label { flex: 1 1 auto; min-width: 0; }
+  .pf-account { display: inline-flex; align-items: center; gap: var(--space-2); height: var(--control-md); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-md);
+    background: transparent; color: var(--ink); font: var(--type-body-strong); cursor: pointer; }
+  .pf-account:hover { background: var(--surface-50); }
+  .pf-account:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .pf-avatar { display: inline-flex; align-items: center; justify-content: center; width: var(--control-sm); height: var(--control-sm); flex: none; border-radius: var(--radius-full);
+    background: var(--navy-50); color: var(--navy-600); font: 600 var(--text-caption-size)/var(--text-caption-line) var(--font-text); }
+  .pf-account-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 1023.98px) { .pf-account-name { display: none; } }
+  .pf-bell { position: relative; }
+  .pf-bell .pf-count { position: absolute; top: 0; right: 0; }
+  .pf-pop { position: relative; display: inline-flex; }
+  .pf-pop > .pf-menu { position: absolute; top: calc(100% + var(--space-1)); right: 0; z-index: var(--z-menu); }
+  .pf-pop--start > .pf-menu { left: 0; right: auto; }
+  .pf-menu-list { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto; outline: none; }
+  .pf-menu-head { padding: var(--space-2) var(--space-3); font: var(--type-small); color: var(--text-secondary); }
+  .pf-menu-head strong { display: block; font: var(--type-body-strong); color: var(--ink); }
+  .pf-menu-item { text-decoration: none; }
+  .pf-menu-item svg { flex: none; }
+  .pf-menu-item-text { flex: 1 1 auto; min-width: 0; }
+  .pf-menu-item .pf-count { margin-left: auto; }
+  .pf-menu-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .pf-menu-item[data-active="true"] { box-shadow: inset 0 0 0 2px var(--teal-600); }
+  .pf-menu-item--danger { color: var(--danger-600); }
+  .pf-menu-item--danger:hover { background: var(--danger-50); }
+  .pf-menu-item:disabled { color: var(--text-disabled); cursor: not-allowed; background: transparent; }
+  @media (max-width: 767.98px) {
+    .pf-switcher { max-width: 160px; }
+    .pf-switcher .pf-switcher-name { display: none; }
+    .pf-pop--sheet > .pf-menu { position: fixed; top: var(--header-h); left: var(--space-4); right: var(--space-4); width: auto; }
+  }
+
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
-    .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher { height: auto; min-height: var(--touch-min); }
+    .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }
     .pf-icon-btn { width: var(--touch-min); height: var(--touch-min); }
     .pf-pager-ellipsis { min-width: var(--touch-min); }
     .pf-page { min-width: var(--touch-min); height: var(--touch-min); }
@@ -479,5 +547,8 @@
     /* Standalone links ("Forgot password?" under a field) are 44×44 targets too. A link inside a running
        sentence is exempt: give it .pf-link--inline (or use a plain <a> in prose). */
     .pf-link:not(.pf-link--inline):not(.pf-field-help .pf-link):not(.pf-state-text .pf-link) { min-height: var(--touch-min); min-width: var(--touch-min); }
+    /* Shell (002 F1): logo link and skip link are 44px targets too. */
+    .pf-brand, .pf-skip { min-height: var(--touch-min); min-width: var(--touch-min); }
+    .pf-skip { display: inline-flex; align-items: center; }
   }
 }

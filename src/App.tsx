@@ -4,10 +4,12 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { ParkingSlot, Employee, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig } from './types';
+import { ParkingSlot, Employee, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig, AppModuleId } from './types';
 import { clearSessionToken } from './sessionTokenFallback';
-import { Header, ActiveTabType } from './components/Header';
-import { Sidebar } from './components/Sidebar';
+import { AppShell } from './screens/AppShell';
+import { NAV_ENTRIES, NAV_GROUPS } from './screens/nav';
+import { useToast, ErrorState, type NavGroup } from './design-system/components';
+import { useAutoRefresh } from './utils/useAutoRefresh';
 import { RoleHomePage } from './components/RoleHomePage';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
 import { SiteAdminOverview } from './components/SiteAdminOverview';
@@ -65,8 +67,9 @@ import { NoSiteAssigned } from './components/NoSiteAssigned';
 import { ListSkeleton } from './components/ListSkeleton';
 import { NoAccess } from './components/NoAccess';
 import { ErrorCard } from './components/ErrorCard';
-import { ViewAsBanner } from './components/ViewAsBanner';
-import { CheckCircle2, AlertCircle } from 'lucide-react';
+
+/** The console page being shown (a module id; hash routes come with F2). */
+type ActiveTabType = AppModuleId;
 
 const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
 const LEGACY_SESSION_STORAGE_KEY = 'parkorbit_authenticated_user_session_v4';
@@ -127,10 +130,6 @@ export default function App() {
   const [alertCount, setAlertCount] = useState<number>(0);
   const [pendingReqCount, setPendingReqCount] = useState<number>(0);
 
-  // Sidebar state
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState<boolean>(false);
-
   // RBAC User Session state
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
     try {
@@ -147,7 +146,7 @@ export default function App() {
     return null;
   });
 
-  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const toast = useToast();
 
   // Real, confirmed bug fixed here: currentUser above is restored
   // directly from localStorage with zero server-side verification —
@@ -284,17 +283,13 @@ export default function App() {
   const handleLogout = () => clearSession({});
 
   const showToast = (type: 'success' | 'error', message: string) => {
-    setNotification({ type, message });
-    setTimeout(() => {
-      setNotification(null);
-    }, 4000);
+    toast.show({ tone: type, message });
   };
 
   // Site-scoped lists. The fetch wrapper adds x-site-id for the active site.
   // Each result is applied only if no site switch, view-as change or
   // sign-out happened while it was in flight.
-  const loadSiteLists = async () => {
-    const generation = getGeneration();
+  const loadSiteLists = async (isCurrent: () => boolean): Promise<boolean> => {
     const [slotsRes, employeesRes, logsRes, alertsRes, regsRes] = await Promise.allSettled([
       getJson<{ slots?: ParkingSlot[] }>('/api/v1/slots'),
       getJson<{ employees?: Employee[] }>('/api/v1/employees'),
@@ -302,7 +297,7 @@ export default function App() {
       getJson<{ totalAlerts?: number }>('/api/v1/alerts/non-parked'),
       getJson<{ pendingCount?: number }>('/api/v1/registrations'),
     ]);
-    if (!isCurrentGeneration(generation)) return;
+    if (!isCurrent()) return false;
 
     const value = <T,>(r: PromiseSettledResult<ApiResult<T>>): T | null =>
       r.status === 'fulfilled' && r.value.ok ? r.value.body : null;
@@ -318,13 +313,13 @@ export default function App() {
     if (siteForbidden) {
       // The site is no longer one of the user's (assignment changed): resolve again.
       setSiteResolveAttempt((n) => n + 1);
-      return;
+      return false;
     }
     setListError(failed);
     if (failed && !listsLoading && slots.length + employees.length + logs.length > 0) {
       // Keep the last good rows (shown greyed out under the error card).
       setListsLoading(false);
-      return;
+      return false;
     }
 
     setSlots(value(slotsRes)?.slots || []);
@@ -333,13 +328,19 @@ export default function App() {
     setAlertCount(value(alertsRes)?.totalAlerts || 0);
     setPendingReqCount(value(regsRes)?.pendingCount || 0);
     setListsLoading(false);
+    return !failed;
   };
+
+  // One refresh mechanism (AC-11): the chosen site's lists load now and every 15 s
+  // while the tab is visible ("Updated Xs ago"); a site switch starts over.
+  const listsActive = !!currentUser && !!currentSiteId && !isEmployeeUser(currentUser);
+  const lists = useAutoRefresh(loadSiteLists, [currentUser?.id, currentSiteId, viewAsUser?.id], { enabled: listsActive });
 
   const refreshAll = () => {
     if (!currentUser || isEmployeeUser(currentUser)) return;
     fetchCurrentUser();
     fetchRoles();
-    if (currentSiteId) loadSiteLists();
+    if (currentSiteId) void lists.refresh();
   };
 
   // Switches the active site: invalidate in-flight requests, clear the old
@@ -508,13 +509,6 @@ export default function App() {
     return () => window.removeEventListener(SESSION_ENDED_EVENT, onSessionEnded);
   }, []);
 
-  // Load the chosen site's lists whenever the site changes.
-  useEffect(() => {
-    if (!currentUser || !currentSiteId || isEmployeeUser(currentUser)) return;
-    loadSiteLists();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id, currentSiteId, viewAsUser?.id]);
-
   // Same role check used in the bolaIdentityGuard security fix, kept
   // consistent — a real Site Admin, matched by roleId first (stable)
   // with roleName as a fallback (matches the display name shown
@@ -585,8 +579,6 @@ export default function App() {
       showToast('error', COPY_SAVE_ERROR);
     }
   };
-
-  const occupiedCount = slots.filter((s) => s.status === 'OCCUPIED').length;
 
   if (!currentUser) {
     return (
@@ -768,124 +760,80 @@ export default function App() {
     </>
   );
 
+  // Grouped nav (AC-07): only the modules this role may open; counts only.
+  const counts: Partial<Record<ActiveTabType, { count: number; label: string; alert?: boolean }>> = {
+    APPROVALS: { count: pendingReqCount, label: 'pending requests' },
+    ALERTS: { count: alertCount, label: 'open alerts', alert: true },
+  };
+  const navGroups: NavGroup[] = NAV_GROUPS.map((group) => ({
+    label: group,
+    items: NAV_ENTRIES.filter((e) => e.group === group && userCanOpen(e.id)).map((e) => ({
+      id: e.id,
+      label: e.label,
+      icon: e.icon,
+      href: '#',
+      count: counts[e.id]?.count,
+      countLabel: counts[e.id]?.label,
+      alert: counts[e.id]?.alert,
+    })),
+  }));
+  const approvalsTab: ActiveTabType | null = userCanOpen('APPROVALS') ? 'APPROVALS' : userCanOpen('REGISTRATION') ? 'REGISTRATION' : null;
+  const attention = [
+    ...(approvalsTab ? [{ label: 'Pending pass requests', count: pendingReqCount, onSelect: () => setActiveTab(approvalsTab) }] : []),
+    ...(userCanOpen('ALERTS') ? [{ label: 'Open alerts', count: alertCount, onSelect: () => setActiveTab('ALERTS') }] : []),
+  ];
+
   return (
     <SiteContext.Provider value={siteContextValue}>
-    <div className="h-screen w-screen overflow-hidden bg-slate-100 text-slate-900 font-sans antialiased selection:bg-blue-600 selection:text-white flex flex-col">
-      {viewAsUser && (
-        <ViewAsBanner
-          userName={viewAsUser.fullName}
-          roleName={viewAsUser.roleName}
-          siteLabel={viewSiteLabel}
-          onExit={exitViewAs}
-        />
-      )}
-
-      {/* Top Header Bar */}
-      <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        occupiedCount={occupiedCount}
-        totalSlots={slots.length}
-        alertCount={alertCount}
-        pendingReqCount={pendingReqCount}
-        onRefresh={refreshAll}
-        currentUser={currentUser}
+      <AppShell
+        user={currentUser}
+        viewAs={viewAsUser}
+        viewSiteLabel={viewSiteLabel}
+        onExitViewAs={exitViewAs}
         sites={sites}
-        currentSiteId={currentSiteId ?? undefined}
-        onSelectSite={(siteId) => selectSite(siteId)}
+        siteId={currentSiteId}
         allowAllSites={isMasterAdmin(viewer)}
-        canOpenTab={userCanOpen}
-        onToggleMobileSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
-        onLogout={handleLogout}
-      />
-
-      {/* Floating Toast Notification */}
-      {notification && (
-        <div
-          className={`fixed bottom-5 right-5 z-50 p-4 rounded-xl shadow-xl border text-xs font-mono font-bold flex items-center space-x-3 transition-all ${
-            notification.type === 'success'
-              ? 'bg-white border-emerald-300 text-emerald-800 shadow-emerald-100'
-              : 'bg-white border-rose-300 text-rose-800 shadow-rose-100'
-          }`}
-        >
-          {notification.type === 'success' ? (
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-          ) : (
-            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
-          )}
-          <span>{notification.message}</span>
-        </div>
-      )}
-
-      {/* Main Body Layout: Left Navigation Sidebar + Right Main Panel */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
-        {/* Left Navigation Sidebar */}
-        <Sidebar
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          collapsed={sidebarCollapsed}
-          setCollapsed={setSidebarCollapsed}
-          alertCount={alertCount}
-          pendingReqCount={pendingReqCount}
-          mobileOpen={mobileSidebarOpen}
-          setMobileOpen={setMobileSidebarOpen}
-          currentUser={viewer}
-          roles={roles}
-        />
-
-        {/* Right Main Panel Displays Selected Module Content */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-slate-50 h-full">
-          <div className="max-w-7xl mx-auto">
-            {!needsSite ? (
-              renderActiveTab('')
-            ) : sitePhase === 'resolving' ? (
-              <ListSkeleton />
-            ) : sitePhase === 'error' ? (
-              <div role="alert" className="max-w-md mx-auto mt-12 bg-white border border-rose-200 rounded-2xl p-6 text-center">
-                <p className="text-sm font-semibold text-slate-800">Couldn't load your sites</p>
-                <button
-                  type="button"
-                  onClick={() => setSiteResolveAttempt((n) => n + 1)}
-                  className="mt-4 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
-                >
-                  Try again
-                </button>
-              </div>
-            ) : sitePhase === 'no-site' ? (
-              // Only reachable while viewing as a user with no site.
-              <NoSiteAssigned embedded onSignOut={handleLogout} />
-            ) : !currentSiteId ? (
-              <ChooseSite sites={sites} allowAllSites={isMasterAdmin(viewer)} onChoose={selectSite} />
-            ) : listsLoading ? (
-              <ListSkeleton />
-            ) : (
-              // Keyed by site: pages that fetch their own data remount on a
-              // switch, so they drop the old site's rows and load afresh (L-2).
-              <div key={currentSiteId}>
-                <p
-                  className="mb-3 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500"
-                  style={{ fontFamily: "'Barlow Condensed', system-ui, sans-serif" }}
-                >
-                  {siteContextValue.isAllSites
-                    ? `All sites · ${sites.length} sites`
-                    : siteContextValue.activeSite?.siteName || currentSiteId}
-                  {siteContextValue.isAllSites && (
-                    <span className="ml-2 normal-case tracking-normal font-semibold text-slate-600">
-                      · Select one site to make changes
-                    </span>
-                  )}
-                </p>
-                {listError && <ErrorCard onRetry={() => loadSiteLists()} />}
-                {/* Stale rows under an error are greyed out, never shown as current (§4). */}
-                <div className={listError ? 'opacity-50' : undefined} aria-busy={listError || undefined}>
-                  {renderActiveTab(currentSiteId)}
-                </div>
-              </div>
-            )}
+        onSelectSite={(siteId) => selectSite(siteId)}
+        nav={navGroups}
+        current={activeTab}
+        onNavigate={(id, e) => {
+          e.preventDefault();
+          setActiveTab(id as ActiveTabType);
+        }}
+        homeHref="#"
+        onHome={(e) => {
+          e.preventDefault();
+          setActiveTab('HOME');
+        }}
+        attention={attention}
+        onSignOut={handleLogout}
+      >
+        {!needsSite ? (
+          renderActiveTab('')
+        ) : sitePhase === 'resolving' ? (
+          <ListSkeleton />
+        ) : sitePhase === 'error' ? (
+          <ErrorState title="Couldn't load your sites" text="Try again in a moment." onRetry={() => setSiteResolveAttempt((n) => n + 1)} />
+        ) : sitePhase === 'no-site' ? (
+          // Only reachable while viewing as a user with no site.
+          <NoSiteAssigned embedded onSignOut={handleLogout} />
+        ) : !currentSiteId ? (
+          <ChooseSite sites={sites} allowAllSites={isMasterAdmin(viewer)} onChoose={selectSite} />
+        ) : listsLoading ? (
+          <ListSkeleton />
+        ) : (
+          // Keyed by site: pages that fetch their own data remount on a
+          // switch, so they drop the old site's rows and load afresh (L-2).
+          // The current site is shown only in the switcher (AC-23).
+          <div key={currentSiteId} className="pf-stack">
+            {listError && <ErrorCard onRetry={() => void lists.refresh()} />}
+            {/* Stale rows under an error are greyed out, never shown as current (§4). */}
+            <div className={listError ? 'opacity-50' : undefined} aria-busy={listError || undefined}>
+              {renderActiveTab(currentSiteId)}
+            </div>
           </div>
-        </main>
-      </div>
-    </div>
+        )}
+      </AppShell>
     </SiteContext.Provider>
   );
 }

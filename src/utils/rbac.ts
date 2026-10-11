@@ -1,5 +1,4 @@
 import { AppUser, RolePermissionConfig, AppModuleId, ModuleAccessRights, SiteConfig } from '../types';
-import type { ActiveTabType } from '../components/Header';
 
 // The one Master Admin rule, shared by client and server (001 design B9):
 // the same rule the server's getAllowedSiteIds uses for unrestricted scope.
@@ -137,7 +136,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
 export function isModulePermitted(
   user: AppUser | null | undefined,
   roleConfig: RolePermissionConfig | undefined,
-  tabId: ActiveTabType | AppModuleId | string
+  tabId: AppModuleId | string
 ): boolean {
   if (!user) return false;
   if (tabId === 'HOME') return true;
@@ -184,7 +183,7 @@ export function isModulePermitted(
 export function getModuleRights(
   user: AppUser | null | undefined,
   roleConfig: RolePermissionConfig | undefined,
-  tabId: ActiveTabType | AppModuleId | string
+  tabId: AppModuleId | string
 ): ModuleAccessRights {
   if (!user) return DISABLED_RIGHTS;
   if (tabId === 'HOME') return FULL_ACCESS_RIGHTS;
@@ -284,7 +283,7 @@ export const MASTER_ONLY_TABS: readonly string[] = ['SECURITY_AUDIT'];
 export function canOpenTab(
   user: AppUser | null | undefined,
   roleConfig: RolePermissionConfig | undefined,
-  tabId: ActiveTabType | AppModuleId | string
+  tabId: AppModuleId | string
 ): boolean {
   if (MASTER_ONLY_TABS.includes(tabId) && !isMasterAdmin(user)) return false;
   return isModulePermitted(user, roleConfig, tabId);

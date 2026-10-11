@@ -18,3 +18,8 @@ export { Table, BulkBar, type Column, type SortDir, type TableProps, type BulkBa
 export { Modal, SidePanel, type ModalProps, type SidePanelProps } from './Dialog';
 export { SlotCard, SlotRow, formatMetres, type SlotCardProps, type SlotRowProps, type SlotStatus } from './SlotCard';
 export { OccupancyBar, BarChart, type OccupancyBarProps, type BarChartProps } from './Charts';
+export {
+  Brand, NavGroupList, NavDrawer, ActionMenu, PageHeader, SiteSwitcher, TopBarMenu, useNow, initials,
+  type NavItem, type NavGroup, type NavGroupListProps, type NavDrawerProps, type ActionMenuItem, type ActionMenuProps,
+  type PageHeaderProps, type SwitcherSite, type SiteSwitcherProps, type TopBarMenuEntry, type TopBarMenuProps,
+} from './Shell';

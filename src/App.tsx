@@ -25,7 +25,7 @@ import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
 import { MasterAdminAudit } from './components/MasterAdminAudit';
 import { MasterAdminData } from './components/MasterAdminData';
-import { LoginScreen } from './components/LoginScreen';
+import { Login } from './screens/Login';
 import { isMasterAdmin, getModuleRights, canOpenTab } from './utils/rbac';
 import {
   ALL_SITES,
@@ -583,11 +583,7 @@ export default function App() {
 
   if (!currentUser) {
     return (
-      <LoginScreen
-        notice={loginNotice}
-        allUsers={[]}
-        onLoginSuccess={handleLoginSuccess}
-      />
+      <Login notice={loginNotice} onLoginSuccess={handleLoginSuccess} />
     );
   }
 

@@ -537,6 +537,29 @@
   .pf-fullpage > .pf-card { width: 100%; max-width: var(--modal-w); }
   .pf-stale { opacity: 0.5; }
 
+  /* Sign in (002 F3, UX S1): ink brand panel + form; stacks on phones */
+  .pf-login { min-height: 100dvh; display: flex; flex-wrap: wrap; background: var(--surface-25); }
+  .pf-login-brand { flex: 1 1 420px; min-height: 280px; display: flex; flex-direction: column; gap: var(--space-8); padding: var(--space-12); background: var(--ink); color: var(--on-navy); }
+  .pf-login-logo { display: block; align-self: flex-start; height: calc(var(--space-8) + var(--space-2)); width: auto; }
+  .pf-login-pitch { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-4); max-width: var(--measure); }
+  .pf-login-pitch p { margin: 0; font: var(--type-body-lg); color: var(--navy-100); }
+  .pf-login-pitch .pf-login-headline { font: var(--type-display); letter-spacing: var(--text-display-tracking); color: var(--on-navy); text-wrap: balance; }
+  .pf-login-bays { display: grid; grid-template-columns: repeat(10, var(--space-4)); gap: var(--space-2); }
+  .pf-login-bay { height: var(--space-4); border-radius: var(--radius-sm); background: var(--on-navy); }
+  .pf-login-bay--free { background: transparent; border: 2px solid var(--teal-300); }
+  .pf-login-main { flex: 1 1 520px; display: flex; align-items: center; justify-content: center; padding: var(--space-12) var(--space-6); }
+  .pf-login-form { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: var(--space-5); }
+  .pf-login-head { display: flex; flex-direction: column; gap: var(--space-2); }
+  .pf-login-head h1 { margin: 0; font: var(--type-title-1); letter-spacing: var(--text-title-1-tracking); color: var(--ink); }
+  .pf-login-head p { margin: 0; color: var(--text-secondary); }
+  .pf-login-foot { margin: 0; text-align: center; font: var(--type-small); color: var(--text-muted); }
+  @media (max-width: 767.98px) {
+    .pf-login-brand { min-height: 0; padding: var(--space-6) var(--space-4); gap: var(--space-4); }
+    .pf-login-pitch .pf-login-headline { font: var(--type-title-1); }
+    .pf-login-bays { display: none; }
+    .pf-login-main { padding: var(--space-6) var(--space-4) var(--space-8); align-items: flex-start; }
+  }
+
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
     .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }

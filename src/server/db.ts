@@ -3546,6 +3546,56 @@ export function deleteSite(siteId: string): { success: boolean; message: string 
   };
 }
 
+// 002 B5: Master edits a site's name, city, address and contacts. Only these
+// fields; siteCode, status, pricing and capacity keep their own routes.
+export const SITE_DETAIL_FIELDS = ['siteName', 'city', 'address', 'contactPerson', 'contactEmail', 'contactPhone'] as const;
+export type SiteDetailField = typeof SITE_DETAIL_FIELDS[number];
+
+export function validateSiteDetails(input: Record<string, unknown>): { values: Partial<Record<SiteDetailField, string>>; errors: Record<string, string> } {
+  const values: Partial<Record<SiteDetailField, string>> = {};
+  const errors: Record<string, string> = {};
+  for (const field of SITE_DETAIL_FIELDS) {
+    const raw = input[field];
+    if (raw === undefined) continue;
+    if (typeof raw !== 'string') { errors[field] = 'Must be text.'; continue; }
+    const v = raw.trim();
+    if (v.length > 200) { errors[field] = 'Keep this to 200 characters or fewer.'; continue; }
+    if (field === 'siteName') {
+      if (!v) { errors.siteName = 'Enter the site name.'; continue; }
+      if (v.length > 80) { errors.siteName = 'Keep the site name to 80 characters or fewer.'; continue; }
+    }
+    if (field === 'contactEmail' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) {
+      errors.contactEmail = 'Enter a valid email address, like name@company.com.'; continue;
+    }
+    if (field === 'contactPhone' && v) {
+      const m = v.replace(/[\s\-()]/g, '').match(/^(?:\+91|91|0)?(\d{10})$/);
+      if (!m) { errors.contactPhone = 'Enter a 10-digit Indian phone number, like +91 98206 03518.'; continue; }
+      values.contactPhone = `+91 ${m[1].slice(0, 5)} ${m[1].slice(5)}`;
+      continue;
+    }
+    values[field] = v;
+  }
+  return { values, errors };
+}
+
+export function updateSiteDetails(siteId: string, values: Partial<Record<SiteDetailField, string>>): { success: boolean; message: string; site?: SiteConfig; changed: SiteDetailField[] } {
+  const storeData = getStore();
+  const site = (storeData.sites || []).find((s) => s.id === siteId);
+  if (!site) return { success: false, message: 'Site not found.', changed: [] };
+  const changed: SiteDetailField[] = [];
+  for (const field of SITE_DETAIL_FIELDS) {
+    const v = values[field];
+    if (v === undefined || site[field] === v) continue;
+    site[field] = v;
+    changed.push(field);
+  }
+  if (changed.length > 0) {
+    site.updatedAt = new Date().toISOString();
+    saveDB([{ collection: 'sites', ids: [site.id] }]);
+  }
+  return { success: true, message: changed.length ? `Site ${site.siteName} updated.` : 'Nothing changed.', site, changed };
+}
+
 export function updateSitePricing(siteId: string, pricing: SitePricing): { success: boolean; message: string; site?: SiteConfig } {
   const storeData = getStore();
   if (!storeData.sites) return { success: false, message: 'No sites found.' };

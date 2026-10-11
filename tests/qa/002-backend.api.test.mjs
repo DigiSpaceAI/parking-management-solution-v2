@@ -350,3 +350,39 @@ test('B4 /analytics/prediction is labelled sample:true', async () => {
   const r = await c.get('master', '/analytics/prediction', { site: F.A.id });
   assert.equal(r.status, 200); assert.equal(r.body.sample, true);
 });
+
+// ------------------------------------------------------------------ B5
+test('B5 /sites/update: Master 200 and the fields change; unknown fields ignored; audit has field names only', async () => {
+  const before = (await c.get('master', '/sites')).body.sites.find((s) => s.id === F.A.id);
+  const r = await c.post('master', '/sites/update', { siteId: F.A.id, siteName: '  R1b Site A Renamed ', city: 'Mumbai', address: 'Plot 7, MIDC',
+    contactPerson: 'Asha Rao', contactEmail: 'asha@r1b-site.in', contactPhone: '98206 03518',
+    siteCode: 'HACK', status: 'DECOMMISSIONED', pricing: { hourlyRate: 1 }, totalSlots: 9999 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const s = r.body.site;
+  assert.equal(s.siteName, 'R1b Site A Renamed'); assert.equal(s.city, 'Mumbai'); assert.equal(s.address, 'Plot 7, MIDC');
+  assert.equal(s.contactPerson, 'Asha Rao'); assert.equal(s.contactEmail, 'asha@r1b-site.in'); assert.equal(s.contactPhone, '+91 98206 03518');
+  assert.equal(s.siteCode, before.siteCode); assert.equal(s.status, before.status);
+  assert.deepEqual(s.pricing, before.pricing); assert.equal(s.totalSlots, before.totalSlots);
+  const audit = (await c.audit('SITE_UPDATED')).find((l) => l.siteId === F.A.id);
+  assert.ok(audit, 'SITE_UPDATED audit with siteId');
+  assert.match(audit.details, /siteName, city, address, contactPerson, contactEmail, contactPhone/);
+  for (const v of ['Mumbai', 'Asha Rao', 'asha@r1b-site.in', '98206', 'Plot 7']) assert.ok(!audit.details.includes(v), `audit has no value: ${v}`);
+});
+
+test('B5 /sites/update: Site Admin 403; view-as POST 403; bad email/phone/name 400; unknown site 404', async () => {
+  const sa = await c.post('adminA', '/sites/update', { siteId: F.A.id, city: 'X' });
+  assert.equal(sa.status, 403); assert.equal(sa.body.errorCode, 'ERR_MASTER_ONLY');
+  const va = await c.post('master', '/sites/update', { siteId: F.A.id, city: 'X' }, { headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(va.status, 403); assert.equal(va.body.errorCode, 'ERR_VIEW_AS_READ_ONLY');
+  const cases = [
+    [{ contactEmail: 'not-an-email' }, 'contactEmail'], [{ contactPhone: '12345' }, 'contactPhone'], [{ contactPhone: '+44 20 7946 0958' }, 'contactPhone'],
+    [{ siteName: '   ' }, 'siteName'], [{ siteName: 'x'.repeat(81) }, 'siteName'], [{ address: 'x'.repeat(201) }, 'address'], [{ city: 42 }, 'city'],
+  ];
+  for (const [extra, field] of cases) {
+    const r = await c.post('master', '/sites/update', { siteId: F.A.id, ...extra });
+    assert.equal(r.status, 400, JSON.stringify(extra)); assert.ok(r.body.errors[field], field);
+  }
+  assert.equal((await c.get('master', '/sites')).body.sites.find((s) => s.id === F.A.id).city, 'Mumbai', 'nothing changed by refused calls');
+  const nf = await c.post('master', '/sites/update', { siteId: 'site-nope', city: 'X' });
+  assert.equal(nf.status, 404);
+});

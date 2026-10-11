@@ -50,6 +50,8 @@ import {
   updateSiteStatus,
   deleteSite,
   updateSitePricing,
+  validateSiteDetails,
+  updateSiteDetails,
   getInvoices,
   generateSiteInvoice,
   updateInvoiceStatus,
@@ -1369,6 +1371,36 @@ app.post('/api/v1/sites/status', requirePermission('MASTER_CONFIG', 'canEdit'), 
     details: `Site ${siteId} status changed to ${status} by ${req.user!.fullName}.`,
   });
   res.json(result);
+});
+
+// 002 B5: Master edits name, city, address and contacts of a site. Only
+// those fields (anything else in the body is ignored); view-as is refused for
+// every POST by applyViewAs. Audit lists the changed field NAMES, not values.
+app.post('/api/v1/sites/update', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  if (!body.siteId || typeof body.siteId !== 'string') {
+    return res.status(400).json({ success: false, message: 'siteId is required.', errors: { siteId: 'siteId is required.' } });
+  }
+  const { values, errors } = validateSiteDetails(body);
+  if (Object.keys(errors).length > 0) {
+    return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  }
+  const siteId = canonicalSiteId(body.siteId);
+  const result = updateSiteDetails(siteId, values);
+  if (!result.success) return res.status(404).json({ success: false, message: result.message });
+  if (result.changed.length > 0) {
+    logSecurityEvent({
+      action: 'SITE_UPDATED',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `site/${siteId}`,
+      status: 'SUCCESS',
+      details: `Site ${siteId} updated by ${req.user!.fullName}: ${result.changed.join(', ')}.`,
+      siteId,
+    });
+  }
+  res.json({ success: true, site: result.site });
 });
 
 app.post('/api/v1/sites/delete', requirePermission('MASTER_CONFIG', 'canDelete'), (req, res) => {

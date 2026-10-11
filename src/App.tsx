@@ -19,7 +19,7 @@ import { NonParkedAlerts } from './components/NonParkedAlerts';
 // The design-system preview is loaded only when a Master opens #/design-system (dev/staging).
 const DesignSystemPreview = lazy(() => import('./design-system/preview/DesignSystemPreview'));
 import { Employees } from './screens/Employees';
-import { MasterAdminSites } from './components/MasterAdminSites';
+import { Sites } from './screens/Sites';
 import { MasterAdminBilling } from './components/MasterAdminBilling';
 import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
@@ -679,7 +679,7 @@ export default function App() {
           { updatedAt: lists.updatedAt }
         );
       case 'sites':
-        return wrap(<MasterAdminSites />);
+        return <Sites onViewAs={(u) => startViewAs(u)} />;
       case 'billing':
         return wrap(<MasterAdminBilling />);
       case 'audit':

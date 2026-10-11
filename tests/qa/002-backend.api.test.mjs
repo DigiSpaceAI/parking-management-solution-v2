@@ -318,3 +318,35 @@ test('B3 /overview: counts match seeded logs, today and hours in IST, other site
     assert.ok(plain.body.latest.some((l) => /^MH12AB\d{4}$/.test(l.vehicleNumber)), 'gate attendant sees plates (as /logs)');
   } finally { fx.stop(); }
 });
+
+// ------------------------------------------------------------------ B4
+test('B4 /sites/summary: Master 200 with one row per site; Site Admin 403; view-as a non-Master 403', async () => {
+  const m = await c.get('master', '/sites/summary');
+  assert.equal(m.status, 200, JSON.stringify(m.body));
+  assert.ok(Array.isArray(m.body), 'SiteSummaryRow[]');
+  const a = m.body.find((r) => r.id === F.A.id);
+  assert.ok(a, 'site A listed');
+  for (const k of ['siteName', 'city', 'siteCode', 'status', 'onboardedAt', 'occupied', 'total', 'pendingRequests', 'lastActivityAt']) assert.ok(k in a, k);
+  assert.ok(m.body.some((r) => r.id === F.B.id), 'every site, unscoped');
+  const sa = await c.get('adminA', '/sites/summary');
+  assert.equal(sa.status, 403); assert.equal(sa.body.errorCode, 'ERR_MASTER_ONLY');
+  const va = await c.get('master', '/sites/summary', { headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(va.status, 403, 'view-as a non-Master'); assert.equal(va.body.errorCode, 'ERR_MASTER_ONLY');
+});
+
+test('B4 /sites/summary counts and last activity come from the data', async () => {
+  const entry = await c.post('attA', '/vehicles/entry', { vehicleNumber: 'MH12AB4401' }, { site: F.A.id });
+  assert.equal(entry.status, 200, JSON.stringify(entry.body));
+  const rows = (await c.get('master', '/sites/summary')).body;
+  const a = rows.find((r) => r.id === F.A.id); const b = rows.find((r) => r.id === F.B.id);
+  const aSlots = await slotsAt(F.A.id);
+  assert.equal(a.total, aSlots.length); assert.equal(a.occupied, aSlots.filter((s) => s.status === 'OCCUPIED').length);
+  assert.ok(a.lastActivityAt && Date.now() - new Date(a.lastActivityAt).getTime() < 60000, 'last activity = the entry just now');
+  assert.equal(b.lastActivityAt, null, 'no logs -> null, not a made-up time');
+  await c.post('attA', '/vehicles/exit', { vehicleNumberOrSlot: 'MH12AB4401' }, { site: F.A.id });
+});
+
+test('B4 /analytics/prediction is labelled sample:true', async () => {
+  const r = await c.get('master', '/analytics/prediction', { site: F.A.id });
+  assert.equal(r.status, 200); assert.equal(r.body.sample, true);
+});

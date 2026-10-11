@@ -38,6 +38,7 @@ import {
   getOccupancyTrend,
   getPeakHours,
   getSiteOverview,
+  getSiteSummaries,
   migrateSiteData,
   approveRegistrationRequest,
   rejectRegistrationRequest,
@@ -106,7 +107,7 @@ import {
   extractSessionToken,
   loadAuditLogsFromFirestore
 } from './src/server/security';
-import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
 import { isMasterAdmin } from './src/utils/rbac';
 
@@ -468,6 +469,14 @@ function assertRecordSite(req: express.Request, res: express.Response, record: S
 // View Simulator target.
 function requireMasterAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (req.user && isMasterAdmin(req.user)) return next();
+  return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can do this.');
+}
+
+// 002 B4: Master Admin only AND not while viewing as a non-Master, so a Master
+// in the Role View Simulator sees what the viewed user would (403), as 03
+// requires for the Master-only reads (/sites/summary, demo requests).
+function requireMasterAdminView(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.user && isMasterAdmin(req.user) && (!req.viewAs || isMasterAdmin(req.viewAs))) return next();
   return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can do this.');
 }
 
@@ -1835,6 +1844,13 @@ app.get('/api/v1/logs', requirePermission('LOGS', 'view'), (req, res) => {
   });
 });
 
+// 002 B4: one row per site for the Master Sites table. Unscoped by design
+// (every site), so Master Admin only, and not while viewing as a non-Master.
+app.get('/api/v1/sites/summary', requireMasterAdminView, (req, res) => {
+  const rows: SiteSummaryRow[] = getSiteSummaries();
+  res.json(rows); // 03: the response is SiteSummaryRow[]
+});
+
 // 002 B3: today's overview for ONE site (no ALL). FLOOR_PLAN view.
 // "Today" and hours are IST. Plates in `latest` are masked by the caller's
 // role exactly as /logs does.
@@ -1854,7 +1870,9 @@ app.get('/api/v1/analytics/prediction', (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: false });
   if (siteId === null) return;
   const forecast = generate24HourPredictiveForecast(siteId);
-  res.json(forecast);
+  // 002 B4: these figures are modelled, not live; the UI labels them
+  // "Sample data — not live" (AC-04/06).
+  res.json({ ...forecast, sample: true });
 });
 
 // 9. Non-Parked Employee Alerts Endpoint

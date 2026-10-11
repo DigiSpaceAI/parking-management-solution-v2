@@ -54,6 +54,7 @@ import {
   OvernightRequest,
   OvernightRequestStatus,
   OverviewToday,
+  SiteSummaryRow,
   PublicAppUser,
   ModuleAccessRights
 } from '../types';
@@ -3036,6 +3037,41 @@ export function getSiteOverview(siteId: string, now: number = Date.now()): Overv
     })),
     hasHistory: logs.length > 0,
   };
+}
+
+// 002 B4: one row per site for the Master Sites table.
+export function getSiteSummaries(): SiteSummaryRow[] {
+  const storeData = getStore();
+  const siteOf = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const rows = new Map<string, { occupied: number; total: number; pending: number; last: number }>();
+  const row = (id: string) => {
+    let r = rows.get(id);
+    if (!r) { r = { occupied: 0, total: 0, pending: 0, last: 0 }; rows.set(id, r); }
+    return r;
+  };
+  for (const sl of storeData.slots) { const r = row(siteOf(sl)); r.total++; if (sl.status === 'OCCUPIED') r.occupied++; }
+  for (const rq of storeData.registrationRequests || []) if (rq.status === 'PENDING') row(siteOf(rq)).pending++;
+  for (const l of storeData.logs) {
+    const r = row(siteOf(l));
+    const t = Math.max(new Date(l.entryTime).getTime() || 0, l.exitTime ? new Date(l.exitTime).getTime() || 0 : 0);
+    if (t > r.last) r.last = t;
+  }
+  return getSites().map((site) => {
+    const r = rows.get(site.id) || { occupied: 0, total: 0, pending: 0, last: 0 };
+    return {
+      id: site.id,
+      siteName: site.siteName,
+      city: site.city,
+      siteCode: site.siteCode,
+      status: site.status,
+      ...(site.holdReason ? { holdReason: site.holdReason } : {}),
+      onboardedAt: site.onboardedAt,
+      occupied: r.occupied,
+      total: r.total,
+      pendingRequests: r.pending,
+      lastActivityAt: r.last > 0 ? new Date(r.last).toISOString() : null,
+    };
+  });
 }
 
 export function getPeakHours(siteId: string, fromISO: string, toISO: string): {

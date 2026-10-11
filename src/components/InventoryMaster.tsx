@@ -27,7 +27,6 @@ import {
 interface InventoryMasterProps {
   slots: ParkingSlot[];
   onUpdateSlotStatus: (slotId: string, newStatus: SlotStatus) => void;
-  onVehicleExit?: (vehicleNumberOrSlot: string) => void;
   onRefresh: () => void;
   currentSiteId: string;
 }
@@ -35,7 +34,6 @@ interface InventoryMasterProps {
 export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   slots,
   onUpdateSlotStatus,
-  onVehicleExit,
   onRefresh,
   currentSiteId,
 }) => {
@@ -524,16 +522,6 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                       )}
                     </td>
                     <td className="p-3.5 text-right space-x-1">
-                      {slot.status === 'OCCUPIED' && onVehicleExit && (
-                        <button
-                          {...guard('Mark Vehicle Exit from Pallet / Slot')}
-                          onClick={() => onVehicleExit(slot.currentVehicle || slot.slotNumber)}
-                          className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded border border-rose-300 text-[10px] font-bold transition-colors inline-flex items-center space-x-1"
-                        >
-                          <XCircle className="w-3 h-3 text-rose-600" />
-                          <span>Mark Exit</span>
-                        </button>
-                      )}
 
                       <button
                         {...guard()}

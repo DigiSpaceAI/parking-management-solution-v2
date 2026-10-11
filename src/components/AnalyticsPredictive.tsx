@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { PredictiveAnalyticsReport } from '../types';
+import { Banner } from '../design-system/components';
 import {
   TrendingUp,
   AlertTriangle,
@@ -63,20 +64,31 @@ export const AnalyticsPredictive: React.FC = () => {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-slate-400">
         <Loader2 className="w-8 h-8 animate-spin mb-3 text-blue-500" />
-        <p className="text-sm font-semibold">Generating 24-Hour Time-Series Predictive Occupancy Model...</p>
+        <p className="text-sm font-semibold">Loading the sample forecast…</p>
       </div>
     );
   }
 
+  // 002 F8 (AC-04, AC-06): every figure on this page is sample data until real forecasting
+  // exists (the API marks it `sample: true`). One banner for the page, a label on each chart.
+  const sampleTag = (
+    <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-900">
+      Sample data — not live
+    </span>
+  );
+
   return (
     <div className="space-y-6">
+      <Banner tone="warning" title="Sample data — not live">
+        These forecasts are examples to show what this page will do. They are not based on your site's parking data yet.
+      </Banner>
       {/* Peak Occupancy Banner */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-5 rounded-2xl shadow-md border border-slate-800 relative overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
           <div>
             <div className="flex items-center space-x-2 text-blue-400 font-bold text-xs mb-1 font-mono uppercase tracking-wider">
-              <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
-              <span>LSTM TIME-SERIES FORECAST MODEL</span>
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <span>Occupancy forecast · sample data — not live</span>
             </div>
             <h2 className="text-2xl font-black text-white tracking-tight font-sans">
               Peak Occupancy Projection: <span className="font-mono text-blue-400">{report.peakOccupancyPct}%</span>
@@ -110,6 +122,7 @@ export const AnalyticsPredictive: React.FC = () => {
               24-Hour Hourly Occupancy Forecast Curve
             </h3>
             <p className="text-xs text-slate-500 font-mono mt-0.5">Predictive occupancy rate breakdown across multi-level basements</p>
+            <div className="mt-1">{sampleTag}</div>
           </div>
 
           <div className="flex items-center space-x-3 text-xs font-mono">
@@ -175,6 +188,7 @@ export const AnalyticsPredictive: React.FC = () => {
             <Layers className="w-4 h-4 text-blue-600" />
             Floor Level Peak Capacities
           </h3>
+          <div className="mb-3">{sampleTag}</div>
           <div className="space-y-3 text-xs">
             {report.floorBreakdown.map((floor, idx) => (
               <div key={idx} className="bg-slate-50 border border-slate-200 rounded-xl p-3">
@@ -205,9 +219,7 @@ export const AnalyticsPredictive: React.FC = () => {
                 <Sparkles className="w-4 h-4 text-amber-500" />
                 Smart PMS Predictive Strategy Recommendations
               </h3>
-              <span className="text-[10px] font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                AI Powered
-              </span>
+              {sampleTag}
             </div>
 
             <div className="space-y-2.5 text-xs mb-4">
@@ -251,48 +263,6 @@ export const AnalyticsPredictive: React.FC = () => {
         </div>
       </div>
 
-      {/* ANPR Camera Health Status Grid */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 font-mono">
-            <Camera className="w-4 h-4 text-emerald-600" />
-            ANPR OCR Camera Network Health (12 Live Gate & Stacker Streams)
-          </h3>
-          <span className="text-xs font-mono font-semibold text-emerald-700 flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]"></span>
-            All 12 Cameras Active
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
-          {[
-            { id: 'G-ANPR-CAM01', loc: 'Main Entry Gate 1', fps: '30 FPS', lat: '12ms' },
-            { id: 'G-ANPR-CAM02', loc: 'Main Entry Gate 2', fps: '30 FPS', lat: '14ms' },
-            { id: 'B1-CAM-EV', loc: 'B1 EV Charging Hub', fps: '25 FPS', lat: '18ms' },
-            { id: 'B1-CAM-VIP', loc: 'B1 VIP High Bay', fps: '25 FPS', lat: '15ms' },
-            { id: 'B2-CAM-BAY1', loc: 'B2 Stacker Aisle 1', fps: '25 FPS', lat: '16ms' },
-            { id: 'B2-CAM-BAY2', loc: 'B2 Two-Wheeler Gate', fps: '30 FPS', lat: '11ms' },
-            { id: 'B3-CAM-FLEET', loc: 'B3 Corporate Shuttle', fps: '25 FPS', lat: '19ms' },
-            { id: 'B3-CAM-P01', loc: 'B3 Puzzle Stacker', fps: '25 FPS', lat: '21ms' },
-            { id: 'G-EXIT-CAM01', loc: 'North Exit Gate 1', fps: '30 FPS', lat: '10ms' },
-            { id: 'G-EXIT-CAM02', loc: 'North Exit Gate 2', fps: '30 FPS', lat: '12ms' },
-            { id: 'DRV-CAM-ANPR', loc: 'Perimeter Driveway', fps: '25 FPS', lat: '22ms' },
-            { id: 'VIP-CAM-ANPR', loc: 'Executive Drop-off', fps: '30 FPS', lat: '11ms' },
-          ].map((cam) => (
-            <div key={cam.id} className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-mono font-bold text-slate-900 text-[11px]">{cam.id}</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-              </div>
-              <span className="text-[10px] text-slate-500 block truncate">{cam.loc}</span>
-              <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-slate-200 text-[9px] text-slate-500 font-mono">
-                <span>{cam.fps}</span>
-                <span className="text-emerald-700 font-bold">{cam.lat}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 };

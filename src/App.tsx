@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { ParkingSlot, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig } from './types';
+import { ParkingSlot, ParkingLog, SlotStatus, AppUser, RolePermissionConfig, SiteConfig } from './types';
 import { clearSessionToken } from './sessionTokenFallback';
 import { AppShell } from './screens/AppShell';
 import { useToast, ErrorState, EmptyState, PageHeader, type NavGroup } from './design-system/components';
@@ -538,49 +538,6 @@ export default function App() {
   const isSiteAdmin =
     uiUser?.roleId === 'role-site-manager' || uiUser?.roleName === 'Site Facility Manager';
 
-  const handleVehicleEntry = async (
-    vehicleNumber: string,
-    vehicleType?: VehicleType,
-    entryType: EntryType = 'MANUAL',
-    targetSlotNumber?: string
-  ) => {
-    try {
-      const res = await fetch('/api/v1/vehicles/entry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicleNumber, vehicleType, entryType, targetSlotNumber }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast('success', data.message);
-        refreshAll();
-      } else {
-        showToast('error', saveErrorMessage(data));
-      }
-    } catch {
-      showToast('error', COPY_SAVE_ERROR);
-    }
-  };
-
-  const handleVehicleExit = async (vehicleNumberOrSlot: string) => {
-    try {
-      const res = await fetch('/api/v1/vehicles/exit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicleNumberOrSlot }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast('success', data.message);
-        refreshAll();
-      } else {
-        showToast('error', saveErrorMessage(data));
-      }
-    } catch {
-      showToast('error', COPY_SAVE_ERROR);
-    }
-  };
-
   const handleUpdateSlotStatus = async (slotId: string, newStatus: SlotStatus) => {
     try {
       const res = await fetch('/api/v1/slots/update-status', {
@@ -659,7 +616,7 @@ export default function App() {
         return <LiveParking siteId={siteId} onChanged={() => void lists.refresh()} />;
       case 'logs':
         return wrap(
-          listsPending ? <PageSkeleton /> : <ParkingLogs logs={logs} onVehicleEntry={handleVehicleEntry} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} />,
+          listsPending ? <PageSkeleton /> : <ParkingLogs logs={logs} onRefresh={refreshAll} />,
           { updatedAt: lists.updatedAt }
         );
       case 'alerts':
@@ -693,7 +650,7 @@ export default function App() {
       case 'inventory':
         return wrap(
           listsPending ? <PageSkeleton /> : (
-            <InventoryMaster slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} currentSiteId={siteId} />
+            <InventoryMaster slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onRefresh={refreshAll} currentSiteId={siteId} />
           ),
           { updatedAt: lists.updatedAt }
         );

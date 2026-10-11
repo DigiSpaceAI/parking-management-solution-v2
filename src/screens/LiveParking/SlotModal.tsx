@@ -28,7 +28,7 @@ const PLATE_RE = /^[A-Z0-9]{4,10}$/;
 
 /**
  * Slot details (UX S3): type and size, parking type, allocation, ANPR camera ("—" when
- * none: the old G-ANPR-CAM01 fallback is gone), one honest PLC line, and the actions:
+ * none: the old made-up camera id is gone), one honest PLC line, and the actions:
  * Record exit (occupied), Park a vehicle here (vacant, /vehicles/entry with
  * targetSlotNumber), and Maintenance / Reserve / Set vacant (/slots/update-status).
  * Every action is write-guarded (All sites, view-as). Esc and outside click close it.

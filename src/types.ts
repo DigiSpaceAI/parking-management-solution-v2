@@ -363,4 +363,37 @@ export interface SecurityComplianceSummary {
   activeSecurityHeaders: string[];
 }
 
+// 002 B3: GET /api/v1/overview (one site, "today" = IST calendar day).
+export interface OverviewToday {
+  siteId: string;
+  asOf: string;
+  timezone: 'Asia/Kolkata';
+  occupied: number;
+  total: number;
+  free: number;
+  byLevel: { level: string; occupied: number; total: number }[];
+  entriesToday: number;
+  exitsToday: number;
+  entriesByHour: number[]; // 24 IST hours
+  pendingRequests: number;
+  oldestPendingDays: number | null;
+  parkedOver12h: number;
+  nonParkedAlerts: number;
+  latest: { vehicleNumber: string; slotNumber: string; entryTime: string; exitTime: string | null; status: string }[];
+  hasHistory: boolean; // false = the site has never logged a vehicle (UI shows "—" + reason)
+}
 
+// 002 B4: GET /api/v1/sites/summary (Master Admin only), one row per site.
+export interface SiteSummaryRow {
+  id: string;
+  siteName: string;
+  city: string;
+  siteCode: string;
+  status: SiteStatus;
+  holdReason?: string;
+  onboardedAt: string;
+  occupied: number;
+  total: number;
+  pendingRequests: number;
+  lastActivityAt: string | null;
+}

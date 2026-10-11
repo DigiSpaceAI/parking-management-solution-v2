@@ -37,6 +37,7 @@ import {
   getSlotDailyVehicleCounts,
   getOccupancyTrend,
   getPeakHours,
+  getSiteOverview,
   migrateSiteData,
   approveRegistrationRequest,
   rejectRegistrationRequest,
@@ -97,6 +98,7 @@ import {
   requireAnyPermission,
   hasModulePermission,
   maskPhone,
+  maskLicensePlate,
   createSession,
   generatePasswordResetToken,
   consumePasswordResetToken,
@@ -1831,6 +1833,20 @@ app.get('/api/v1/logs', requirePermission('LOGS', 'view'), (req, res) => {
     piiMasked: shouldMask,
     logs: sanitizedLogs,
   });
+});
+
+// 002 B3: today's overview for ONE site (no ALL). FLOOR_PLAN view.
+// "Today" and hours are IST. Plates in `latest` are masked by the caller's
+// role exactly as /logs does.
+app.get('/api/v1/overview', requirePermission('FLOOR_PLAN', 'view'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const overview = getSiteOverview(siteId);
+  const { platesUnmasked } = piiAccess(req);
+  if (!platesUnmasked) {
+    overview.latest = overview.latest.map((l) => ({ ...l, vehicleNumber: maskLicensePlate(l.vehicleNumber, false) }));
+  }
+  res.json(overview);
 });
 
 // 8. Predictive Analytics 24-Hour Forecast Endpoint

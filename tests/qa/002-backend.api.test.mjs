@@ -233,3 +233,88 @@ test('B2 inSince: an occupied slot gets its ACTIVE log time; no join across site
     assert.deepEqual(peak.filter((h) => h.avgEntries > 0).map((h) => h.hour), [1, 9], 'IST hours, not UTC (would be 3 and 20)');
   } finally { fx.stop(); }
 });
+
+// ------------------------------------------------------------------ B3
+const IST = 330 * 60 * 1000;
+const istStart = (ms) => ms + IST - (((ms + IST) % 86400000) + 86400000) % 86400000 - IST;
+const istHourOf = (iso) => new Date(new Date(iso).getTime() + IST).getUTCHours();
+
+test('B3 /overview: site required, foreign site 403, ALL refused, FLOOR_PLAN view needed', async () => {
+  const none = await c.get('master', '/overview');
+  assert.equal(none.status, 400); assert.equal(none.body.errorCode, 'ERR_SITE_REQUIRED');
+  const all = await c.get('master', '/overview?siteId=ALL');
+  assert.equal(all.status, 400); assert.equal(all.body.errorCode, 'ERR_SITE_ALL_NOT_ALLOWED');
+  const foreign = await c.get('adminA', `/overview?siteId=${F.B.id}`);
+  assert.equal(foreign.status, 403); assert.equal(foreign.body.errorCode, 'ERR_SITE_FORBIDDEN');
+  const ok = await c.get('adminA', '/overview', { site: F.A.id });
+  assert.equal(ok.status, 200); assert.equal(ok.body.siteId, F.A.id); assert.equal(ok.body.timezone, 'Asia/Kolkata');
+});
+
+test('B3 /overview: a brand-new site has hasHistory:false and real zero counts', async () => {
+  const r = await c.get('master', '/overview', { site: F.B.id });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.hasHistory, false);
+  assert.equal(r.body.entriesToday, 0); assert.equal(r.body.exitsToday, 0);
+  assert.deepEqual(r.body.latest, []); assert.equal(r.body.oldestPendingDays, null);
+  assert.equal(r.body.total, 4); assert.equal(r.body.entriesByHour.length, 24);
+});
+
+test('B3 /overview: counts match seeded logs, today and hours in IST, other sites ignored, plates masked by role', async () => {
+  const now = Date.now();
+  const today = istStart(now);
+  const inToday = (ms) => Math.max(today, Math.min(ms, now - 1000));
+  const t = {
+    activeToday: new Date(inToday(today + 60 * 60 * 1000)).toISOString(),
+    doneIn: new Date(inToday(today + 30 * 60 * 1000)).toISOString(),
+    doneOut: new Date(now - 500).toISOString(),
+    old: new Date(now - 13 * 3600 * 1000).toISOString(),
+    yesterday: new Date(today - 20 * 3600 * 1000).toISOString(),
+    yesterdayOut: new Date(today - 19 * 3600 * 1000).toISOString(),
+  };
+  const fx = await seededServer((d) => {
+    d.sites = [mkSite('s-one', 'ONE', 'Site One'), mkSite('s-two', 'TWO', 'Site Two')];
+    d.slots = [mkSlot('o1', 's-one', 'ONE-01', 'OCCUPIED'), mkSlot('o2', 's-one', 'ONE-02', 'OCCUPIED'), mkSlot('o3', 's-one', 'ONE-03'),
+      mkSlot('o4', 's-one', 'ONE-G1', 'VACANT', { basement: 'Ground' }), mkSlot('o5', 's-one', 'ONE-D1', 'MAINTENANCE', { basement: 'Driveway' }),
+      mkSlot('t1', 's-two', 'TWO-01', 'OCCUPIED')];
+    d.logs = [
+      mkLog('log-1001', 's-one', 'o1', 'ONE-01', t.activeToday),
+      mkLog('log-1002', 's-one', 'o3', 'ONE-03', t.doneIn, { status: 'COMPLETED', exitTime: t.doneOut }),
+      mkLog('log-1003', 's-one', 'o2', 'ONE-02', t.old),
+      mkLog('log-1004', 's-one', 'o3', 'ONE-03', t.yesterday, { status: 'COMPLETED', exitTime: t.yesterdayOut }),
+      mkLog('log-1005', 's-one', 'o3', 'ONE-03', t.yesterday, { status: 'COMPLETED', exitTime: t.yesterdayOut }),
+      mkLog('log-2001', 's-two', 't1', 'TWO-01', t.activeToday),
+    ];
+    d.registrationRequests = [
+      { id: 'rq-1', siteId: 's-one', name: 'P1', email: 'p1@x.in', vehicleNumber: 'MH12AB0101', status: 'PENDING', createdAt: new Date(now - 3.5 * 86400000).toISOString() },
+      { id: 'rq-2', siteId: 's-one', name: 'P2', email: 'p2@x.in', vehicleNumber: 'MH12AB0102', status: 'PENDING', createdAt: new Date(now - 86400000).toISOString() },
+      { id: 'rq-3', siteId: 's-one', name: 'P3', email: 'p3@x.in', vehicleNumber: 'MH12AB0103', status: 'APPROVED', createdAt: new Date(now - 9 * 86400000).toISOString() },
+      { id: 'rq-4', siteId: 's-two', name: 'P4', email: 'p4@x.in', vehicleNumber: 'MH12AB0104', status: 'PENDING', createdAt: new Date(now - 30 * 86400000).toISOString() },
+    ];
+    d.alerts = [{ id: 'al-1', siteId: 's-one', vehicleNumber: 'MH12AB0200' }, { id: 'al-2', siteId: 's-two', vehicleNumber: 'MH12AB0201' }];
+  });
+  try {
+    const r = await fx.c.get('master', '/overview', { site: 's-one' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const o = r.body;
+    const entries = [t.activeToday, t.doneIn, t.old].filter((x) => new Date(x).getTime() >= today);
+    assert.equal(o.entriesToday, entries.length);
+    assert.equal(o.exitsToday, 1);
+    const hours = new Array(24).fill(0); for (const e of entries) hours[istHourOf(e)]++;
+    assert.deepEqual(o.entriesByHour, hours, 'IST hour buckets');
+    assert.equal(o.occupied, 2); assert.equal(o.total, 5); assert.equal(o.free, 2);
+    assert.deepEqual(o.byLevel, [{ level: 'B1', occupied: 2, total: 3 }, { level: 'Ground', occupied: 0, total: 2 }], 'Driveway folds into Ground');
+    assert.equal(o.pendingRequests, 2); assert.equal(o.oldestPendingDays, 3);
+    assert.equal(o.parkedOver12h, 1); assert.equal(o.nonParkedAlerts, 1);
+    assert.equal(o.hasHistory, true);
+    assert.equal(o.latest.length, 4);
+    assert.equal(o.latest[0].slotNumber, 'ONE-03', 'newest event first (the exit just now)');
+    assert.ok(o.latest.every((l) => l.vehicleNumber !== 'MH12AB2001'), 'no log from site two');
+    await fx.c.mkUser('auditOne', 'role-mis-auditor', ['s-one']);
+    const masked = await fx.c.get('auditOne', '/overview', { site: 's-one' });
+    assert.equal(masked.status, 200);
+    assert.ok(masked.body.latest.every((l) => !/^MH12AB\d{4}$/.test(l.vehicleNumber)), 'plates masked for a role without plate access: ' + JSON.stringify(masked.body.latest.map((l) => l.vehicleNumber)));
+    await fx.c.mkUser('gateOne', 'role-gate-attendant', ['s-one']);
+    const plain = await fx.c.get('gateOne', '/overview', { site: 's-one' });
+    assert.ok(plain.body.latest.some((l) => /^MH12AB\d{4}$/.test(l.vehicleNumber)), 'gate attendant sees plates (as /logs)');
+  } finally { fx.stop(); }
+});

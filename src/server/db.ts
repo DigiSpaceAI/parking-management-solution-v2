@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
-import { istHour } from './time';
+import { istHour, istDayStartMs } from './time';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -53,6 +53,7 @@ import {
   AppUser,
   OvernightRequest,
   OvernightRequestStatus,
+  OverviewToday,
   PublicAppUser,
   ModuleAccessRights
 } from '../types';
@@ -2966,6 +2967,77 @@ export function getOccupancyTrend(siteId: string, fromISO: string, toISO: string
  * in range. Shows which hours are consistently busiest, not fabricated
  * forecasting.
  */
+// 002 B3: today's overview for one site. "Today" is the IST calendar day of
+// `now`; hours are IST. Counts are real counts (0 only when the data says 0);
+// hasHistory tells a brand-new site (no logs ever) apart from a quiet day.
+// `latest` is returned unmasked: the route masks plates by the caller's role.
+export function getSiteOverview(siteId: string, now: number = Date.now()): OverviewToday {
+  const storeData = getStore();
+  const atSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === siteId;
+  const slots = storeData.slots.filter(atSite);
+  const logs = storeData.logs.filter(atSite);
+  const todayStart = istDayStartMs(now);
+  const isToday = (t?: string | null) => {
+    if (!t) return false;
+    const ms = new Date(t).getTime();
+    return ms >= todayStart && ms < todayStart + 86_400_000;
+  };
+
+  const levelOf = (b: string) => (b === 'Driveway' ? 'Ground' : b);
+  const LEVEL_ORDER = ['B1', 'B2', 'B3', 'Ground'];
+  const levels = new Map<string, { level: string; occupied: number; total: number }>();
+  for (const sl of slots) {
+    const level = levelOf(sl.basement);
+    const row = levels.get(level) || { level, occupied: 0, total: 0 };
+    row.total++;
+    if (sl.status === 'OCCUPIED') row.occupied++;
+    levels.set(level, row);
+  }
+  const byLevel = [...levels.values()].sort((a, b) => {
+    const ia = LEVEL_ORDER.indexOf(a.level), ib = LEVEL_ORDER.indexOf(b.level);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.level.localeCompare(b.level);
+  });
+
+  const entriesByHour = new Array(24).fill(0);
+  let entriesToday = 0;
+  let exitsToday = 0;
+  for (const l of logs) {
+    if (isToday(l.entryTime)) { entriesToday++; entriesByHour[istHour(l.entryTime)]++; }
+    if (isToday(l.exitTime)) exitsToday++;
+  }
+
+  const pending = (storeData.registrationRequests || []).filter(r => atSite(r) && r.status === 'PENDING');
+  const oldestPendingMs = pending.reduce((min, r) => Math.min(min, new Date(r.createdAt).getTime()), Infinity);
+  const twelveHoursAgo = now - 12 * 3_600_000;
+  const lastEvent = (l: ParkingLog) => Math.max(new Date(l.entryTime).getTime(), l.exitTime ? new Date(l.exitTime).getTime() : 0);
+
+  return {
+    siteId,
+    asOf: new Date(now).toISOString(),
+    timezone: 'Asia/Kolkata',
+    occupied: slots.filter(sl => sl.status === 'OCCUPIED').length,
+    total: slots.length,
+    free: slots.filter(sl => sl.status === 'VACANT').length,
+    byLevel,
+    entriesToday,
+    exitsToday,
+    entriesByHour,
+    pendingRequests: pending.length,
+    oldestPendingDays: Number.isFinite(oldestPendingMs) ? Math.floor((now - oldestPendingMs) / 86_400_000) : null,
+    // Open entries older than 12 hours (the 001 default; per-site limits are 001 P2-3).
+    parkedOver12h: logs.filter(l => l.status === 'ACTIVE' && new Date(l.entryTime).getTime() < twelveHoursAgo).length,
+    nonParkedAlerts: (storeData.alerts || []).filter(atSite).length,
+    latest: [...logs].sort((a, b) => lastEvent(b) - lastEvent(a)).slice(0, 4).map(l => ({
+      vehicleNumber: l.vehicleNumber,
+      slotNumber: l.slotNumber,
+      entryTime: l.entryTime,
+      exitTime: l.exitTime || null,
+      status: l.status,
+    })),
+    hasHistory: logs.length > 0,
+  };
+}
+
 export function getPeakHours(siteId: string, fromISO: string, toISO: string): {
   hour: number;
   avgEntries: number;

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ParkingSlot, SlotStatus, VehicleType, Allocation } from '../types';
+import { useWriteGuard } from '../utils/withSite';
+import { SiteCodeChip } from './SiteCodeChip';
 import {
   Layers,
   Search,
@@ -32,6 +34,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
   onVehicleExit,
   onRefresh,
 }) => {
+  const guard = useWriteGuard();
   const [selectedFloor, setSelectedFloor] = useState<'ALL' | 'B1' | 'B2' | 'B3' | 'Ground'>('ALL');
   const [selectedSlot, setSelectedSlot] = useState<ParkingSlot | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -424,6 +427,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
                     {/* Slot ID */}
                     <div className="flex items-center justify-between w-full text-[10px]">
                       <span className="font-extrabold tracking-tight truncate text-slate-900 font-mono text-sm">
+                        <SiteCodeChip siteId={slot.siteId} />
                         {slot.slotNumber}
                       </span>
                       {slot.slotType === 'EV' && <Zap className="w-4 h-4 text-emerald-600 shrink-0 ml-1" />}
@@ -448,13 +452,13 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
                           {slot.currentVehicle}
                         </div>
                         <button
+                          {...guard('Mark Vehicle Exit & Free Slot')}
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             onVehicleExit(slot.currentVehicle || slot.slotNumber);
                           }}
                           className="mt-1.5 w-full py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[9px] font-black flex items-center justify-center space-x-1 shadow-xs transition-colors"
-                          title="Mark Vehicle Exit & Free Slot"
                         >
                           <XCircle className="w-3 h-3" />
                           <span>Mark Exit</span>
@@ -548,13 +552,13 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
                                   {palletSlot.currentVehicle}
                                 </span>
                                 <button
+                                  {...guard('Mark Vehicle Exit from Pallet')}
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onVehicleExit(palletSlot.currentVehicle || palletSlot.slotNumber);
                                   }}
                                   className="w-full py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[8.5px] font-black flex items-center justify-center space-x-1 shadow-xs transition-colors"
-                                  title="Mark Vehicle Exit from Pallet"
                                 >
                                   <XCircle className="w-2.5 h-2.5" />
                                   <span>Mark Exit</span>
@@ -669,6 +673,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
                 </div>
                 <div className="flex items-center justify-between text-xs text-slate-700 pt-2 border-t border-rose-200">
                   <button
+                    {...guard()}
                     onClick={() => {
                       onVehicleExit(selectedSlot.currentVehicle!);
                       setSelectedSlot(null);
@@ -707,6 +712,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
                   </select>
                 </div>
                 <button
+                  {...guard()}
                   type="submit"
                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors flex items-center justify-center space-x-1.5 shadow-sm"
                 >
@@ -719,6 +725,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
             {/* Quick Status Toggles */}
             <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200 text-xs">
               <button
+                {...guard()}
                 onClick={() => {
                   onUpdateSlotStatus(selectedSlot.id, 'MAINTENANCE');
                   setSelectedSlot(null);
@@ -730,6 +737,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
               </button>
 
               <button
+                {...guard()}
                 onClick={() => {
                   onUpdateSlotStatus(selectedSlot.id, 'RESERVED');
                   setSelectedSlot(null);
@@ -740,6 +748,7 @@ export const LiveFloorPlan: React.FC<LiveFloorPlanProps> = ({
               </button>
 
               <button
+                {...guard()}
                 onClick={() => {
                   onUpdateSlotStatus(selectedSlot.id, 'VACANT');
                   setSelectedSlot(null);

@@ -12,7 +12,7 @@ import {
   AppModuleId
 } from '../types';
 import { ActiveTabType } from './Header';
-import { isModulePermitted, getModuleRights } from '../utils/rbac';
+import { canOpenTab, getModuleRights } from '../utils/rbac';
 import {
   LayoutGrid,
   KeyRound,
@@ -181,7 +181,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
       label: 'Inventory Master',
       icon: SlidersHorizontal,
       category: 'Capacity Management',
-      description: '1,080 mechanical slot matrix, CSV bulk upload, EV bay quotas & vehicle allocations.',
+      description: 'Slots, levels, CSV bulk upload, EV bay quotas & vehicle allocations.',
       badge: `${totalSlotsCount} Slots`,
       badgeColor: 'bg-amber-100 text-amber-800 border-amber-300',
     },
@@ -280,7 +280,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
   // STRICT PERMISSION MATRIX FILTERING:
   // Only display modules that are explicitly enabled in the user's role permission matrix or user overrides!
   const permittedModules = ALL_MODULES.filter((m) =>
-    isModulePermitted(currentUser, currentRole, m.tabId)
+    canOpenTab(currentUser, currentRole, m.tabId)
   );
 
   // Role Type Categorization
@@ -352,7 +352,7 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
               <span className="text-3xl font-black font-mono text-cyan-300 drop-shadow-sm">{permittedModules.length}</span>
               <span className="text-[10px] text-slate-300 block font-mono">Filtered by RBAC Matrix</span>
             </div>
-            {isModulePermitted(currentUser, currentRole, 'USER_MANAGEMENT') && (
+            {canOpenTab(currentUser, currentRole, 'USER_MANAGEMENT') && (
               <button
                 onClick={() => setActiveTab('USER_MANAGEMENT')}
                 className="px-5 py-3.5 bg-[#00E5FF] hover:bg-[#33ebff] active:scale-95 text-slate-950 rounded-2xl font-black text-xs shadow-lg shadow-cyan-500/25 border border-cyan-200 transition-all flex items-center justify-center space-x-2 cursor-pointer"
@@ -391,9 +391,9 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3 pt-1">
           {/* Step 1: Master Site Config */}
           <div
-            onClick={() => isModulePermitted(currentUser, currentRole, 'MASTER_CONFIG') && setActiveTab('MASTER_CONFIG')}
+            onClick={() => canOpenTab(currentUser, currentRole, 'MASTER_CONFIG') && setActiveTab('MASTER_CONFIG')}
             className={`p-3.5 rounded-2xl border transition-all ${
-              isModulePermitted(currentUser, currentRole, 'MASTER_CONFIG')
+              canOpenTab(currentUser, currentRole, 'MASTER_CONFIG')
                 ? 'bg-blue-50/70 border-blue-200 hover:border-blue-400 hover:shadow-md cursor-pointer group'
                 : 'bg-slate-50/80 border-slate-200 opacity-75'
             }`}
@@ -414,9 +414,9 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
 
           {/* Step 2: User & RBAC */}
           <div
-            onClick={() => isModulePermitted(currentUser, currentRole, 'USER_MANAGEMENT') && setActiveTab('USER_MANAGEMENT')}
+            onClick={() => canOpenTab(currentUser, currentRole, 'USER_MANAGEMENT') && setActiveTab('USER_MANAGEMENT')}
             className={`p-3.5 rounded-2xl border transition-all ${
-              isModulePermitted(currentUser, currentRole, 'USER_MANAGEMENT')
+              canOpenTab(currentUser, currentRole, 'USER_MANAGEMENT')
                 ? 'bg-indigo-50/70 border-indigo-200 hover:border-indigo-400 hover:shadow-md cursor-pointer group'
                 : 'bg-slate-50/80 border-slate-200 opacity-75'
             }`}
@@ -437,9 +437,9 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
 
           {/* Step 3: Inventory Upload */}
           <div
-            onClick={() => isModulePermitted(currentUser, currentRole, 'INVENTORY') && setActiveTab('INVENTORY')}
+            onClick={() => canOpenTab(currentUser, currentRole, 'INVENTORY') && setActiveTab('INVENTORY')}
             className={`p-3.5 rounded-2xl border transition-all ${
-              isModulePermitted(currentUser, currentRole, 'INVENTORY')
+              canOpenTab(currentUser, currentRole, 'INVENTORY')
                 ? 'bg-amber-50/70 border-amber-200 hover:border-amber-400 hover:shadow-md cursor-pointer group'
                 : 'bg-slate-50/80 border-slate-200 opacity-75'
             }`}
@@ -460,9 +460,9 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
 
           {/* Step 4: ParkFlow Field App */}
           <div
-            onClick={() => isModulePermitted(currentUser, currentRole, 'MOBILE_APP') && setActiveTab('MOBILE_APP')}
+            onClick={() => canOpenTab(currentUser, currentRole, 'MOBILE_APP') && setActiveTab('MOBILE_APP')}
             className={`p-3.5 rounded-2xl border transition-all ${
-              isModulePermitted(currentUser, currentRole, 'MOBILE_APP')
+              canOpenTab(currentUser, currentRole, 'MOBILE_APP')
                 ? 'bg-emerald-50/70 border-emerald-200 hover:border-emerald-400 hover:shadow-md cursor-pointer group'
                 : 'bg-slate-50/80 border-slate-200 opacity-75'
             }`}
@@ -483,9 +483,9 @@ export const RoleHomePage: React.FC<RoleHomePageProps> = ({
 
           {/* Step 5: Employee */}
           <div
-            onClick={() => isModulePermitted(currentUser, currentRole, 'EMPLOYEE_MOBILE_APP') && setActiveTab('EMPLOYEE_MOBILE_APP')}
+            onClick={() => canOpenTab(currentUser, currentRole, 'EMPLOYEE_MOBILE_APP') && setActiveTab('EMPLOYEE_MOBILE_APP')}
             className={`p-3.5 rounded-2xl border transition-all ${
-              isModulePermitted(currentUser, currentRole, 'EMPLOYEE_MOBILE_APP')
+              canOpenTab(currentUser, currentRole, 'EMPLOYEE_MOBILE_APP')
                 ? 'bg-purple-50/70 border-purple-200 hover:border-purple-400 hover:shadow-md cursor-pointer group'
                 : 'bg-slate-50/80 border-slate-200 opacity-75'
             }`}

@@ -1,0 +1,11 @@
+# Normalise line endings: store LF in git (T0b, 001 tech design)
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.jar binary
+*.keystore binary
+*.apk binary

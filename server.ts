@@ -8,6 +8,7 @@ import {
   getStore,
   saveDB,
   bootstrapFirestore,
+  isStoreReady,
   rotateKnownDefaultPasswords,
   DEFAULT_SITE_ID,
   processVehicleEntry,
@@ -24,6 +25,7 @@ import {
   getWhitelistedDomains,
   addWhitelistedDomain,
   removeWhitelistedDomain,
+  findWhitelistedDomain,
   getRegistrationRequests,
   submitRegistrationRequest,
   submitOvernightRequest,
@@ -81,7 +83,6 @@ import {
   sanitizePasswordInput,
   EMAIL_ALLOWLIST_REGEX,
   USERNAME_ALLOWLIST_REGEX,
-  bolaIdentityGuard,
   logSecurityEvent,
   verifyAuditTrailIntegrity,
   getSecurityComplianceSummary,
@@ -92,15 +93,19 @@ import {
   isValidLicensePlate,
   requireAuth,
   requirePermission,
+  requireAnyPermission,
+  hasModulePermission,
+  maskPhone,
   createSession,
   generatePasswordResetToken,
   consumePasswordResetToken,
   destroySession,
-  loadAuditLogsFromFirestore,
-  clearAuditLogs
+  extractSessionToken,
+  loadAuditLogsFromFirestore
 } from './src/server/security';
-import { VehicleType, EntryType } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
+import { isMasterAdmin } from './src/utils/rbac';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
@@ -164,7 +169,7 @@ app.use((req, res, next) => {
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-site-id, x-session-token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-site-id, x-session-token, x-view-as');
   }
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -185,6 +190,18 @@ app.use('/api', (req, res, next) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.setHeader('Surrogate-Control', 'no-store');
+  next();
+});
+
+// HOTFIX (2 Oct): until the store has loaded from Firestore, the API answers
+// 503 ERR_STARTING instead of serving (and possibly writing) the boot-time
+// seed store. /health stays up for Cloud Run and reports `ready`.
+app.use((req, res, next) => {
+  const isApi = (req.path.startsWith('/api/v1/') && req.path !== '/api/v1/health') || req.path === '/login';
+  if (isApi && !isStoreReady()) {
+    res.setHeader('Retry-After', '5');
+    return sendApiError(res, 503, 'ERR_STARTING', 'ParkFlows is starting up. Try again in a moment.');
+  }
   next();
 });
 
@@ -214,8 +231,35 @@ const PUBLIC_API_PATHS = new Set([
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/v1/') && req.path !== '/login') return next();
   if (PUBLIC_API_PATHS.has(req.path)) return next();
-  return requireAuth(req, res, (err?: any) => (err ? next(err) : enforceSiteScope(req, res, next)));
+  return requireAuth(req, res, (err?: any) =>
+    err ? next(err) : applyViewAs(req, res, () => enforceSiteScope(req, res, next))
+  );
 });
+
+// ROLE VIEW SIMULATOR, server-enforced (001 design B10, AC-55).
+// x-view-as: <userId> is honoured only for a Master Admin session. It is
+// read-only: any non-GET is refused. Scope, module permissions and PII
+// masking are evaluated as the target (req.effectiveUser); audit entries
+// keep the real Master Admin as the actor. Ignored on /auth/* so signing out
+// or checking the session always acts on the real account.
+function applyViewAs(req: express.Request, res: express.Response, next: () => void) {
+  const raw = req.headers['x-view-as'];
+  const targetId = typeof raw === 'string' ? raw.trim() : '';
+  if (!targetId || req.path.startsWith('/api/v1/auth/')) return next();
+  if (!req.user || !isMasterAdmin(req.user)) {
+    return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can view as another user.');
+  }
+  const target = getAppUsers().find((u) => u.id === targetId);
+  if (!target) {
+    return res.status(404).json({ success: false, message: 'The user you are viewing as no longer exists.' });
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return sendApiError(res, 403, 'ERR_VIEW_AS_READ_ONLY', 'View-as is read-only. Exit view to make changes.');
+  }
+  req.viewAs = target;
+  req.effectiveUser = target;
+  next();
+}
 
 
 // ---------------------------------------------------------------------------
@@ -254,13 +298,6 @@ function siteAllowedFor(user: express.Request['user'], siteId?: string): boolean
   return allowed === null || allowed.includes(siteId || DEFAULT_SITE_ID);
 }
 
-// Sends a 403 and returns true when the record's site is outside the caller's scope.
-function denyForeignSite(req: express.Request, res: express.Response, siteId?: string): boolean {
-  if (siteAllowedFor(req.user, siteId)) return false;
-  res.status(403).json({ success: false, message: 'You do not have access to this site.' });
-  return true;
-}
-
 function rawClientSiteId(req: express.Request): string | undefined {
   const fromQuery = req.query?.siteId;
   if (fromQuery && typeof fromQuery === 'string') return fromQuery;
@@ -279,23 +316,16 @@ function siteCarryingObjects(body: any): any[] {
   return out.filter((o) => o && typeof o === 'object');
 }
 
-const SITE_INJECT_PATHS = new Set([
-  '/api/v1/employees/save',
-  '/api/v1/employees/bulk-upload',
-  '/api/v1/slots/save',
-  '/api/v1/slots/bulk-upload',
-  '/api/v1/registrations/bulk-upload',
-  '/api/v1/valet/checkin',
-]);
-
 function enforceSiteScope(req: express.Request, res: express.Response, next: express.NextFunction) {
   const user = req.user;
   if (!user) return next();
   const allowed = getAllowedSiteIds(user);
   if (allowed === null) return next();
 
-  const deny = () =>
-    res.status(403).json({ success: false, message: 'You do not have access to this site.', errorCode: 'ERR_SITE_FORBIDDEN' });
+  const deny = () => {
+    auditDenied(req, claimed && claimed !== 'ALL' ? claimed : undefined);
+    return res.status(403).json({ success: false, message: 'You do not have access to this site.', errorCode: 'ERR_SITE_FORBIDDEN' });
+  };
 
   const claimed = rawClientSiteId(req);
   if (claimed && claimed !== 'ALL' && !allowed.includes(claimed)) return deny();
@@ -307,15 +337,9 @@ function enforceSiteScope(req: express.Request, res: express.Response, next: exp
     }
   }
 
-  // Records created by a scoped user belong to that user's site, never to the
-  // legacy default site by omission.
-  if (req.method === 'POST' && SITE_INJECT_PATHS.has(req.path) && allowed.length > 0) {
-    const fallback = claimed && claimed !== 'ALL' ? claimed : allowed[0];
-    const targets = req.path.endsWith('/bulk-upload') ? objs.filter((o) => o !== req.body) : [req.body.employee || req.body.slot || req.body];
-    for (const o of targets) {
-      if (!o.siteId || o.siteId === 'ALL') o.siteId = fallback;
-    }
-  }
+  // Create routes now take their site from resolveSite() explicitly (001 B3),
+  // so there is one source of truth; this middleware only rejects foreign
+  // claims as defence in depth.
   next();
 }
 
@@ -324,10 +348,216 @@ function enforceSiteScope(req: express.Request, res: express.Response, next: exp
 // For scoped users the result is always one of their own sites.
 function getRequestedSiteId(req: express.Request): string | undefined {
   const raw = rawClientSiteId(req);
-  const allowed = req.user ? getAllowedSiteIds(req.user) : null;
+  const who = req.effectiveUser || req.user;
+  const allowed = who ? getAllowedSiteIds(who) : null;
   if (allowed === null) return raw;
   if (!raw || raw === 'ALL') return allowed[0] ?? NO_SITE_ACCESS;
   return allowed.includes(raw) ? raw : NO_SITE_ACCESS;
+}
+
+// ---------------------------------------------------------------------------
+// STRICT SITE RESOLUTION (001 tech design, B1)
+// Every list / report / write route asks resolveSite() which ONE site the
+// request acts on. The client only says which of the caller's sites it wants
+// (?siteId= wins over the x-site-id header); the server decides:
+//   no site sent            -> 400 ERR_SITE_REQUIRED
+//   'ALL'                   -> Master Admin (unrestricted) reads only, else 400 ERR_SITE_ALL_NOT_ALLOWED
+//   a site not the caller's -> 403 ERR_SITE_FORBIDDEN + CROSS_SITE_ACCESS_DENIED audit entry
+// SITE_SCOPE_MODE=fallback is an env-only kill-switch that restores the
+// previous behaviour (missing site = first assigned site / every site for a
+// Master Admin) without a rebuild. Default: strict.
+// ---------------------------------------------------------------------------
+const SITE_SCOPE_MODE: 'strict' | 'fallback' = process.env.SITE_SCOPE_MODE === 'fallback' ? 'fallback' : 'strict';
+if (SITE_SCOPE_MODE === 'fallback') {
+  console.warn('[site-scope] SITE_SCOPE_MODE=fallback: requests without a site fall back to the caller\'s first site (legacy behaviour).');
+}
+
+type SiteRef = { siteId?: string | null };
+const recordSite = (x: SiteRef | undefined | null): string => (x && x.siteId) || DEFAULT_SITE_ID;
+
+function sendApiError(res: express.Response, status: number, errorCode: ApiErrorCode, message: string) {
+  res.status(status).json({ success: false, message, errorCode });
+}
+
+// The user whose scope / permissions / masking apply: the Role View Simulator
+// target when a Master Admin is viewing as someone, else the signed-in user.
+function scopeUser(req: express.Request) {
+  return req.effectiveUser || req.user;
+}
+
+function auditDenied(req: express.Request, siteId: string | undefined, details?: string) {
+  logSecurityEvent({
+    action: 'CROSS_SITE_ACCESS_DENIED',
+    actor: req.user?.email || 'unknown',
+    actorRole: req.user?.roleName,
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent'] as string,
+    targetResource: `${req.method} ${req.path}`,
+    status: 'BLOCKED_UNAUTHORIZED',
+    details: details || `${req.user?.email || 'unknown'} tried to act on site ${siteId || 'unknown'} outside their access.`,
+    siteId,
+  });
+}
+
+function denySite(req: express.Request, res: express.Response, siteId: string | undefined, details?: string): null {
+  auditDenied(req, siteId, details);
+  sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You do not have access to this site.');
+  return null;
+}
+
+// Returns the canonical site id (or 'ALL'), or null when an error response has
+// already been sent.
+function resolveSite(req: express.Request, res: express.Response, opts: { allowAll: boolean }): string | null {
+  const user = scopeUser(req);
+  if (!user) {
+    sendApiError(res, 401, 'ERR_SESSION_EXPIRED', 'Not signed in.');
+    return null;
+  }
+
+  if (SITE_SCOPE_MODE === 'fallback') {
+    const legacy = getRequestedSiteId(req);
+    if (legacy === NO_SITE_ACCESS) {
+      if (opts.allowAll) return NO_SITE_ACCESS; // lists: empty result, as before
+      return denySite(req, res, rawClientSiteId(req));
+    }
+    if (!legacy || legacy === 'ALL') return opts.allowAll ? 'ALL' : DEFAULT_SITE_ID;
+    return legacy;
+  }
+
+  const raw = rawClientSiteId(req)?.trim();
+  const allowed = getAllowedSiteIds(user);
+  if (!raw) {
+    sendApiError(res, 400, 'ERR_SITE_REQUIRED', 'Choose a site first.');
+    return null;
+  }
+  if (raw === 'ALL') {
+    if (allowed === null && opts.allowAll) return 'ALL';
+    sendApiError(res, 400, 'ERR_SITE_ALL_NOT_ALLOWED', 'Select one site to make changes.');
+    return null;
+  }
+
+  const match = getSites().find((x) => x.id === raw || x.siteCode === raw);
+  const canonical = match ? match.id : raw;
+  if (allowed !== null) {
+    if (!allowed.includes(raw) && !allowed.includes(canonical)) return denySite(req, res, canonical);
+    return canonical;
+  }
+  // Unrestricted caller: any real site, plus the legacy default site.
+  if (!match && canonical !== DEFAULT_SITE_ID) {
+    sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'This site does not exist.');
+    return null;
+  }
+  return canonical;
+}
+
+// Record-level check: the STORED siteId of the record decides, never the body.
+// Returns false (after sending 403 + audit) when the record belongs elsewhere.
+function assertRecordSite(req: express.Request, res: express.Response, record: SiteRef | undefined | null, resolvedSite: string): boolean {
+  if (!record) return true;
+  const stored = recordSite(record);
+  if (resolvedSite !== 'ALL' && stored === resolvedSite) return true;
+  if (resolvedSite === 'ALL' && siteAllowedFor(scopeUser(req), stored)) return true;
+  denySite(req, res, stored, `${req.user?.email || 'unknown'} (site ${resolvedSite}) tried to act on a record of site ${stored}.`);
+  return false;
+}
+
+// Master Admin only (AC-52). Checks the REAL signed-in user, never the Role
+// View Simulator target.
+function requireMasterAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.user && isMasterAdmin(req.user)) return next();
+  return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can do this.');
+}
+
+// List filter for a resolved site ('ALL' = no filter).
+function filterBySite<T extends SiteRef>(items: T[], site: string): T[] {
+  return site === 'ALL' ? items : items.filter((x) => recordSite(x) === site);
+}
+
+function canonicalSiteId(raw: string): string {
+  const m = getSites().find((x) => x.id === raw || x.siteCode === raw);
+  return m ? m.id : raw;
+}
+
+// Site a NEW record (or a bulk row) is written to. Normally the resolved
+// site; a body siteId that differs is refused (null). In SITE_SCOPE_MODE=
+// fallback, when the client sent no site at all, the legacy behaviour is kept:
+// the row's own siteId is used if the caller may access it.
+function writeSiteFor(req: express.Request, resolvedSite: string, bodySiteId: unknown): string | null {
+  if (bodySiteId === undefined || bodySiteId === null || bodySiteId === '' || bodySiteId === 'ALL') return resolvedSite;
+  const wanted = canonicalSiteId(String(bodySiteId));
+  if (wanted === resolvedSite) return resolvedSite;
+  if (SITE_SCOPE_MODE === 'fallback' && !rawClientSiteId(req) && siteAllowedFor(scopeUser(req), wanted)) return wanted;
+  return null;
+}
+
+// Validates a single-record save by id (H4). Returns the siteId to store, or
+// null after sending a 403. Non-Master callers can never move a record: the
+// stored site wins. A Master Admin may move it; that move is audit-logged.
+function siteForSave(
+  req: express.Request,
+  res: express.Response,
+  resolvedSite: string,
+  stored: SiteRef | undefined,
+  bodySiteId: unknown,
+  resource: string
+): string | null {
+  if (stored) {
+    if (!assertRecordSite(req, res, stored, resolvedSite)) return null;
+    const wanted = bodySiteId ? canonicalSiteId(String(bodySiteId)) : resolvedSite;
+    if (wanted !== resolvedSite && req.user && isMasterAdmin(req.user) && !req.viewAs) {
+      // m-2: never move a record to a site that doesn't exist (it would be
+      // orphaned: no one could select it again).
+      if (wanted !== DEFAULT_SITE_ID && !getSites().some((x) => x.id === wanted)) {
+        res.status(400).json({ success: false, message: 'That site does not exist. Nothing was changed.' });
+        return null;
+      }
+      logSecurityEvent({
+        action: 'RECORD_SITE_MOVED',
+        actor: req.user.email,
+        actorRole: req.user.roleName,
+        ipAddress: req.ip,
+        targetResource: resource,
+        status: 'SUCCESS',
+        details: `${req.user.fullName} moved ${resource} from site ${resolvedSite} to ${wanted}.`,
+        siteId: wanted,
+      });
+      return wanted;
+    }
+    return resolvedSite;
+  }
+  const site = writeSiteFor(req, resolvedSite, bodySiteId);
+  if (site === null) return denySite(req, res, canonicalSiteId(String(bodySiteId)), `${req.user?.email || 'unknown'} tried to create ${resource} in site ${bodySiteId} while working in site ${resolvedSite}.`);
+  return site;
+}
+
+// Bulk uploads (H4): the WHOLE batch is refused when any row targets another
+// site's record or carries a foreign siteId; nothing is written. Otherwise
+// every row is stamped with its write site.
+function stampBulkRows<T extends { id?: string; siteId?: string }>(
+  req: express.Request,
+  res: express.Response,
+  resolvedSite: string,
+  rows: T[],
+  findExisting: (row: T) => SiteRef | undefined
+): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || typeof row !== 'object') continue;
+    const site = writeSiteFor(req, resolvedSite, row.siteId);
+    if (site === null) {
+      denySite(req, res, canonicalSiteId(String(row.siteId)), `Bulk upload row ${i + 1} targets site ${row.siteId}; batch refused (working in ${resolvedSite}).`);
+      return false;
+    }
+    const existing = findExisting({ ...row, siteId: site });
+    if (existing && recordSite(existing) !== site) {
+      denySite(req, res, recordSite(existing), `Bulk upload row ${i + 1} targets a record of site ${recordSite(existing)}; batch refused.`);
+      return false;
+    }
+  }
+  for (const row of rows) {
+    if (row && typeof row === 'object') row.siteId = writeSiteFor(req, resolvedSite, row.siteId) as string;
+  }
+  return true;
 }
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -384,6 +614,7 @@ app.get('/api/v1/health', (req, res) => {
     occupiedSlots: occupiedCount,
     vacantSlots: store.slots.length - occupiedCount,
     activeEmployees: store.employees.length,
+    ready: isStoreReady(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -392,16 +623,13 @@ app.get('/api/v1/health', (req, res) => {
 app.get('/api/v1/slots', (req, res) => {
   const store = getStore();
   const { basement, status, allocation, slotType, search } = req.query;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
 
   // Records written before site-scoping existed have no siteId at all —
-  // treated as DEFAULT_SITE_ID here too, matching the same fallback
-  // used when creating them in db.ts, so existing data keeps working
-  // without needing an active migration write.
-  const resolveSiteId = (s: { siteId?: string }) => s.siteId || DEFAULT_SITE_ID;
-  const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.slots.filter(s => resolveSiteId(s) === siteId)
-    : store.slots;
+  // treated as DEFAULT_SITE_ID (see recordSite), so existing data keeps
+  // working without an active migration write.
+  const siteScoped = filterBySite(store.slots, siteId);
 
   let slots = siteScoped;
 
@@ -466,15 +694,22 @@ app.get('/api/v1/slots', (req, res) => {
 const FULL_PII_ROLES = new Set(['Platform Master Admin', 'Site Facility Manager', 'MIS Auditor']);
 const PLATE_VISIBLE_ROLES = new Set(['Gate Security Attendant', 'ValetX Operations Lead']);
 
+// PII visibility for the caller, from their server-side role only (the
+// Role View Simulator target when viewing as someone). Never from a query
+// parameter.
+function piiAccess(req: express.Request): { fullyUnmasked: boolean; platesUnmasked: boolean } {
+  const role = scopeUser(req)?.roleName || '';
+  const fullyUnmasked = FULL_PII_ROLES.has(role);
+  return { fullyUnmasked, platesUnmasked: fullyUnmasked || PLATE_VISIBLE_ROLES.has(role) };
+}
+
 app.get('/api/v1/employees', (req, res) => {
   const store = getStore();
   const { search, department } = req.query;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
 
-  const resolveSiteId = (e: { siteId?: string }) => e.siteId || DEFAULT_SITE_ID;
-  let employees = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.employees.filter(e => resolveSiteId(e) === siteId)
-    : store.employees;
+  let employees = filterBySite(store.employees, siteId);
 
   if (department && typeof department === 'string' && department !== 'ALL') {
     employees = employees.filter(e => e.department === department);
@@ -497,9 +732,7 @@ app.get('/api/v1/employees', (req, res) => {
   // adding ?userRole=MASTER_ADMIN&maskPII=false to the request, regardless
   // of their actual role. That's a privilege-escalation bug, not a
   // legitimate override, so it's been removed entirely.
-  const callerRole = req.user!.roleName;
-  const fullyUnmasked = FULL_PII_ROLES.has(callerRole);
-  const platesUnmasked = fullyUnmasked || PLATE_VISIBLE_ROLES.has(callerRole);
+  const { fullyUnmasked, platesUnmasked } = piiAccess(req);
 
   const sanitized = employees.map((emp) => ({
     ...sanitizeEmployeeList([emp], fullyUnmasked)[0],
@@ -520,6 +753,12 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
     if (!employeeData || !employeeData.name || !employeeData.vehicleNumber) {
       return res.status(400).json({ success: false, message: 'Name and Vehicle License Plate Number are required.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const storedEmp = employeeData.id ? getStore().employees.find((e) => e.id === employeeData.id) : undefined;
+    const writeSite = siteForSave(req, res, site, storedEmp, employeeData.siteId, `employee/${employeeData.id || employeeData.employeeId || 'new'}`);
+    if (writeSite === null) return;
+    employeeData.siteId = writeSite;
 
     if (!isValidLicensePlate(employeeData.vehicleNumber)) {
       logSecurityEvent({
@@ -544,6 +783,7 @@ app.post('/api/v1/employees/save', requirePermission('REGISTRATION', 'canEdit'),
       targetResource: `employee/${saved.employeeId}`,
       status: 'SUCCESS',
       details: `Saved employee ${saved.name} (${saved.employeeId}) with plate ${saved.vehicleNumber}`,
+      siteId: saved.siteId,
     });
 
     res.json({
@@ -563,6 +803,10 @@ app.post('/api/v1/employees/bulk-upload', requirePermission('REGISTRATION', 'can
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty employees array for bulk upload.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const store = getStore();
+    if (!stampBulkRows(req, res, site, list, (row: any) => (row.id ? store.employees.find((e) => e.id === row.id) : undefined))) return;
 
     const result = bulkUploadEmployees(list);
 
@@ -586,160 +830,288 @@ app.post('/api/v1/employees/bulk-upload', requirePermission('REGISTRATION', 'can
   }
 });
 
-// 3d. Get Employee Profile & Registered Vehicle Details (Protected with BOLA Guard & Rate Limiter)
-app.get(
-  '/api/v1/employees/profile',
-  rateLimiterMiddleware(30, 60000),
-  bolaIdentityGuard({ allowAdminOverride: true, actionName: 'EMPLOYEE_PROFILE_ACCESS' }),
-  (req, res) => {
-    const { query, email, employeeId } = req.query;
-    const lookupKey = sanitizeInputString((email || employeeId || query) as string);
-    if (!lookupKey) {
-      return res.status(400).json({ success: false, message: 'Email or Employee ID query parameter is required.' });
-    }
+// 3d / 3e. Employee self-service: profile and registered vehicle (H2, H3).
+// The target record is resolved ONCE. Self-service: from the signed-in
+// user's own email, never from what the client names. Looking at or changing
+// someone else's record needs an admin permission AND passes the site check
+// on the record that was actually resolved.
+type ProfileTarget = { employee?: ReturnType<typeof getStore>['employees'][number]; handled: boolean };
 
-    const employee = getEmployeeByEmailOrId(lookupKey);
-    if (!employee) {
-      return res.json({ success: false, message: 'No registered whitelist record found for this employee identifier.', employee: null });
-    }
+function resolveEmployeeTarget(
+  req: express.Request,
+  res: express.Response,
+  source: { email?: unknown; employeeId?: unknown },
+  adminCheck: () => boolean,
+  actionName: string
+): ProfileTarget {
+  const me = scopeUser(req)!;
+  const email = typeof source.email === 'string' ? sanitizeInputString(source.email).trim().toLowerCase() : '';
+  const employeeId = typeof source.employeeId === 'string' ? sanitizeInputString(source.employeeId).trim().toUpperCase() : '';
+  const employees = getStore().employees;
+  const myEmail = me.email.toLowerCase();
+  // R4-2 (1): "your" pass is only ever one at a site you may access, never a
+  // record elsewhere that happens to share your account email. With several,
+  // prefer the site the request selected.
+  const mine = employees.filter((e) => (e.email || '').toLowerCase() === myEmail && siteAllowedFor(me, e.siteId));
+  const rawSite = rawClientSiteId(req);
+  const preferredSite = rawSite && rawSite !== 'ALL' ? canonicalSiteId(rawSite) : undefined;
+  const own = (preferredSite && mine.find((e) => recordSite(e) === preferredSite)) || mine[0];
 
-    // Admins may only look up employees at their own sites; anyone may
-    // always look up their own record (BOLA guard already enforces that).
-    if (employee.email?.toLowerCase() !== req.user!.email.toLowerCase() && denyForeignSite(req, res, employee.siteId)) return;
+  const namesSomeoneElse = (email && email !== myEmail) || (employeeId && (!own || own.employeeId.toUpperCase() !== employeeId));
+  if (!namesSomeoneElse) return { employee: own, handled: false };
 
-    // Also check if currently parked
-    const store = getStore();
-    const currentSlot = store.slots.find(s => s.currentVehicle && s.currentVehicle.toUpperCase() === employee.vehicleNumber.toUpperCase() && s.status === 'OCCUPIED');
-
+  if (!adminCheck()) {
     logSecurityEvent({
-      action: 'EMPLOYEE_PROFILE_LOOKUP',
-      actor: req.user?.email || employee.email,
-      actorRole: req.user?.roleName || 'EMPLOYEE',
+      action: actionName,
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
       ipAddress: req.ip,
-      targetResource: `employee/${employee.employeeId}`,
-      status: 'SUCCESS',
-      details: `Profile accessed for ${employee.name} (${employee.employeeId})`,
+      userAgent: req.headers['user-agent'] as string,
+      targetResource: `targetEmail: ${email || 'N/A'}, targetEmpId: ${employeeId || 'N/A'}`,
+      status: 'BLOCKED_UNAUTHORIZED',
+      details: `${req.user!.email} tried to reach another employee's record. Blocked.`,
     });
-
-    res.json({
-      success: true,
-      employee,
-      currentSlot: currentSlot ? {
-        slotNumber: currentSlot.slotNumber,
-        basement: currentSlot.basement,
-        floorLocation: currentSlot.floorLocation,
-        slotType: currentSlot.slotType,
-      } : null,
+    res.status(403).json({
+      success: false,
+      message: 'You can only view or change your own pass.',
+      errorCode: 'ERR_BOLA_VIOLATION',
     });
+    return { handled: true };
   }
-);
 
-// 3e. Employee Mobile App: Update Registered Vehicle (Protected with BOLA Guard & Input Sanitization)
-app.post(
-  '/api/v1/employees/update-vehicle',
-  rateLimiterMiddleware(20, 60000),
-  bolaIdentityGuard({ allowAdminOverride: true, actionName: 'VEHICLE_UPDATE_ATTEMPT' }),
-  (req, res) => {
-    try {
-      const { employeeId, email, vehicleNumber, vehicleType, vehicleBrand, updateReason } = req.body;
-
-      if (!vehicleNumber || !vehicleNumber.trim()) {
-        return res.status(400).json({ success: false, message: 'Vehicle license plate number is required.' });
-      }
-
-      const sanitizedPlate = sanitizeInputString(vehicleNumber).toUpperCase();
-
-      const targetEmployee = getEmployeeByEmailOrId(sanitizeInputString(email || employeeId || ''));
-      if (targetEmployee && targetEmployee.email?.toLowerCase() !== req.user!.email.toLowerCase() && denyForeignSite(req, res, targetEmployee.siteId)) return;
-
-      if (!isValidLicensePlate(sanitizedPlate)) {
-        logSecurityEvent({
-          action: 'INVALID_PLATE_FORMAT_REJECTED',
-          actor: email || employeeId || req.ip || 'Unknown',
-          actorRole: req.user?.roleName || 'EMPLOYEE',
-          ipAddress: req.ip,
-          targetResource: `vehicleNumber: ${vehicleNumber}`,
-          status: 'VALIDATION_FAILED',
-          details: `Rejected invalid license plate string "${vehicleNumber}" due to security format validation.`,
-        });
-
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid license plate format. Must be a valid 4-10 alphanumeric plate code.',
-        });
-      }
-
-      if (!email && !employeeId) {
-        return res.status(400).json({ success: false, message: 'Employee authentication identifier (email or employeeId) is required.' });
-      }
-
-      const result = updateEmployeeVehicle({
-        employeeId: sanitizeInputString(employeeId),
-        email: sanitizeInputString(email),
-        vehicleNumber: sanitizedPlate,
-        vehicleType,
-        vehicleBrand: sanitizeInputString(vehicleBrand),
-        updateReason: sanitizeInputString(updateReason),
-      });
-
-      if (!result.success) {
-        return res.status(400).json(result);
-      }
-
-      logSecurityEvent({
-        action: 'VEHICLE_UPDATE_SUCCESS',
-        actor: email || employeeId || 'Employee',
-        actorRole: req.user?.roleName || 'EMPLOYEE',
-        ipAddress: req.ip,
-        targetResource: `vehicle/${sanitizedPlate}`,
-        status: 'SUCCESS',
-        details: `Successfully updated vehicle license plate to ${sanitizedPlate} (${vehicleType || 'SEDAN'}). Reason: ${updateReason || 'User Request'}`,
-      });
-
-      res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: 'Failed to update vehicle record', error: err.message });
-    }
+  const site = resolveSite(req, res, { allowAll: req.method === 'GET' });
+  if (site === null) return { handled: true };
+  const matches = (e: { email?: string; employeeId: string }) =>
+    (!email || (e.email || '').toLowerCase() === email) && (!employeeId || e.employeeId.toUpperCase() === employeeId);
+  const candidates = employees.filter(matches);
+  const inScope = candidates.find((e) => (site === 'ALL' ? siteAllowedFor(me, e.siteId) : recordSite(e) === site));
+  if (!inScope && candidates.length > 0) {
+    assertRecordSite(req, res, candidates[0], site); // sends 403 + audit
+    return { handled: true };
   }
-);
+  return { employee: inScope, handled: false };
+}
 
-// --- Whitelisted Domains Endpoints ---
-app.get('/api/v1/domains', (req, res) => {
-  const domains = getWhitelistedDomains();
-  res.json({ domains });
+app.get('/api/v1/employees/profile', rateLimiterMiddleware(30, 60000), (req, res) => {
+  const { email, employeeId } = req.query;
+  if (!email && !employeeId) {
+    // `query` (free-text match on email, id or plate) was removed (H2).
+    return res.status(400).json({ success: false, message: 'Email or Employee ID query parameter is required.' });
+  }
+  const me = scopeUser(req)!;
+  const target = resolveEmployeeTarget(
+    req, res, { email, employeeId },
+    () => hasModulePermission(me, 'REGISTRATION', 'view') || hasModulePermission(me, 'APPROVALS', 'view'),
+    'EMPLOYEE_PROFILE_ACCESS'
+  );
+  if (target.handled) return;
+  const employee = target.employee;
+  if (!employee) {
+    return res.json({ success: false, message: 'No registered whitelist record found for this employee identifier.', employee: null });
+  }
+
+  // Own record: unmasked. Anyone else's: masked by the caller's role.
+  const isOwn = (employee.email || '').toLowerCase() === me.email.toLowerCase();
+  const { fullyUnmasked, platesUnmasked } = isOwn ? { fullyUnmasked: true, platesUnmasked: true } : piiAccess(req);
+  const shown = {
+    ...sanitizeEmployeeList([employee], fullyUnmasked)[0],
+    vehicleNumber: platesUnmasked ? employee.vehicleNumber : sanitizeEmployeeList([employee], false)[0].vehicleNumber,
+  };
+
+  // Currently parked? Only at the pass's own site.
+  const currentSlot = getStore().slots.find(
+    (s) => s.status === 'OCCUPIED' && recordSite(s) === recordSite(employee) &&
+      (s.currentVehicle || '').toUpperCase() === employee.vehicleNumber.toUpperCase()
+  );
+
+  logSecurityEvent({
+    action: 'EMPLOYEE_PROFILE_LOOKUP',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `employee/${employee.employeeId}`,
+    status: 'SUCCESS',
+    details: `Profile accessed for ${employee.employeeId}`,
+    siteId: recordSite(employee),
+  });
+
+  res.json({
+    success: true,
+    employee: shown,
+    currentSlot: currentSlot ? {
+      slotNumber: currentSlot.slotNumber,
+      basement: currentSlot.basement,
+      floorLocation: currentSlot.floorLocation,
+      slotType: currentSlot.slotType,
+    } : null,
+  });
 });
 
+app.post('/api/v1/employees/update-vehicle', rateLimiterMiddleware(20, 60000), (req, res) => {
+  try {
+    const { employeeId, email, vehicleNumber, vehicleType, vehicleBrand, updateReason } = req.body || {};
+
+    if (!vehicleNumber || typeof vehicleNumber !== 'string' || !vehicleNumber.trim()) {
+      return res.status(400).json({ success: false, message: 'Vehicle license plate number is required.' });
+    }
+    const sanitizedPlate = sanitizeInputString(vehicleNumber).toUpperCase();
+    if (!isValidLicensePlate(sanitizedPlate)) {
+      logSecurityEvent({
+        action: 'INVALID_PLATE_FORMAT_REJECTED',
+        actor: req.user!.email,
+        actorRole: req.user!.roleName,
+        ipAddress: req.ip,
+        targetResource: `vehicleNumber: ${String(vehicleNumber).slice(0, 40)}`,
+        status: 'VALIDATION_FAILED',
+        details: 'Rejected invalid license plate format during vehicle update.',
+      });
+      return res.status(400).json({ success: false, message: 'Invalid license plate format. Must be a valid 4-10 alphanumeric plate code.' });
+    }
+
+    const target = resolveEmployeeTarget(
+      req, res, { email, employeeId },
+      () => hasModulePermission(scopeUser(req), 'REGISTRATION', 'canEdit'),
+      'VEHICLE_UPDATE_ATTEMPT'
+    );
+    if (target.handled) return;
+    if (!target.employee) {
+      // No auto-create (H3): a new pass goes through registration + approval.
+      return res.status(404).json({ success: false, message: 'No pass found — register first.' });
+    }
+
+    const result = updateEmployeeVehicle({
+      employeeRecordId: target.employee.id,
+      vehicleNumber: sanitizedPlate,
+      vehicleType,
+      vehicleBrand: typeof vehicleBrand === 'string' ? sanitizeInputString(vehicleBrand) : undefined,
+    });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    logSecurityEvent({
+      action: 'VEHICLE_UPDATE_SUCCESS',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `employee/${target.employee.employeeId}`,
+      status: 'SUCCESS',
+      details: `Plate changed from ${result.oldPlate || 'N/A'} to ${sanitizedPlate}. Reason: ${typeof updateReason === 'string' ? sanitizeInputString(updateReason) : 'User Request'}`,
+      siteId: recordSite(target.employee),
+    });
+
+    const { oldPlate, ...reply } = result;
+    res.json(reply);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to update vehicle record', error: err.message });
+  }
+});
+
+// --- Whitelisted Domains Endpoints ---
+// Per-site whitelist (user decision 28 Sep, resolves PERM-02): a Site Admin
+// (REGISTRATION canEdit) adds/removes domains for the site they are working
+// in; platform-wide entries (no siteId) are Master Admin only. Registration
+// at a site accepts that site's domains plus platform-wide ones.
+
+// Public (the registration form), so it discloses nothing but domain names
+// (C-1): a site is required (400 without), and only { domain } is returned
+// for that site's active entries plus platform-wide ones. No ids, site ids,
+// admin names or dates. Admin screens use GET /domains/manage below.
+app.get('/api/v1/domains', (req, res) => {
+  const raw = rawClientSiteId(req)?.trim();
+  if (!raw || raw === 'ALL') {
+    return sendApiError(res, 400, 'ERR_SITE_REQUIRED', 'Choose a site first.');
+  }
+  const siteId = canonicalSiteId(raw);
+  const names = new Set(
+    getWhitelistedDomains()
+      .filter((d) => d.isActive && (!d.siteId || d.siteId === siteId))
+      .map((d) => d.domain.toLowerCase())
+  );
+  res.json({ domains: Array.from(names).map((domain) => ({ domain })) });
+});
+
+// Authenticated full list for the admin panels (C-1): REGISTRATION view.
+// A site: its own entries plus platform-wide ones. ALL (Master Admin only):
+// every entry.
+app.get('/api/v1/domains/manage', requirePermission('REGISTRATION', 'view'), (req, res) => {
+  const site = resolveSite(req, res, { allowAll: true });
+  if (site === null) return;
+  const all = getWhitelistedDomains();
+  const domains = site === 'ALL' ? all : all.filter((d) => !d.siteId || d.siteId === site);
+  res.json({ success: true, domains });
+});
+
+// Which whitelist scope a domain write targets: a site id, or undefined for
+// platform-wide (Master Admin without a single site selected). null = an
+// error response was sent.
+function domainScope(req: express.Request, res: express.Response): string | undefined | null {
+  const raw = rawClientSiteId(req);
+  if (req.user && isMasterAdmin(req.user) && !req.viewAs && (!raw || raw === 'ALL')) return undefined;
+  return resolveSite(req, res, { allowAll: false });
+}
+
 app.post('/api/v1/domains/add', requirePermission('REGISTRATION', 'canEdit'), (req, res) => {
-  const { domain, addedBy } = req.body;
-  if (!domain) {
+  const { domain } = req.body || {};
+  if (!domain || typeof domain !== 'string') {
     return res.status(400).json({ success: false, message: 'Domain name is required.' });
   }
-  const result = addWhitelistedDomain(domain, addedBy || 'Parking Admin');
+  const scope = domainScope(req, res);
+  if (scope === null) return;
+  const result = addWhitelistedDomain(domain, req.user!.fullName, scope);
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'DOMAIN_WHITELIST_ADDED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `domain/${result.domain?.domain}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} allowed @${result.domain?.domain} for ${scope ? `site ${scope}` : 'all sites'}.`,
+    siteId: scope,
+  });
   res.json(result);
 });
 
 app.post('/api/v1/domains/remove', requirePermission('REGISTRATION', 'canEdit'), (req, res) => {
-  const { domainId } = req.body;
-  if (!domainId) {
+  const { domainId } = req.body || {};
+  if (!domainId || typeof domainId !== 'string') {
     return res.status(400).json({ success: false, message: 'Domain ID or name is required.' });
   }
-  const result = removeWhitelistedDomain(domainId);
+  const scope = domainScope(req, res);
+  if (scope === null) return;
+  const entry = findWhitelistedDomain(domainId, scope);
+  if (!entry) {
+    return res.status(400).json({ success: false, message: 'Whitelisted domain not found.' });
+  }
+  if (!entry.siteId && !(req.user && isMasterAdmin(req.user))) {
+    return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can change domains allowed for every site.');
+  }
+  if (entry.siteId && scope !== undefined && !assertRecordSite(req, res, entry, scope)) return;
+  const result = removeWhitelistedDomain(entry.id);
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'DOMAIN_WHITELIST_REMOVED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `domain/${entry.domain}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} removed @${entry.domain} from ${entry.siteId ? `site ${entry.siteId}` : 'all sites'}.`,
+    siteId: entry.siteId,
+  });
   res.json(result);
 });
 
 // --- Employee Self-Registration & Admin Approval Endpoints ---
 app.get('/api/v1/registrations', (req, res) => {
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
-  const requests = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? getRegistrationRequests().filter(r => resolveSiteId(r) === siteId)
-    : getRegistrationRequests();
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const requests = filterBySite(getRegistrationRequests(), siteId);
   const pendingCount = requests.filter(r => r.status === 'PENDING').length;
   res.json({ requests, pendingCount });
 });
@@ -764,12 +1136,24 @@ app.post('/api/v1/registrations/approve', requirePermission('APPROVALS', 'canEdi
   if (!requestId) {
     return res.status(400).json({ success: false, message: 'requestId is required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const regReq = getRegistrationRequests().find((r) => r.id === requestId);
-  if (regReq && denyForeignSite(req, res, regReq.siteId)) return;
+  if (!assertRecordSite(req, res, regReq, site)) return;
   const result = approveRegistrationRequest(requestId);
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'REGISTRATION_APPROVED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `registration/${requestId}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} approved the pass request for ${regReq?.vehicleNumber || requestId}.`,
+    siteId: site,
+  });
   res.json(result);
 });
 
@@ -778,12 +1162,24 @@ app.post('/api/v1/registrations/reject', requirePermission('APPROVALS', 'canEdit
   if (!requestId) {
     return res.status(400).json({ success: false, message: 'requestId is required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const regReq = getRegistrationRequests().find((r) => r.id === requestId);
-  if (regReq && denyForeignSite(req, res, regReq.siteId)) return;
+  if (!assertRecordSite(req, res, regReq, site)) return;
   const result = rejectRegistrationRequest(requestId, reason);
   if (!result.success) {
     return res.status(400).json(result);
   }
+  logSecurityEvent({
+    action: 'REGISTRATION_REJECTED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `registration/${requestId}`,
+    status: 'SUCCESS',
+    details: `${req.user!.fullName} rejected the pass request for ${regReq?.vehicleNumber || requestId}. Reason: ${reason || 'none given'}`,
+    siteId: site,
+  });
   res.json(result);
 });
 
@@ -793,6 +1189,20 @@ app.post('/api/v1/registrations/bulk-upload', requirePermission('REGISTRATION', 
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty registration requests list.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    // bulkUploadRegistrations upserts by plate or email within the row's own
+    // site only (B17), so the matcher looks at that site too: the same plate
+    // at another site becomes a new request here instead of refusing the
+    // batch. A foreign row siteId is still refused by stampBulkRows.
+    const existingRequests = getRegistrationRequests();
+    const matchRequest = (row: any) => {
+      const plate = String(row.vehicleNumber || '').trim().toUpperCase();
+      const email = String(row.email || '').trim().toLowerCase();
+      return existingRequests.find((r) => recordSite(r) === row.siteId &&
+        ((plate && r.vehicleNumber.toUpperCase() === plate) || (email && r.email.toLowerCase() === email)));
+    };
+    if (!stampBulkRows(req, res, site, list, matchRequest)) return;
     const result = bulkUploadRegistrations(list, !!autoApprove);
     res.json(result);
   } catch (err: any) {
@@ -806,11 +1216,10 @@ app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (re
   if (!vehicleNumberOrSlot || !newSlotNumber) {
     return res.status(400).json({ success: false, message: 'Vehicle number (or current slot) and newSlotNumber are required.' });
   }
-  // Was the one write route in this file that never resolved a site at
-  // all — every other mutation (entry, exit, employee edits, etc.)
-  // already goes through getRequestedSiteId, so this was a real gap: an
-  // attendant could relocate a vehicle using another site's slot numbers.
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  // Relocation acts on one selected site (resolveSite): both the vehicle's
+  // current slot and the target slot are matched within it (B4 / BUG-4).
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const result = changeVehicleSlot(vehicleNumberOrSlot, newSlotNumber, reason, attendantName, siteId);
   if (!result.success) {
     return res.status(400).json(result);
@@ -818,10 +1227,19 @@ app.post('/api/v1/slots/change', requirePermission('MOBILE_APP', 'canEdit'), (re
   res.json(result);
 });
 
-app.get('/api/v1/slots/change-notifications', (req, res) => {
-  const notifications = getSlotChangeNotifications();
-  res.json({ notifications });
-});
+app.get(
+  '/api/v1/slots/change-notifications',
+  requireAnyPermission([['FLOOR_PLAN', 'view'], ['MOBILE_APP', 'view']]),
+  (req, res) => {
+    const siteId = resolveSite(req, res, { allowAll: true });
+    if (siteId === null) return;
+    const { fullyUnmasked } = piiAccess(req);
+    const notifications = filterBySite(getSlotChangeNotifications(), siteId).map((n) =>
+      fullyUnmasked ? n : { ...n, mobile: n.mobile ? maskPhone(n.mobile, false) : n.mobile }
+    );
+    res.json({ notifications });
+  }
+);
 
 // --- Platform Master Site Configuration Endpoints ---
 // SECURITY-CONSCIOUS FIX: this used to require MASTER_CONFIG permission,
@@ -835,8 +1253,24 @@ app.get('/api/v1/slots/change-notifications', (req, res) => {
 // account) is the right bar here, not MASTER_CONFIG specifically. Every
 // write operation below (onboard, status, delete, pricing) correctly
 // stays gated to MASTER_CONFIG — only this read was ever the problem.
+// H7 (001 design B5): only the caller's own sites (every site for a Master
+// Admin / ALL_SITES user), and contact details + pricing only for callers
+// with MASTER_CONFIG view. Evaluated for the effective user, so the Role View
+// Simulator shows exactly what the target user would get.
+function sitesVisibleTo(user: express.Request['user']) {
+  const allSites = getSites();
+  const allowed = user ? getAllowedSiteIds(user) : [];
+  return allowed === null ? allSites : allSites.filter((s) => allowed.includes(s.id) || allowed.includes(s.siteCode));
+}
+
 app.get('/api/v1/sites', (req, res) => {
-  const sites = getSites();
+  const user = scopeUser(req);
+  const canSeeCommercial = hasModulePermission(user, 'MASTER_CONFIG', 'view');
+  const sites = sitesVisibleTo(user).map((site) => {
+    if (canSeeCommercial) return site;
+    const { contactPerson, contactEmail, contactPhone, pricing, ...rest } = site;
+    return rest;
+  });
   res.json({ success: true, count: sites.length, sites });
 });
 
@@ -850,9 +1284,7 @@ app.get('/api/v1/sites', (req, res) => {
 // own site list here already matches what the rest of the API will let
 // them do.
 app.get('/api/v1/my-sites', (req, res) => {
-  const allSites = getSites();
-  const allowed = req.user ? getAllowedSiteIds(req.user) : null;
-  const sites = allowed === null ? allSites : allSites.filter((s) => allowed.includes(s.id) || allowed.includes(s.siteCode));
+  const sites = sitesVisibleTo(scopeUser(req));
   res.json({ success: true, count: sites.length, sites });
 });
 
@@ -921,11 +1353,12 @@ app.post('/api/v1/sites/delete', requirePermission('MASTER_CONFIG', 'canDelete')
 // a chosen date. See clearHistoricalRecords()'s own comment for exactly
 // which records within each collection count as "history" versus
 // something still in progress that's never touched here.
-const CLEARABLE_COLLECTIONS: (ClearableCollection | 'securityAuditLogs')[] = [
-  'logs', 'slotChangeNotifications', 'valetTickets', 'securityAuditLogs',
-];
+// securityAuditLogs is deliberately NOT clearable (M1; retention rules for
+// the audit trail are still open, OQ-11c), so no one can erase the record of
+// what they did.
+const CLEARABLE_COLLECTIONS: ClearableCollection[] = ['logs', 'slotChangeNotifications', 'valetTickets'];
 
-app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canDelete'), async (req, res) => {
+app.post('/api/v1/admin/clear-history', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canDelete'), async (req, res) => {
   const { collections, olderThan } = req.body as { collections?: string[]; olderThan?: string };
 
   if (!Array.isArray(collections) || collections.length === 0) {
@@ -944,16 +1377,8 @@ app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canD
   // datetime.
   const olderThanISO = olderThan ? new Date(olderThan).toISOString() : undefined;
 
-  const storeCollections = collections.filter((c) => c !== 'securityAuditLogs') as ClearableCollection[];
   const result: Record<string, number> = {};
-
-  if (storeCollections.length > 0) {
-    const storeResult = await clearHistoricalRecords(storeCollections, olderThanISO);
-    Object.assign(result, storeResult);
-  }
-  if (collections.includes('securityAuditLogs')) {
-    result.securityAuditLogs = await clearAuditLogs(olderThanISO);
-  }
+  Object.assign(result, await clearHistoricalRecords(collections as ClearableCollection[], olderThanISO));
 
   logSecurityEvent({
     action: 'HISTORICAL_DATA_CLEARED',
@@ -968,7 +1393,7 @@ app.post('/api/v1/admin/clear-history', requirePermission('MASTER_CONFIG', 'canD
   res.json({ success: true, cleared: result });
 });
 
-app.post('/api/v1/admin/migrate-site-data', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
+app.post('/api/v1/admin/migrate-site-data', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
   const { fromSiteId, toSiteId } = req.body;
 
   if (!fromSiteId || !toSiteId) {
@@ -1019,7 +1444,8 @@ app.post('/api/v1/sites/pricing', requirePermission('MASTER_CONFIG', 'canEdit'),
 
 // --- Site Invoicing Endpoints ---
 app.get('/api/v1/invoices', requirePermission('MASTER_CONFIG', 'view'), (req, res) => {
-  const siteId = req.query.siteId as string;
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
   const invoices = getInvoices(siteId);
   res.json({ success: true, count: invoices.length, invoices });
 });
@@ -1079,8 +1505,15 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
       return res.status(400).json({ success: false, message: 'Slot Number is required.' });
     }
 
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const storedSlot = rawData.id ? getStore().slots.find((sl) => sl.id === rawData.id) : undefined;
+    const writeSite = siteForSave(req, res, site, storedSlot, rawData.siteId, `slot/${rawData.id || slotNumber}`);
+    if (writeSite === null) return;
+
     const slotData = {
       ...rawData,
+      siteId: writeSite,
       slotNumber: slotNumber.trim().toUpperCase(),
     };
 
@@ -1100,8 +1533,10 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
   if (!slotId) {
     return res.status(400).json({ success: false, message: 'slotId is required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const targetSlot = getStore().slots.find((sl) => sl.id === slotId);
-  if (targetSlot && denyForeignSite(req, res, targetSlot.siteId)) return;
+  if (!assertRecordSite(req, res, targetSlot, site)) return;
   const result = deleteSlot(slotId, force === true);
   if (!result.success) {
     return res.status(400).json(result);
@@ -1114,6 +1549,7 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
     targetResource: `slot/${slotId}`,
     status: 'SUCCESS',
     details: `${req.user!.fullName} deleted slot ${slotId}${force ? ' (forced, was occupied)' : ''}.`,
+    siteId: site,
   });
   res.json(result);
 });
@@ -1125,6 +1561,10 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty slots array for bulk upload.' });
     }
+    const site = resolveSite(req, res, { allowAll: false });
+    if (site === null) return;
+    const store = getStore();
+    if (!stampBulkRows(req, res, site, list, (row: any) => (row.id ? store.slots.find((sl) => sl.id === row.id) : undefined))) return;
 
     const result = bulkUploadSlots(list);
     res.json({
@@ -1140,7 +1580,8 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
 // 4. Vehicle Entry Endpoint
 app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumber, vehicleType, entryType, targetSlotNumber, remarks } = req.body;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
 
   if (!vehicleNumber) {
     return res.status(400).json({ success: false, message: 'vehicleNumber is required' });
@@ -1149,8 +1590,8 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
   if (!isValidLicensePlate(String(vehicleNumber))) {
     logSecurityEvent({
       action: 'INVALID_PLATE_FORMAT_REJECTED',
-      actor: (req.headers['x-user-email'] as string) || req.ip || 'Unknown',
-      actorRole: (req.headers['x-user-role'] as string) || 'ATTENDANT',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
       ipAddress: req.ip,
       targetResource: `vehicleNumber: ${String(vehicleNumber).slice(0, 40)}`,
       status: 'VALIDATION_FAILED',
@@ -1175,13 +1616,30 @@ app.post('/api/v1/vehicles/entry', requirePermission('MOBILE_APP', 'canCreate'),
     return res.status(400).json(result);
   }
 
-  res.json(result);
+  // The plate is also occupied at another site: entry proceeds here, the
+  // reply never mentions the other site, and the event is audit-logged.
+  const { activeAtOtherSiteId, ...reply } = result;
+  if (activeAtOtherSiteId) {
+    logSecurityEvent({
+      action: 'VEHICLE_ACTIVE_AT_OTHER_SITE',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `vehicle/${String(vehicleNumber).trim().toUpperCase()}`,
+      status: 'SUCCESS',
+      details: `Entry at site ${siteId} for a plate still marked parked at site ${activeAtOtherSiteId}.`,
+      siteId,
+    });
+  }
+
+  res.json(reply);
 });
 
 // 5. Vehicle Exit Endpoint
 app.post('/api/v1/vehicles/exit', requirePermission('MOBILE_APP', 'canCreate'), (req, res) => {
   const { vehicleNumberOrSlot } = req.body;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
 
   if (!vehicleNumberOrSlot) {
     return res.status(400).json({ success: false, message: 'vehicleNumberOrSlot is required' });
@@ -1201,6 +1659,11 @@ app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCrea
   try {
     const { imageBase64 } = req.body;
     const store = getStore();
+    const siteId = resolveSite(req, res, { allowAll: false });
+    if (siteId === null) return;
+    // Never a random or mock plate (BUG-10 / R8): without an image, an AI
+    // key or a readable plate, the attendant types it in.
+    const noPlate = () => res.status(400).json({ success: false, message: 'No plate detected. Type it in.' });
 
     // ~4.5 MB of image is plenty for a plate photo; anything bigger is abuse
     // (or a cost-inflation attempt) rather than a real camera frame.
@@ -1208,21 +1671,10 @@ app.post('/api/v1/vehicles/scan-plate', requirePermission('MOBILE_APP', 'canCrea
       return res.status(413).json({ success: false, message: 'Image too large or invalid.' });
     }
 
-    if (!imageBase64) {
-      // Pick random sample employee plate for simulation
-      const sampleEmp = store.employees[Math.floor(Math.random() * store.employees.length)];
-      return res.json({
-        success: true,
-        plateNumber: sampleEmp.vehicleNumber,
-        confidence: 0.98,
-        vehicleType: sampleEmp.vehicleType,
-        vehicleBrand: sampleEmp.vehicleBrand,
-        matchedEmployee: sampleEmp,
-        rawAnalysis: 'Simulated High-Accuracy ANPR Scan',
-      });
-    }
+    if (!imageBase64) return noPlate();
 
     const ai = getGeminiClient();
+    if (!ai) return noPlate();
     let plateNumber = '';
     let detectedType: VehicleType = 'SEDAN';
     let brand = 'Toyota';
@@ -1268,19 +1720,15 @@ Respond strictly in JSON format with:
       } catch (e) {
         console.warn('Failed to parse Gemini JSON, extracting plate with regex:', rawText);
         const match = rawText.match(/[A-Z]{2}[-\s]?\d{2}[-\s]?[A-Z]{1,2}[-\s]?\d{3,4}/i);
-        plateNumber = match ? match[0].toUpperCase() : 'KA-01-EX-8890';
+        plateNumber = match ? match[0].toUpperCase() : '';
       }
-    } else {
-      // Fallback plate extraction simulation
-      const sampleEmp = store.employees[Math.floor(Math.random() * store.employees.length)];
-      plateNumber = sampleEmp.vehicleNumber;
-      detectedType = sampleEmp.vehicleType;
-      brand = sampleEmp.vehicleBrand;
-      rawText = 'Fallback ANPR OCR Engine';
     }
+    if (!plateNumber) return noPlate();
 
-    // Match with registered employee
-    const matchedEmployee = store.employees.find(e => e.vehicleNumber.toUpperCase() === plateNumber.toUpperCase()) || null;
+    // Match with a registered employee at THIS site only (AC-06).
+    const matchedEmployee = store.employees.find(
+      e => e.vehicleNumber.toUpperCase() === plateNumber.toUpperCase() && recordSite(e) === siteId
+    ) || null;
 
     res.json({
       success: true,
@@ -1298,15 +1746,15 @@ Respond strictly in JSON format with:
 });
 
 // 7. Parking Logs Endpoint (with PII Privacy Masking & Pagination)
-app.get('/api/v1/logs', (req, res) => {
+app.get('/api/v1/logs', requirePermission('LOGS', 'view'), (req, res) => {
   const store = getStore();
-  const { status, basement, search, limit = '100', maskPII, userRole } = req.query;
-  const siteId = getRequestedSiteId(req);
+  // maskPII / userRole query params are deliberately ignored (H1): masking
+  // comes from the caller's server-side role only, as on /employees.
+  const { status, basement, search, limit = '100' } = req.query;
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
 
-  const resolveSiteId = (l: { siteId?: string }) => l.siteId || DEFAULT_SITE_ID;
-  const siteScoped = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.logs.filter(l => resolveSiteId(l) === siteId)
-    : store.logs;
+  const siteScoped = filterBySite(store.logs, siteId);
 
   let logs = siteScoped;
 
@@ -1327,10 +1775,13 @@ app.get('/api/v1/logs', (req, res) => {
   }
 
   const parsedLimit = parseInt(limit as string, 10) || 100;
-  const isPrivileged = userRole === 'MASTER_ADMIN' || userRole === 'SUPER_ADMIN' || userRole === 'SITE_MANAGER';
-  const shouldMask = maskPII === 'true' || (!isPrivileged && maskPII !== 'false');
+  const { fullyUnmasked, platesUnmasked } = piiAccess(req);
+  const shouldMask = !fullyUnmasked;
 
-  const sanitizedLogs = sanitizeParkingLogs(logs.slice(0, parsedLimit), !shouldMask);
+  const sanitizedLogs = logs.slice(0, parsedLimit).map((l) => ({
+    ...sanitizeParkingLogs([l], fullyUnmasked)[0],
+    vehicleNumber: platesUnmasked ? l.vehicleNumber : sanitizeParkingLogs([l], false)[0].vehicleNumber,
+  }));
 
   res.json({
     total: logs.length,
@@ -1343,18 +1794,18 @@ app.get('/api/v1/logs', (req, res) => {
 
 // 8. Predictive Analytics 24-Hour Forecast Endpoint
 app.get('/api/v1/analytics/prediction', (req, res) => {
-  const forecast = generate24HourPredictiveForecast();
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const forecast = generate24HourPredictiveForecast(siteId);
   res.json(forecast);
 });
 
 // 9. Non-Parked Employee Alerts Endpoint
 app.get('/api/v1/alerts/non-parked', (req, res) => {
   const store = getStore();
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (a: { siteId?: string }) => a.siteId || DEFAULT_SITE_ID;
-  const alerts = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? store.alerts.filter(a => resolveSiteId(a) === siteId)
-    : store.alerts;
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const alerts = filterBySite(store.alerts, siteId);
   res.json({
     cutoffTime: '10:30 AM',
     totalAlerts: alerts.length,
@@ -1385,6 +1836,8 @@ app.post('/api/v1/alerts/trigger-cron', requirePermission('ALERTS', 'canEdit'), 
 
 // 11. AI Slot & PMS Recommendation Assistant (Gemini AI)
 app.post('/api/v1/ai/recommend', requirePermission('ANALYTICS', 'view'), async (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   try {
     // Free text goes into an LLM prompt: cap the length and drop control
     // characters / quotes so it can't break out of the quoted query.
@@ -1403,17 +1856,21 @@ app.post('/api/v1/ai/recommend', requirePermission('ANALYTICS', 'view'), async (
       return res.status(429).json({ success: false, message: 'Daily AI assistant limit reached. Try again tomorrow.' });
     }
 
+    // Context comes from the selected site only, never the whole platform.
     const store = getStore();
-    const occupiedCount = store.slots.filter(s => s.status === 'OCCUPIED').length;
+    const siteSlots = filterBySite(store.slots, siteId);
+    const siteAlerts = filterBySite(store.alerts, siteId);
+    const occupiedCount = siteSlots.filter(s => s.status === 'OCCUPIED').length;
+    const occupiedPct = siteSlots.length ? Math.round((occupiedCount / siteSlots.length) * 100) : 0;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: `You are the Lead Smart Parking AI Advisor for a 1,080-slot corporate parking complex (Basements B1, B2, B3, Ground Driveways, Puzzle Stackers, EV Hub).
+      contents: `You are the Lead Smart Parking AI Advisor for a ${siteSlots.length}-slot corporate parking site.
 Current Inventory Context:
-- Total Slots: ${store.slots.length}
-- Occupied Slots: ${occupiedCount} (${Math.round((occupiedCount / store.slots.length) * 100)}%)
-- Available Vacant Slots: ${store.slots.length - occupiedCount}
-- Active Alerts: ${store.alerts.length} non-parked registered vehicles.
+- Total Slots: ${siteSlots.length}
+- Occupied Slots: ${occupiedCount} (${occupiedPct}%)
+- Available Vacant Slots: ${siteSlots.length - occupiedCount}
+- Active Alerts: ${siteAlerts.length} non-parked registered vehicles.
 
 User Prompt / Query: "${prompt || 'Suggest optimal parking allocation strategy for peak morning rush.'}"
 
@@ -1430,19 +1887,25 @@ Provide concise, highly actionable architectural, spatial, and traffic optimizat
 });
 
 // 12. Toggle Slot Maintenance / Status
+const SLOT_STATUSES: SlotStatus[] = ['VACANT', 'OCCUPIED', 'RESERVED', 'MAINTENANCE'];
 app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'), (req, res) => {
   const { slotId, newStatus } = req.body;
+  if (!SLOT_STATUSES.includes(newStatus)) {
+    return res.status(400).json({ success: false, message: `newStatus must be one of ${SLOT_STATUSES.join(', ')}.` });
+  }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const store = getStore();
-  // Slot numbers repeat across sites, so prefer an exact id match, and
-  // otherwise only consider slots the caller's sites actually own.
+  // Slot numbers repeat across sites: an exact id match first, else the slot
+  // number within the selected site only.
   const slot =
     store.slots.find(s => s.id === slotId) ||
-    store.slots.find(s => s.slotNumber === slotId && siteAllowedFor(req.user, s.siteId));
+    store.slots.find(s => s.slotNumber === slotId && recordSite(s) === site);
 
   if (!slot) {
     return res.status(404).json({ success: false, message: 'Slot not found' });
   }
-  if (denyForeignSite(req, res, slot.siteId)) return;
+  if (!assertRecordSite(req, res, slot, site)) return;
 
   slot.status = newStatus;
   slot.updatedAt = new Date().toISOString();
@@ -1456,6 +1919,7 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
     targetResource: `slot/${slot.slotNumber}`,
     status: 'SUCCESS',
     details: `Slot ${slot.slotNumber} (${slot.basement}) status altered to ${newStatus}`,
+    siteId: site,
   });
 
   res.json({
@@ -1478,10 +1942,9 @@ const csvCell = (v: unknown): string => {
 app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (req, res) => {
   const store = getStore();
   const { type = 'logs' } = req.query;
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
-  const siteFilter = <T extends { siteId?: string }>(items: T[]) =>
-    siteId && siteId !== 'ALL' ? items.filter(x => resolveSiteId(x) === siteId) : items;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const siteFilter = <T extends SiteRef>(items: T[]) => filterBySite(items, siteId);
 
   logSecurityEvent({
     action: 'DATA_EXPORT_CSV',
@@ -1491,6 +1954,7 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
     targetResource: `export/${type}`,
     status: 'SUCCESS',
     details: `Exported ${type} dataset as CSV.`,
+    siteId,
   });
 
   if (type === 'slots') {
@@ -1514,24 +1978,31 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
 
 // 14. VALETX SERVICE API ENDPOINTS
 app.get('/api/v1/valet/tickets', (req, res) => {
-  const siteId = getRequestedSiteId(req);
-  const resolveSiteId = (t: { siteId?: string }) => t.siteId || DEFAULT_SITE_ID;
-  const tickets = siteId && typeof siteId === 'string' && siteId !== 'ALL'
-    ? getValetTickets().filter(t => resolveSiteId(t) === siteId)
-    : getValetTickets();
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const tickets = filterBySite(getValetTickets(), siteId);
   res.json({ success: true, count: tickets.length, tickets });
 });
 
 app.post('/api/v1/valet/checkin', requirePermission('VALET_SERVICE', 'canCreate'), (req, res) => {
-  const result = createValetTicket(req.body);
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
+  const writeSite = siteForSave(req, res, site, undefined, req.body?.siteId, 'valet/new');
+  if (writeSite === null) return;
+  const result = createValetTicket({ ...req.body, siteId: writeSite });
   res.json(result);
 });
 
 app.post('/api/v1/valet/status', requirePermission('VALET_SERVICE', 'canEdit'), (req, res) => {
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const ticketRef = req.body?.ticketId;
-  const valetTicket = getValetTickets().find((t) => t.id === ticketRef || t.ticketNumber === ticketRef || t.keyTagNumber === ticketRef);
-  if (valetTicket && denyForeignSite(req, res, valetTicket.siteId)) return;
-  const result = updateValetStatus(req.body);
+  const matches = (t: { id: string; ticketNumber: string; keyTagNumber: string }) =>
+    t.id === ticketRef || t.ticketNumber === ticketRef || t.keyTagNumber === ticketRef;
+  // Key tags can repeat across sites: prefer the selected site's ticket.
+  const valetTicket = getValetTickets().find((t) => matches(t) && recordSite(t) === site) || getValetTickets().find(matches);
+  if (!assertRecordSite(req, res, valetTicket, site)) return;
+  const result = updateValetStatus({ ...req.body, ticketId: valetTicket ? valetTicket.id : ticketRef });
   res.json(result);
 });
 
@@ -1540,7 +2011,9 @@ app.post('/api/v1/valet/request-retrieval', requirePermission('VALET_SERVICE', '
   if (!query) {
     return res.status(400).json({ success: false, message: 'Please provide ticket number, key tag, or phone number.' });
   }
-  const result = requestValetRetrieval(query);
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
+  const result = requestValetRetrieval(query, site);
   res.json(result);
 });
 
@@ -1552,20 +2025,23 @@ app.post('/api/v1/valet/request-retrieval', requirePermission('VALET_SERVICE', '
 // overnight-request review action (matches the existing
 // registration-request approval pattern).
 app.get('/api/v1/reports/mix', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json(getEntryMix(siteId, from, to));
 });
 
 app.get('/api/v1/reports/violations', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const cutoffHour = req.query.cutoffHour ? Number(req.query.cutoffHour) : 22;
   res.json({ violations: getOvernightViolations(siteId, cutoffHour) });
 });
 
 app.get('/api/v1/reports/utilization', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ slots: getSlotUtilization(siteId, from, to) });
@@ -1576,20 +2052,27 @@ app.get('/api/v1/reports/slot-daily-vehicles', requirePermission('REPORTS', 'vie
   if (!slotId || typeof slotId !== 'string') {
     return res.status(400).json({ success: false, message: 'slotId is required.' });
   }
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const reportSlot = getStore().slots.find((sl) => sl.id === slotId);
+  if (!reportSlot) return res.status(404).json({ success: false, message: 'Slot not found.' });
+  if (!assertRecordSite(req, res, reportSlot, siteId)) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ success: true, days: getSlotDailyVehicleCounts(slotId, from, to) });
 });
 
 app.get('/api/v1/reports/occupancy-trend', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ days: getOccupancyTrend(siteId, from, to) });
 });
 
 app.get('/api/v1/reports/peak-hours', requirePermission('REPORTS', 'view'), (req, res) => {
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const from = (req.query.from as string) || new Date(Date.now() - 7 * 86400000).toISOString();
   const to = (req.query.to as string) || new Date().toISOString();
   res.json({ hours: getPeakHours(siteId, from, to) });
@@ -1597,17 +2080,18 @@ app.get('/api/v1/reports/peak-hours', requirePermission('REPORTS', 'view'), (req
 
 app.get('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'view'), (req, res) => {
   const store = getStore();
-  const siteId = getRequestedSiteId(req) || DEFAULT_SITE_ID;
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const status = req.query.status as string | undefined;
-  const resolveSiteId = (r: { siteId?: string }) => r.siteId || DEFAULT_SITE_ID;
-  let requests = (store.overnightRequests || []).filter(r => resolveSiteId(r) === siteId);
+  let requests = filterBySite(store.overnightRequests || [], siteId);
   if (status && status !== 'ALL') requests = requests.filter(r => r.status === status);
   res.json({ requests });
 });
 
 app.post('/api/v1/reports/overnight-requests', requirePermission('REPORTS', 'canCreate'), (req, res) => {
   const { vehicleNumber, requestedBy, nights, reason } = req.body;
-  const siteId = getRequestedSiteId(req);
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
   const result = submitOvernightRequest({ siteId, vehicleNumber, requestedBy, nights, reason });
   if (!result.success) return res.status(400).json(result);
   res.json(result);
@@ -1618,8 +2102,10 @@ app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVA
   if (!requestId || !decision) {
     return res.status(400).json({ success: false, message: 'requestId and decision are required.' });
   }
+  const site = resolveSite(req, res, { allowAll: false });
+  if (site === null) return;
   const overnightReq = (getStore().overnightRequests || []).find((r) => r.id === requestId);
-  if (overnightReq && denyForeignSite(req, res, overnightReq.siteId)) return;
+  if (!assertRecordSite(req, res, overnightReq, site)) return;
   const result = reviewOvernightRequest(requestId, decision, req.user!.fullName, rejectionReason);
   if (!result.success) return res.status(400).json(result);
 
@@ -1631,6 +2117,7 @@ app.post('/api/v1/reports/overnight-requests/review', requirePermission('APPROVA
     targetResource: `overnightRequest/${requestId}`,
     status: 'SUCCESS',
     details: result.message,
+    siteId: site,
   });
 
   res.json(result);
@@ -1788,8 +2275,14 @@ app.post('/api/v1/auth/login', loginRateLimiterMiddleware, handleLoginRequest);
 app.post('/login', loginRateLimiterMiddleware, handleLoginRequest);
 
 app.post('/api/v1/auth/logout', (req, res) => {
-  const token = req.cookies?.['__session'] || req.cookies?.['parkorbit_session'] || req.cookies?.['pms_session'];
-  if (token) destroySession(token);
+  // Destroy the session whichever way the client sent it: cookie, bearer or
+  // x-session-token (M4, partial). Cookie-only destruction left header-based
+  // sessions (the mobile / attendant portal) alive after sign-out.
+  const tokens = new Set(
+    [req.cookies?.['__session'], req.cookies?.['parkorbit_session'], req.cookies?.['pms_session'], extractSessionToken(req)]
+      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+  );
+  for (const t of tokens) destroySession(t);
   res.clearCookie('__session');
   res.clearCookie('parkorbit_session');
   res.clearCookie('pms_session');
@@ -1831,9 +2324,32 @@ app.post(
     // Module permissions govern feature access, not seniority over a
     // specific target account — this is a separate, vertical-privilege
     // check layered on top.
-    const isMasterAdmin = (u: typeof targetUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
-    if (isMasterAdmin(targetUser) && !isMasterAdmin(req.user!)) {
+    const isMasterAccount = (u: typeof targetUser) => u.roleId === 'role-master-admin' || (u.roleName && u.roleName.toLowerCase().includes('master admin'));
+    if (isMasterAccount(targetUser) && !isMasterAccount(req.user!)) {
       return res.status(403).json({ success: false, message: 'Only a Platform Master Admin can generate a reset token for another Platform Master Admin account.' });
+    }
+    // H8: a non-Master can only reset accounts at their own sites, and never
+    // their own (self-service would bypass the out-of-band handover).
+    const resetSelf = targetUser.id === req.user!.id;
+    // N-1 (c): a reset token for a privileged same-site account is the same
+    // takeover as setting its password.
+    const resetPrivileged = !resetSelf && accountIsPrivileged(targetUser);
+    if (!isMasterAdmin(req.user!) && (resetSelf || resetPrivileged || !userWithinCallerScope(req.user, targetUser))) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: req.user!.email,
+        actorRole: req.user!.roleName,
+        ipAddress: req.ip,
+        targetResource: `auth/reset-token/${targetUser.id}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: 'Reset token refused: target is the caller, a privileged account, or outside the caller\'s sites.',
+      });
+      if (resetPrivileged) {
+        return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can reset an account with Master Config, User Management or Security Audit rights, or all-sites access.');
+      }
+      return resetSelf
+        ? sendApiError(res, 403, 'ERR_MASTER_ONLY', 'You can\'t generate a reset token for your own account.')
+        : sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only reset passwords for accounts at your own sites.');
     }
 
     const token = generatePasswordResetToken(targetUser.id);
@@ -1925,7 +2441,54 @@ app.get('/api/v1/rbac/roles', (req, res) => {
   res.json({ success: true, count: roles.length, roles });
 });
 
+// H8 (001 design B8): USER_MANAGEMENT alone must never let a non-Master
+// raise anyone's privileges, their own included.
+const PRIVILEGED_MODULES: AppModuleId[] = ['MASTER_CONFIG', 'USER_MANAGEMENT', 'SECURITY_AUDIT'];
+
+function grantsPrivilegedRights(perms: unknown): boolean {
+  if (!perms || typeof perms !== 'object') return false;
+  return PRIVILEGED_MODULES.some((m) => {
+    const r = (perms as Record<string, any>)[m];
+    return !!r && typeof r === 'object' && Object.values(r).some((v) => v === true);
+  });
+}
+
+function masterOnly(res: express.Response, message: string) {
+  sendApiError(res, 403, 'ERR_MASTER_ONLY', message);
+}
+
+// Target account is inside the caller's own sites (non-empty, every site
+// covered) and is not a Master Admin / all-sites account.
+function userWithinCallerScope(caller: express.Request['user'], target: { roleId?: string; siteScopeType?: string; assignedSiteIds?: string[] }): boolean {
+  if (!caller) return false;
+  const allowed = getAllowedSiteIds(caller);
+  if (allowed === null) return true;
+  if (isMasterAdmin(target) || target.siteScopeType === 'ALL_SITES') return false;
+  const targetSites = (target.assignedSiteIds || []).map(canonicalSiteId);
+  return targetSites.length > 0 && targetSites.every((sid) => allowed.includes(sid));
+}
+
+// Roles are shared by every site, so editing one changes other tenants'
+// staff (M-2). For Phase 1, creating, editing and deleting roles is Master
+// Admin only.
+function refuseRoleChange(req: express.Request, res: express.Response, target: string): boolean {
+  if (req.user && isMasterAdmin(req.user)) return false;
+  const refusal = 'Only a Platform Master Admin can create, change or delete roles.';
+  logSecurityEvent({
+    action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: target,
+    status: 'BLOCKED_UNAUTHORIZED',
+    details: refusal,
+  });
+  masterOnly(res, refusal);
+  return true;
+}
+
 app.post('/api/v1/rbac/roles', requirePermission('USER_MANAGEMENT', 'canCreate'), (req, res) => {
+  if (refuseRoleChange(req, res, `role/${req.body?.id || 'new'}`)) return;
   const result = saveAppRole(req.body);
   logSecurityEvent({
     action: 'RBAC_ROLE_SAVED',
@@ -1940,6 +2503,7 @@ app.post('/api/v1/rbac/roles', requirePermission('USER_MANAGEMENT', 'canCreate')
 });
 
 app.delete('/api/v1/rbac/roles/:id', requirePermission('USER_MANAGEMENT', 'canDelete'), (req, res) => {
+  if (refuseRoleChange(req, res, `role/${req.params.id}`)) return;
   const result = deleteAppRole(req.params.id);
   logSecurityEvent({
     action: 'RBAC_ROLE_DELETED',
@@ -1955,7 +2519,7 @@ app.delete('/api/v1/rbac/roles/:id', requirePermission('USER_MANAGEMENT', 'canDe
 
 app.get('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'view'), (req, res) => {
   const users = getAppUsers();
-  const requester = req.user!;
+  const requester = scopeUser(req)!; // the view-as target when simulating
   const requesterIsMasterAdmin = requester.roleId === 'role-master-admin' || (requester.roleName && requester.roleName.toLowerCase().includes('master admin'));
 
   // Real, confirmed gap closed here: this previously returned every
@@ -1979,7 +2543,95 @@ app.get('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'view'), (req
   res.json({ success: true, count: visibleUsers.length, users: toPublicUsers(visibleUsers) });
 });
 
+// Why a non-Master may not save this user record (M-1: the H8 rules must
+// hold on the user-save route too), or '' when allowed. Unchanged values
+// are fine, so re-saving a full record the UI loaded doesn't trip it.
+// An account a non-Master must never edit or reset (N-1): its CURRENT role
+// grants MASTER_CONFIG / USER_MANAGEMENT / SECURITY_AUDIT rights or all-sites
+// scope, it is all-sites itself, or its overrides enable a privileged module.
+// Taking such an account over would raise the caller's privileges.
+function accountIsPrivileged(user: { roleId?: string; siteScopeType?: string; customModuleOverrides?: Partial<Record<AppModuleId, boolean>> }): boolean {
+  if (isMasterAdmin(user) || user.siteScopeType === 'ALL_SITES') return true;
+  const role = getAppRoles().find((r) => r.id === user.roleId || r.roleCode === user.roleId);
+  if (role && (grantsPrivilegedRights(role.modulePermissions) || role.siteScope === 'ALL_SITES')) return true;
+  return PRIVILEGED_MODULES.some((m) => user.customModuleOverrides?.[m] === true);
+}
+
+function userSaveRefusal(caller: NonNullable<express.Request['user']>, body: any): string {
+  if (!body || typeof body !== 'object') return '';
+  const existing = body.id ? getAppUsers().find((u) => u.id === body.id) : undefined;
+
+  if (existing && existing.id !== caller.id) {
+    // N-1 (a): never set another account's password directly; the reset-token
+    // flow hands it over out of band and is never self-redeemed.
+    if (typeof body.plainPassword === 'string' && body.plainPassword.length > 0) {
+      return 'You can\'t set another account\'s password. Generate a reset token for them instead (POST /api/v1/auth/admin/generate-reset-token).';
+    }
+    // N-1 (b): no edits at all to a privileged account.
+    if (accountIsPrivileged(existing)) {
+      return 'Only a Platform Master Admin can change an account with Master Config, User Management or Security Audit rights, or all-sites access.';
+    }
+  }
+  const changes = (key: string) =>
+    body[key] !== undefined && JSON.stringify(body[key]) !== JSON.stringify(existing ? (existing as any)[key] : undefined);
+
+  if (existing && existing.id === caller.id) {
+    // R4-2 (2): email and username are locked too; the account email is the
+    // key employee self-service uses to find "your" pass.
+    const own = ['roleId', 'customModuleOverrides', 'siteScopeType', 'assignedSiteIds', 'status', 'email', 'username'].filter(changes);
+    if (own.length > 0) return `You can't change your own ${own.join(', ')}.`;
+  }
+
+  // R4-2 (2): never point an account's email at an employee record or an
+  // account outside the caller's sites (that would hand over that pass or
+  // identity). Generic message: it must not reveal the email exists elsewhere.
+  if (typeof body.email === 'string' && body.email.trim() && changes('email')) {
+    const wanted = body.email.trim().toLowerCase();
+    const foreignEmployee = getStore().employees.some(
+      (e) => (e.email || '').toLowerCase() === wanted && !siteAllowedFor(caller, e.siteId)
+    );
+    const foreignAccount = getAppUsers().some(
+      (u) => u.id !== body.id && (u.email || '').toLowerCase() === wanted && !userWithinCallerScope(caller, u)
+    );
+    if (foreignEmployee || foreignAccount) return 'That email can\'t be used for this account. Ask a Platform Master Admin.';
+  }
+
+  const overrides = body.customModuleOverrides;
+  if (overrides && typeof overrides === 'object') {
+    const newlyPrivileged = PRIVILEGED_MODULES.filter(
+      (m) => overrides[m] === true && existing?.customModuleOverrides?.[m] !== true
+    );
+    if (newlyPrivileged.length > 0) {
+      return 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit access.';
+    }
+  }
+
+  if (body.roleId !== undefined && body.roleId !== existing?.roleId) {
+    const role = getAppRoles().find((r) => r.id === body.roleId || r.roleCode === body.roleId);
+    if (role && (grantsPrivilegedRights(role.modulePermissions) || role.siteScope === 'ALL_SITES')) {
+      return 'Only a Platform Master Admin can assign a role with Master Config, User Management or Security Audit rights, or an all-sites role.';
+    }
+  }
+  return '';
+}
+
 app.post('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'canCreate'), (req, res) => {
+  const caller = req.user!;
+  if (!isMasterAdmin(caller)) {
+    const refusal = userSaveRefusal(caller, req.body);
+    if (refusal) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `user/${req.body?.id || 'new'}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: refusal,
+      });
+      return masterOnly(res, refusal);
+    }
+  }
   const result = saveAppUser(req.body, req.user!.id);
   logSecurityEvent({
     action: 'RBAC_USER_SAVED',
@@ -1994,6 +2646,29 @@ app.post('/api/v1/rbac/users', requirePermission('USER_MANAGEMENT', 'canCreate')
 });
 
 app.delete('/api/v1/rbac/users/:id', requirePermission('USER_MANAGEMENT', 'canDelete'), (req, res) => {
+  // R4-1: a non-Master may delete only ordinary accounts at their own sites.
+  // Self-delete and last-Master protection stay in deleteAppUser.
+  const caller = req.user!;
+  const target = getAppUsers().find((u) => u.id === req.params.id);
+  if (!isMasterAdmin(caller) && target && target.id !== caller.id) {
+    if (!userWithinCallerScope(caller, target)) {
+      auditDenied(req, canonicalSiteId((target.assignedSiteIds || [])[0] || DEFAULT_SITE_ID),
+        `${caller.email} tried to delete account ${target.id}, which is outside their sites.`);
+      return sendApiError(res, 403, 'ERR_SITE_FORBIDDEN', 'You can only remove accounts at your own sites.');
+    }
+    if (accountIsPrivileged(target)) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `user/${target.id}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: 'Delete refused: the account has Master Config, User Management or Security Audit rights, or all-sites access.',
+      });
+      return masterOnly(res, 'Only a Platform Master Admin can remove an account with Master Config, User Management or Security Audit rights, or all-sites access.');
+    }
+  }
   const result = deleteAppUser(req.params.id, req.user!.id);
   logSecurityEvent({
     action: 'RBAC_USER_DELETED',
@@ -2011,6 +2686,29 @@ app.post('/api/v1/rbac/users/toggle-module', requirePermission('USER_MANAGEMENT'
   const { userId, moduleId, enabled } = req.body;
   if (!userId || !moduleId) {
     return res.status(400).json({ success: false, message: 'Missing userId or moduleId.' });
+  }
+  const caller = req.user!;
+  if (!isMasterAdmin(caller)) {
+    const target = getAppUsers().find((u) => u.id === userId);
+    // m-3: ERR_SITE_FORBIDDEN only for a target outside the caller's sites;
+    // self / privileged refusals are ERR_MASTER_ONLY.
+    let refusal = '';
+    let code: ApiErrorCode = 'ERR_MASTER_ONLY';
+    if (userId === caller.id) refusal = 'You can\'t change your own module access.';
+    else if (target && !userWithinCallerScope(caller, target)) { refusal = 'You can only manage accounts at your own sites.'; code = 'ERR_SITE_FORBIDDEN'; }
+    else if (enabled && PRIVILEGED_MODULES.includes(moduleId)) refusal = 'Only a Platform Master Admin can grant Master Config, User Management or Security Audit access.';
+    if (refusal) {
+      logSecurityEvent({
+        action: 'RBAC_PRIVILEGE_ESCALATION_BLOCKED',
+        actor: caller.email,
+        actorRole: caller.roleName,
+        ipAddress: req.ip,
+        targetResource: `user/${userId}`,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: `${refusal} (module ${moduleId})`,
+      });
+      return sendApiError(res, 403, code, refusal);
+    }
   }
   const result = toggleUserModuleOverride(userId, moduleId, enabled);
   logSecurityEvent({
@@ -2030,26 +2728,26 @@ app.post('/api/v1/rbac/users/toggle-module', requirePermission('USER_MANAGEMENT'
 // ==========================================
 
 // Get Security Posture & Compliance Summary
-app.get('/api/v1/security/compliance-summary', requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
+app.get('/api/v1/security/compliance-summary', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
   const summary = getSecurityComplianceSummary();
   res.json({ success: true, summary });
 });
 
 // Get Cryptographic Tamper-Evident Audit Logs
-app.get('/api/v1/security/audit-logs', requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
+app.get('/api/v1/security/audit-logs', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
   const limit = parseInt(req.query.limit as string, 10) || 100;
   const logs = getSecurityAuditLogs(limit);
   res.json({ success: true, total: logs.length, logs });
 });
 
 // Mathematically verify SHA-256 HMAC integrity chaining of audit trail
-app.post('/api/v1/security/verify-audit-chain', requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
+app.post('/api/v1/security/verify-audit-chain', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'view'), (req, res) => {
   const verification = verifyAuditTrailIntegrity();
   res.json({ success: true, verification });
 });
 
 // Interactive Infosec Vulnerability & Remediation Attack Simulator (For Security Testing UI)
-app.post('/api/v1/security/simulate-attack', requirePermission('SECURITY_AUDIT', 'canEdit'), (req, res) => {
+app.post('/api/v1/security/simulate-attack', requireMasterAdmin, requirePermission('SECURITY_AUDIT', 'canEdit'), (req, res) => {
   const { attackType } = req.body;
 
   if (attackType === 'BOLA_EXPLOIT') {

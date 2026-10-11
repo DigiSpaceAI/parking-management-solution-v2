@@ -7,7 +7,7 @@ import { ManualEntryModal } from './ManualEntryModal';
 import { LegalModal } from './LegalModal';
 import type { AppUser, ParkingSlot } from '../types';
 import { apiFetch } from './api';
-import { resolveSiteContext, clearSiteContext, getSiteName } from './siteContext';
+import { resolveSiteContext, clearSiteContext, getSiteId, getSiteName } from './siteContext';
 
 type Tab = 'gate' | 'slots' | 'levels';
 const TAB_ORDER: Tab[] = ['gate', 'slots', 'levels'];
@@ -25,8 +25,16 @@ const PAGE_TITLES: Record<Tab, string> = {
 };
 
 export const ParkFlowsApp: React.FC = () => {
+  // currentUser is only set once the site is resolved (001 design M1), so
+  // nothing that can call a gate API renders or polls before that.
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
-  const [siteReady, setSiteReady] = useState(false);
+  // Signed in, but the site isn't resolved yet (or failed to resolve).
+  const [pendingUser, setPendingUser] = useState<AppUser | null>(null);
+  const [siteProblem, setSiteProblem] = useState<'no-site' | 'error' | null>(null);
+  const [resolvingSite, setResolvingSite] = useState(false);
+  // Bumped on every attempt and on sign-out, so a slow /my-sites answer
+  // can't sign a user back in after they tapped Sign out.
+  const resolveAttemptRef = useRef(0);
   const [tab, setTab] = useState<Tab>('gate');
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
@@ -53,7 +61,6 @@ export const ParkFlowsApp: React.FC = () => {
         // path — whoever logs back in needs fresh resolution, not a
         // stale site left over from this session.
         clearSiteContext();
-        setSiteReady(false);
         setCurrentUser(null);
       } else {
         setSynced(false);
@@ -116,44 +123,66 @@ export const ParkFlowsApp: React.FC = () => {
   }, [currentUser, refreshSlots]);
 
   const handleSignOut = async () => {
+    resolveAttemptRef.current += 1;
     try {
       await apiFetch('/api/v1/auth/logout', { method: 'POST' });
     } catch {
       // ignore — clearing local state below regardless
     }
     clearSiteContext();
-    setSiteReady(false);
+    setPendingUser(null);
+    setSiteProblem(null);
+    setResolvingSite(false);
     setCurrentUser(null);
   };
 
-  if (!currentUser) {
-    return (
-      <ParkFlowsLogin
-        onAuthenticated={async (user) => {
-          // CRITICAL FIX: this used to call resolveSiteContext without
-          // awaiting it, while immediately showing the authenticated app
-          // (via setCurrentUser). That's a genuine race condition — if
-          // the attendant acted quickly (very plausible right after
-          // logging in), a vehicle entry could fire before site
-          // resolution finished, sending no x-site-id header at all and
-          // silently defaulting to the platform's default site instead
-          // of their real one. Now: site resolution is genuinely
-          // awaited, and the authenticated app only renders once it's
-          // actually done — see the siteReady gate below.
-          await resolveSiteContext(user, apiFetch);
-          setSiteReady(true);
-          setCurrentUser(user);
-        }}
-      />
-    );
-  }
+  // 001 design M1: resolve the site before the gate app renders. The
+  // server rejects site-scoped calls without x-site-id (strict mode), so
+  // if /my-sites fails or gives no site we show a blocking "Couldn't load
+  // your site" screen instead of a header-less session.
+  const startShift = async (user: AppUser) => {
+    const attempt = ++resolveAttemptRef.current;
+    setPendingUser(user);
+    // Keep any current error on screen while retrying ("Trying again…").
+    setResolvingSite(true);
+    const result = await resolveSiteContext(user, apiFetch);
+    if (attempt !== resolveAttemptRef.current) return; // signed out meanwhile
+    setResolvingSite(false);
+    if (result.status === 'ok') {
+      setSiteProblem(null);
+      setPendingUser(null);
+      setCurrentUser(user);
+      return;
+    }
+    if (result.status === 'session-expired') {
+      // Same as the 401 path in refreshSlots: back to sign-in.
+      clearSiteContext();
+      setSiteProblem(null);
+      setPendingUser(null);
+      return;
+    }
+    setSiteProblem(result.status);
+  };
 
-  if (!siteReady) {
-    return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Barlow, sans-serif', color: C.inkSoft, fontSize: 13 }}>
-        Setting up your site…
-      </div>
-    );
+  if (!currentUser || !getSiteId()) {
+    if (pendingUser && siteProblem) {
+      return (
+        <SiteLoadError
+          problem={siteProblem}
+          retrying={resolvingSite}
+          onRetry={() => { void startShift(pendingUser); }}
+          onSignOut={() => { void handleSignOut(); }}
+        />
+      );
+    }
+    if (pendingUser) {
+      return (
+        <div role="status" style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Barlow, sans-serif', color: C.inkSoft, fontSize: 13 }}>
+          Setting up your site…
+        </div>
+      );
+    }
+    return <ParkFlowsLogin onAuthenticated={(user) => { void startShift(user); }} />;
   }
 
   return (
@@ -246,3 +275,38 @@ export const ParkFlowsApp: React.FC = () => {
     </div>
   );
 };
+
+// Blocking screen for 001 design M1. Replaces the whole app, so no gate,
+// slot or manual-entry action is reachable while the site is unknown.
+const SiteLoadError: React.FC<{
+  problem: 'no-site' | 'error';
+  retrying: boolean;
+  onRetry: () => void;
+  onSignOut: () => void;
+}> = ({ problem, retrying, onRetry, onSignOut }) => (
+  <div style={{ minHeight: '100vh', boxSizing: 'border-box', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: 'Barlow, sans-serif' }}>
+    <div role="alert" style={{ width: '100%', maxWidth: 360, background: '#fff', border: `1px solid ${C.border}`, borderRadius: 16, padding: '28px 22px', textAlign: 'center' }}>
+      <div aria-hidden="true" style={{ width: 44, height: 44, margin: '0 auto 14px', borderRadius: 12, background: '#fdeaee', color: '#be123c', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 22 }}>!</div>
+      <h1 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 700, color: C.ink }}>Couldn't load your site</h1>
+      <p style={{ margin: '0 0 22px', fontSize: 14, lineHeight: 1.45, color: C.label }}>
+        {problem === 'no-site'
+          ? 'Your account has no site assigned. Ask your site admin to assign one, then try again.'
+          : 'Check your connection and try again.'}
+        {' '}Gate actions are paused until your site loads.
+      </p>
+      <button
+        onClick={onRetry}
+        disabled={retrying}
+        style={{ width: '100%', height: 52, borderRadius: 12, border: 'none', background: C.primary, color: '#fff', fontSize: 16, fontWeight: 700, cursor: retrying ? 'default' : 'pointer', opacity: retrying ? 0.7 : 1, marginBottom: 10 }}
+      >
+        {retrying ? 'Trying again…' : 'Try again'}
+      </button>
+      <button
+        onClick={onSignOut}
+        style={{ width: '100%', height: 48, borderRadius: 12, border: '1px solid #cbd3e0', background: C.panel, color: C.label, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}
+      >
+        Sign out
+      </button>
+    </div>
+  </div>
+);

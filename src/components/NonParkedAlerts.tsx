@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { NonParkedAlert } from '../types';
+import { useWriteGuard } from '../utils/withSite';
+import { SiteCodeChip } from './SiteCodeChip';
 import {
   AlertTriangle,
   Bell,
@@ -18,6 +20,7 @@ interface NonParkedAlertsProps {
 }
 
 export const NonParkedAlerts: React.FC<NonParkedAlertsProps> = ({ onRefresh }) => {
+  const guard = useWriteGuard();
   const [alerts, setAlerts] = useState<NonParkedAlert[]>([]);
   const [cutoffTime, setCutoffTime] = useState<string>('10:30 AM');
   const [loading, setLoading] = useState<boolean>(true);
@@ -97,8 +100,9 @@ export const NonParkedAlerts: React.FC<NonParkedAlertsProps> = ({ onRefresh }) =
 
           <div className="flex items-center space-x-3">
             <button
+              {...guard()}
               onClick={handleTriggerCron}
-              disabled={cronTriggering}
+              disabled={cronTriggering || !!guard().disabled}
               className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl transition-colors shadow-sm flex items-center space-x-2 disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${cronTriggering ? 'animate-spin' : ''}`} />
@@ -159,7 +163,10 @@ export const NonParkedAlerts: React.FC<NonParkedAlertsProps> = ({ onRefresh }) =
               ) : (
                 filteredAlerts.map((alert) => (
                   <tr key={alert.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="p-3.5 font-mono font-bold text-slate-900">{alert.employeeId}</td>
+                    <td className="p-3.5 font-mono font-bold text-slate-900">
+                      <SiteCodeChip siteId={alert.siteId} />
+                      {alert.employeeId}
+                    </td>
                     <td className="p-3.5 font-semibold text-slate-900">{alert.employeeName}</td>
                     <td className="p-3.5 text-blue-600 font-medium">{alert.department}</td>
                     <td className="p-3.5 font-mono font-bold text-amber-800">
@@ -176,6 +183,7 @@ export const NonParkedAlerts: React.FC<NonParkedAlertsProps> = ({ onRefresh }) =
                     <td className="p-3.5 text-slate-500 max-w-xs truncate">{alert.remarks}</td>
                     <td className="p-3.5 text-right">
                       <button
+                        {...guard()}
                         onClick={() => showToast(`Re-sent FCM Push Alert to ${alert.employeeName} (${alert.mobile})`)}
                         className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded text-[10px] font-bold flex items-center space-x-1 ml-auto transition-colors"
                       >

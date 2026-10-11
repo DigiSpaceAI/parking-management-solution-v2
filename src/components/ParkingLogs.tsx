@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ParkingLog, VehicleType, EntryType } from '../types';
+import { useSiteContext, useWriteGuard } from '../utils/withSite';
+import { getSessionToken } from '../sessionTokenFallback';
+import { SiteCodeChip } from './SiteCodeChip';
 import {
   FileSpreadsheet,
   Download,
@@ -27,6 +30,8 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
   onVehicleExit,
   onRefresh,
 }) => {
+  const guard = useWriteGuard();
+  const { siteId: activeSiteId } = useSiteContext();
   const [searchQuery, setSearchQuery] = useState<string>('');
   // Self-contained site-name lookup, added specifically to show a real
   // site name (not a raw internal ID) on each log row, per explicit
@@ -91,8 +96,18 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
     setShowExitModal(false);
   };
 
+  // A download is a browser navigation, so the fetch wrapper can't add
+  // headers: pass the site and the session token in the query instead (the
+  // same pattern as SiteAdminReports). Export needs one site (no ALL) and is
+  // disabled while viewing as another user (x-view-as can't be sent here).
   const downloadExport = (type: 'logs' | 'slots') => {
-    window.open(`/api/v1/export/reports?type=${type}`, '_blank');
+    if (!activeSiteId) return;
+    const token = getSessionToken();
+    const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+    window.open(
+      `/api/v1/export/reports?type=${type}&siteId=${encodeURIComponent(activeSiteId)}${tokenParam}`,
+      '_blank'
+    );
   };
 
   return (
@@ -104,11 +119,12 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
             <FileSpreadsheet className="w-4 h-4 text-blue-400" />
             Parking Entry/Exit Logs & MIS Reports
           </h2>
-          <p className="text-xs text-slate-300 font-mono mt-0.5">Complete timestamped audit logs for 1,080 parking inventory slots</p>
+          <p className="text-xs text-slate-300 font-mono mt-0.5">Complete timestamped entry and exit records for this site</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
+            {...guard()}
             onClick={() => setShowEntryModal(true)}
             className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors shadow-sm flex items-center space-x-1.5"
           >
@@ -117,6 +133,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
           </button>
 
           <button
+            {...guard()}
             onClick={() => setShowExitModal(true)}
             className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl transition-colors shadow-sm flex items-center space-x-1.5"
           >
@@ -125,6 +142,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
           </button>
 
           <button
+            {...guard()}
             onClick={() => downloadExport('logs')}
             className="px-3.5 py-2 bg-slate-800/80 hover:bg-slate-700/80 text-white border border-slate-700 font-bold text-xs rounded-xl transition-colors flex items-center space-x-1.5 shadow-sm"
           >
@@ -206,7 +224,10 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
                   <td className="p-3.5 text-blue-600 font-medium">{log.department || 'Visitor'}</td>
                   <td className="p-3.5 font-mono font-bold text-emerald-700">{log.slotNumber}</td>
                   <td className="p-3.5 font-medium">{log.basement}</td>
-                  <td className="p-3.5 text-slate-600 text-[11px]">{siteNames[log.siteId || ''] || log.siteId || '—'}</td>
+                  <td className="p-3.5 text-slate-600 text-[11px]">
+                    <SiteCodeChip siteId={log.siteId} />
+                    {siteNames[log.siteId || ''] || log.siteId || '—'}
+                  </td>
                   <td className="p-3.5 text-slate-600 font-mono text-[11px]">{new Date(log.entryTime).toLocaleString()}</td>
                   <td className="p-3.5 text-slate-500 font-mono text-[11px]">{log.exitTime ? new Date(log.exitTime).toLocaleString() : '-'}</td>
                   <td className="p-3.5 font-mono font-bold text-amber-700">
@@ -231,6 +252,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
                   <td className="p-3.5 text-right">
                     {log.status === 'ACTIVE' && (
                       <button
+                        {...guard()}
                         onClick={() => onVehicleExit(log.vehicleNumber)}
                         className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded transition-colors shadow-sm"
                       >

@@ -27,6 +27,15 @@
  * outlive the browser tab.
  */
 
+import {
+  getActiveSiteId,
+  getViewAsId,
+  isSameOriginApiCall,
+  SESSION_ENDED_EVENT,
+  type SessionEndedDetail,
+} from './utils/withSite';
+import { isTrustedApiOrigin } from './apiBase';
+
 const TOKEN_KEY = 'parkflow_session_token_fallback';
 
 export function storeSessionToken(token: string): void {
@@ -58,22 +67,71 @@ export function getSessionToken(): string | null {
 /**
  * Call once, early (from main.tsx), before any other app code runs.
  * Wraps the global fetch so every request — no matter which of the 70+
- * existing call sites made it — automatically carries the fallback
- * header when a token is stored, without needing to touch each call
- * site individually.
+ * existing call sites made it — automatically carries:
+ *  - the fallback session header, when a token is stored, on requests to
+ *    this page's origin or the API_BASE origin only (never third parties);
+ *  - on same-origin `/api/v1/*` calls only, the active site (`x-site-id`)
+ *    and the Role View Simulator target (`x-view-as`) from the client site
+ *    context (001 design F1). A value the caller set explicitly (header or
+ *    `?siteId=` in the URL) is never overridden.
+ * It also turns a server "session is over" answer into a
+ * `parkflows:session-ended` event so the console can send the user back to
+ * sign-in and return them to the same page and site afterwards (F6).
  */
 export function installSessionTokenFallback(): void {
   const originalFetch = window.fetch.bind(window);
 
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-    const token = getSessionToken();
-    if (!token) return originalFetch(input, init);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const isApi = isSameOriginApiCall(rawUrl);
+    // The session token goes only to our own origin and the configured API
+    // origin, never to a third party (code review m-7).
+    const token = isTrustedApiOrigin(rawUrl) ? getSessionToken() : null;
+    const siteId = isApi ? getActiveSiteId() : null;
+    const viewAsId = isApi ? getViewAsId() : null;
 
-    const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-    if (!headers.has('x-session-token')) {
-      headers.set('x-session-token', token);
+    let response: Response;
+    if (!token && !siteId && !viewAsId) {
+      response = await originalFetch(input, init);
+    } else {
+      const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+      if (token && !headers.has('x-session-token')) {
+        headers.set('x-session-token', token);
+      }
+      // `?siteId=` wins on the server; don't send a conflicting header.
+      if (siteId && !headers.has('x-site-id') && !/[?&]siteId=/.test(rawUrl)) {
+        headers.set('x-site-id', siteId);
+      }
+      if (viewAsId && !headers.has('x-view-as')) {
+        headers.set('x-view-as', viewAsId);
+      }
+      response = await originalFetch(input, { ...init, headers });
     }
 
-    return originalFetch(input, { ...init, headers });
+    if (isApi && (response.status === 401 || response.status === 403) && !isSignInCall(rawUrl)) {
+      notifyIfSessionEnded(response);
+    }
+    return response;
   };
+}
+
+// Sign-in and password screens handle their own 401/403 answers.
+function isSignInCall(rawUrl: string): boolean {
+  return /\/api\/v1\/auth\/(login|set-password|logout)/.test(rawUrl);
+}
+
+function notifyIfSessionEnded(response: Response): void {
+  response
+    .clone()
+    .json()
+    .then((body: { errorCode?: string } | null) => {
+      const code = body?.errorCode;
+      if (code === 'ERR_SESSION_EXPIRED' || code === 'ERR_ACCOUNT_INACTIVE') {
+        const detail: SessionEndedDetail = { reason: code };
+        window.dispatchEvent(new CustomEvent<SessionEndedDetail>(SESSION_ENDED_EVENT, { detail }));
+      }
+    })
+    .catch(() => {
+      /* not JSON: not a session answer */
+    });
 }

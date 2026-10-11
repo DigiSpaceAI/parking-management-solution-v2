@@ -36,7 +36,8 @@ import {
   History,
   CheckCircle
 } from 'lucide-react';
-import { ParkingSlot, RegistrationRequest, WhitelistedDomain, VehicleType } from '../types';
+import { ParkingSlot, RegistrationRequest, VehicleType } from '../types';
+import { useSiteContext } from '../utils/withSite';
 import { normalizeVehicleNumber } from '../utils/plateNormalization';
 
 interface EmployeeMobileAppProps {
@@ -95,7 +96,9 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
   const [authLoading, setAuthLoading] = useState<boolean>(false);
 
   // Whitelisted domains fetched from backend
-  const [domains, setDomains] = useState<WhitelistedDomain[]>([]);
+  // Allowed domain names for the chosen site (public list, names only: C-1).
+  const [domainNames, setDomainNames] = useState<string[]>([]);
+  const { siteId: chosenSiteId, isAllSites } = useSiteContext();
 
   // Live Slots State
   const [liveSlots, setLiveSlots] = useState<ParkingSlot[]>(slots);
@@ -181,11 +184,17 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
 
   // Fetch Domains from backend
   const fetchDomains = async () => {
+    // The public list needs one site (400 otherwise); with none chosen the
+    // server alone decides when the request is submitted.
+    if (!chosenSiteId || isAllSites) {
+      setDomainNames([]);
+      return;
+    }
     try {
-      const res = await fetch('/api/v1/domains');
-      const data = await res.json();
-      if (data.domains) {
-        setDomains(data.domains);
+      const res = await fetch(`/api/v1/domains?siteId=${encodeURIComponent(chosenSiteId)}`);
+      const data = (await res.json()) as { domains?: { domain: string }[] };
+      if (res.ok && data.domains) {
+        setDomainNames(data.domains.map((d) => d.domain.toLowerCase()));
       }
     } catch (err) {
       console.error('Failed to fetch whitelisted domains:', err);
@@ -422,7 +431,7 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
   };
 
   // Compute domain list
-  const activeDomainList = domains.filter((d) => d.isActive).map((d) => d.domain.toLowerCase());
+  const activeDomainList = domainNames;
   // Fallback defaults if backend domains empty
   const defaultDomains = ['company.com', 'techcorp.com', 'globalnet.io', 'parkos.ai'];
   const validDomainsList = activeDomainList.length > 0 ? activeDomainList : defaultDomains;

@@ -529,6 +529,14 @@
     .pf-pop--sheet > .pf-menu { position: fixed; top: var(--header-h); left: var(--space-4); right: var(--space-4); width: auto; }
   }
 
+  /* Shell states (002 F2): choose a site, full-page messages, stale data under an error */
+  .pf-choose { display: flex; flex-direction: column; gap: var(--space-4); }
+  .pf-choose-list { list-style: none; margin: 0 auto; padding: 0; width: 100%; max-width: var(--modal-w); display: flex; flex-direction: column; gap: var(--space-2); }
+  .pf-choose-list .pf-menu-item { border: 1px solid var(--line-100); }
+  .pf-fullpage { min-height: 100dvh; display: grid; place-items: center; padding: var(--space-4); background: var(--surface-25); }
+  .pf-fullpage > .pf-card { width: 100%; max-width: var(--modal-w); }
+  .pf-stale { opacity: 0.5; }
+
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
     .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }

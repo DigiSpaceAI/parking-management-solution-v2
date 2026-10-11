@@ -4,13 +4,11 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { ParkingSlot, Employee, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig, AppModuleId } from './types';
+import { ParkingSlot, ParkingLog, SlotStatus, VehicleType, EntryType, AppUser, RolePermissionConfig, SiteConfig } from './types';
 import { clearSessionToken } from './sessionTokenFallback';
 import { AppShell } from './screens/AppShell';
-import { NAV_ENTRIES, NAV_GROUPS } from './screens/nav';
-import { useToast, ErrorState, type NavGroup } from './design-system/components';
+import { useToast, ErrorState, EmptyState, PageHeader, type NavGroup } from './design-system/components';
 import { useAutoRefresh } from './utils/useAutoRefresh';
-import { RoleHomePage } from './components/RoleHomePage';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
 import { SiteAdminOverview } from './components/SiteAdminOverview';
 import { SiteAdminReports } from './components/SiteAdminReports';
@@ -18,24 +16,15 @@ import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
 import { ParkingLogs } from './components/ParkingLogs';
 import { NonParkedAlerts } from './components/NonParkedAlerts';
-// Lazy-loaded rather than bundled upfront — these two files alone are
-// nearly 4,000 lines (the stale, pre-ML-Kit mobile source, kept here
-// only as an in-admin preview feature), and bundling them into every
-// page load was the direct cause of the "chunks larger than 500 kB"
-// warning on every single build. Now only loaded the first time someone
-// actually clicks into the Mobile App or Employee Mobile App preview
-// tabs, not before.
-const AttendantMobileApp = lazy(() =>
-  import('./components/AttendantMobileApp').then((m) => ({ default: m.AttendantMobileApp }))
-);
-const EmployeeMobileApp = lazy(() =>
-  import('./components/EmployeeMobileApp').then((m) => ({ default: m.EmployeeMobileApp }))
-);
+// The design-system preview is loaded only when a Master opens #/design-system (dev/staging).
+const DesignSystemPreview = lazy(() => import('./design-system/preview/DesignSystemPreview'));
 import { EmployeeRegistration } from './components/EmployeeRegistration';
-import { MasterConfigModule } from './components/MasterConfigModule';
+import { MasterAdminSites } from './components/MasterAdminSites';
+import { MasterAdminBilling } from './components/MasterAdminBilling';
 import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
-import { SecurityAuditModule } from './components/SecurityAuditModule';
+import { MasterAdminAudit } from './components/MasterAdminAudit';
+import { MasterAdminData } from './components/MasterAdminData';
 import { LoginScreen } from './components/LoginScreen';
 import { isMasterAdmin, getModuleRights, canOpenTab } from './utils/rbac';
 import {
@@ -62,14 +51,8 @@ import {
   SESSION_ENDED_EVENT,
   type SessionEndedDetail,
 } from './utils/withSite';
-import { ChooseSite } from './components/ChooseSite';
-import { NoSiteAssigned } from './components/NoSiteAssigned';
-import { ListSkeleton } from './components/ListSkeleton';
-import { NoAccess } from './components/NoAccess';
-import { ErrorCard } from './components/ErrorCard';
-
-/** The console page being shown (a module id; hash routes come with F2). */
-type ActiveTabType = AppModuleId;
+import { ChooseSitePrompt, NoAccessPage, NoSitePage, PageSkeleton } from './screens/shell/States';
+import { ROUTES, NAV_GROUPS, canOpenRoute, hrefFor, landingRoute, parseHash, replaceRoute, routeById, type RouteId } from './routes';
 
 const SESSION_STORAGE_KEY = 'parkflow_authenticated_user_session_v4';
 const LEGACY_SESSION_STORAGE_KEY = 'parkorbit_authenticated_user_session_v4';
@@ -101,9 +84,26 @@ async function getJson<T>(url: string): Promise<ApiResult<T>> {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTabType>('HOME');
+  // The page, from the URL hash (#/live-parking); null = the user's landing page (AC-10).
+  const [route, setRoute] = useState<string | null>(() => parseHash(window.location.hash));
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash(window.location.hash));
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  /** Back to the landing page (no history entry). */
+  const goLanding = () => {
+    const url = `${window.location.pathname}${window.location.search}`;
+    window.history.replaceState(window.history.state, '', url);
+    setRoute(null);
+  };
+  const goRoute = (id: string | null) => {
+    if (id && routeById(id)) replaceRoute(id as RouteId);
+    else goLanding();
+  };
+  // False until /rbac/roles has answered (the landing page depends on the role's modules).
+  const [rolesReady, setRolesReady] = useState<boolean>(false);
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
   const [logs, setLogs] = useState<ParkingLog[]>([]);
   const [roles, setRoles] = useState<RolePermissionConfig[]>([]);
   // Sites the signed-in user may choose from (/my-sites; already scoped by the server).
@@ -124,7 +124,7 @@ export default function App() {
   // False until a view-as remembered from before a reload has been checked.
   const [viewAsChecked, setViewAsChecked] = useState<boolean>(() => !recallViewAs());
   // The Master Admin's own page and site, restored by Exit view.
-  const beforeViewAs = useRef<{ tab: ActiveTabType; siteId: string | null } | null>(null);
+  const beforeViewAs = useRef<{ tab: string | null; siteId: string | null } | null>(null);
   // Bumped by "Try again" when the site list couldn't load.
   const [siteResolveAttempt, setSiteResolveAttempt] = useState<number>(0);
   const [alertCount, setAlertCount] = useState<number>(0);
@@ -218,25 +218,21 @@ export default function App() {
       if (body?.success && body.roles && body.roles.length > 0) {
         setRoles(body.roles);
       }
+      setRolesReady(true);
     } catch (err) {
       console.error('Failed to fetch roles:', err);
+      if (isCurrentGeneration(generation)) setRolesReady(true);
     }
   };
 
-  const handleLoginSuccess = (user: AppUser, redirectTab?: string) => {
+  // The page in the URL (a deep link) is kept through sign-in.
+  const handleLoginSuccess = (user: AppUser) => {
     setLoginNotice(null);
     setCurrentUser(user);
     try {
       localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(user));
     } catch (e) {
       console.error('Failed to persist session:', e);
-    }
-
-    if (redirectTab) {
-      setActiveTab(redirectTab as ActiveTabType);
-    } else {
-      // Default to the tailored Role Home Page for every role!
-      setActiveTab('HOME');
     }
 
     showToast('success', `Signed in as ${user.fullName} (${user.roleName})`);
@@ -261,9 +257,9 @@ export default function App() {
     // Drop the previous user's data and site context so the next person
     // to sign in never sees it, even briefly.
     setSlots([]);
-    setEmployees([]);
     setLogs([]);
     setRoles([]);
+    setRolesReady(false);
     setSites([]);
     setAlertCount(0);
     setPendingReqCount(0);
@@ -290,10 +286,13 @@ export default function App() {
   // Each result is applied only if no site switch, view-as change or
   // sign-out happened while it was in flight.
   const loadSiteLists = async (isCurrent: () => boolean): Promise<boolean> => {
-    const [slotsRes, employeesRes, logsRes, alertsRes, regsRes] = await Promise.allSettled([
-      getJson<{ slots?: ParkingSlot[] }>('/api/v1/slots'),
-      getJson<{ employees?: Employee[] }>('/api/v1/employees'),
-      getJson<{ logs?: ParkingLog[] }>('/api/v1/logs'),
+    // Only what the open page needs (NFR-3): the badge counts always, the slot list
+    // for the R1.1 pages that take it as a prop, the log list for the log page.
+    const skip = <T,>(): Promise<ApiResult<T>> => Promise.resolve({ ok: true, status: 200, body: null });
+    const page = routeRef.current;
+    const [slotsRes, logsRes, alertsRes, regsRes] = await Promise.allSettled([
+      page === 'live-parking' || page === 'inventory' ? getJson<{ slots?: ParkingSlot[] }>('/api/v1/slots') : skip<{ slots?: ParkingSlot[] }>(),
+      page === 'logs' ? getJson<{ logs?: ParkingLog[] }>('/api/v1/logs') : skip<{ logs?: ParkingLog[] }>(),
       getJson<{ totalAlerts?: number }>('/api/v1/alerts/non-parked'),
       getJson<{ pendingCount?: number }>('/api/v1/registrations'),
     ]);
@@ -301,7 +300,7 @@ export default function App() {
 
     const value = <T,>(r: PromiseSettledResult<ApiResult<T>>): T | null =>
       r.status === 'fulfilled' && r.value.ok ? r.value.body : null;
-    const all = [slotsRes, employeesRes, logsRes, alertsRes, regsRes];
+    const all = [slotsRes, logsRes, alertsRes, regsRes];
     // 403 for a module the role lacks is normal (that list stays empty); a
     // network failure or a server error is not.
     const failed = all.some((r) => r.status === 'rejected' || r.value.status >= 500);
@@ -316,14 +315,13 @@ export default function App() {
       return false;
     }
     setListError(failed);
-    if (failed && !listsLoading && slots.length + employees.length + logs.length > 0) {
+    if (failed && !listsLoading && slots.length + logs.length > 0) {
       // Keep the last good rows (shown greyed out under the error card).
       setListsLoading(false);
       return false;
     }
 
     setSlots(value(slotsRes)?.slots || []);
-    setEmployees(value(employeesRes)?.employees || []);
     setLogs(value(logsRes)?.logs || []);
     setAlertCount(value(alertsRes)?.totalAlerts || 0);
     setPendingReqCount(value(regsRes)?.pendingCount || 0);
@@ -334,7 +332,11 @@ export default function App() {
   // One refresh mechanism (AC-11): the chosen site's lists load now and every 15 s
   // while the tab is visible ("Updated Xs ago"); a site switch starts over.
   const listsActive = !!currentUser && !!currentSiteId && !isEmployeeUser(currentUser);
-  const lists = useAutoRefresh(loadSiteLists, [currentUser?.id, currentSiteId, viewAsUser?.id], { enabled: listsActive });
+  const routeRef = useRef<string | null>(route);
+  routeRef.current = route;
+  // The page decides which lists load, so a page change loads afresh.
+  const listsKey = route === 'live-parking' || route === 'inventory' ? 'slots' : route === 'logs' ? 'logs' : 'counts';
+  const lists = useAutoRefresh(loadSiteLists, [currentUser?.id, currentSiteId, viewAsUser?.id, listsKey], { enabled: listsActive });
 
   const refreshAll = () => {
     if (!currentUser || isEmployeeUser(currentUser)) return;
@@ -354,8 +356,7 @@ export default function App() {
       currentSiteIdRef.current = siteId;
       setCurrentSiteId(siteId);
       setSlots([]);
-      setEmployees([]);
-      setLogs([]);
+        setLogs([]);
       setAlertCount(0);
       setPendingReqCount(0);
       setListsLoading(!!siteId);
@@ -371,12 +372,12 @@ export default function App() {
   // Start viewing as another user (Master Admin only; the server checks too).
   const startViewAs = (target: AppUser) => {
     if (!isMasterAdmin(currentUser) || target.id === currentUser?.id) return;
-    if (!viewAsUser) beforeViewAs.current = { tab: activeTab, siteId: currentSiteId };
+    if (!viewAsUser) beforeViewAs.current = { tab: route, siteId: currentSiteId };
     selectSite(null);
     setViewAsId(target.id);
     rememberViewAs(target.id);
     setViewAsUser(target);
-    setActiveTab('HOME');
+    goLanding();
   };
 
   // Exit view: back to the Master Admin's own profile, page and site in one click.
@@ -388,9 +389,9 @@ export default function App() {
     rememberViewAs(null);
     setViewAsUser(null);
     restoreAfterViewAs.current = back;
-    setActiveTab(back?.tab ?? 'HOME');
+    goRoute(back?.tab ?? null);
   };
-  const restoreAfterViewAs = useRef<{ tab: ActiveTabType; siteId: string | null } | null>(null);
+  const restoreAfterViewAs = useRef<{ tab: string | null; siteId: string | null } | null>(null);
 
   // After a reload, pick the remembered view-as back up, but only for a
   // Master Admin and only if that user still exists (validated server-side).
@@ -475,7 +476,7 @@ export default function App() {
         else if (remembered === ALL_SITES && master) next = ALL_SITES;
         else if (remembered && permitted.some((s) => s.id === remembered)) next = remembered;
         // An unpermitted tab shows S-NA, so restoring it is safe.
-        if (returnTo) setActiveTab(returnTo.tab as ActiveTabType);
+        if (returnTo) goRoute(returnTo.tab);
         selectSite(next);
         setSitePhase('ready');
       } catch {
@@ -488,12 +489,12 @@ export default function App() {
   // The server ended the session (expired, or the account was suspended):
   // remember where the user was, send them to sign-in with a notice, and
   // bring them back to the same page and site afterwards (AC-45, AC-47, AC-10).
-  const latestNav = useRef<{ tab: ActiveTabType; siteId: string | null; userId: string | null }>({
-    tab: 'HOME',
+  const latestNav = useRef<{ tab: string | null; siteId: string | null; userId: string | null }>({
+    tab: null,
     siteId: null,
     userId: null,
   });
-  latestNav.current = { tab: activeTab, siteId: currentSiteId, userId: currentUser?.id ?? null };
+  latestNav.current = { tab: route, siteId: currentSiteId, userId: currentUser?.id ?? null };
   const clearSessionRef = useRef(clearSession);
   clearSessionRef.current = clearSession;
   useEffect(() => {
@@ -501,7 +502,7 @@ export default function App() {
       const { reason } = (event as CustomEvent<SessionEndedDetail>).detail;
       const nav = latestNav.current;
       if (!nav.userId) return; // already signed out
-      rememberReturnTo({ tab: nav.tab, siteId: nav.siteId, userId: nav.userId });
+      rememberReturnTo({ tab: nav.tab ?? '', siteId: nav.siteId, userId: nav.userId });
       latestNav.current = { ...nav, userId: null };
       clearSessionRef.current({ notice: reason === 'ERR_ACCOUNT_INACTIVE' ? COPY_SUSPENDED : COPY_SESSION_ENDED });
     };
@@ -594,7 +595,7 @@ export default function App() {
   const needsSite = !isEmployeeUser(currentUser);
 
   if (needsSite && sitePhase === 'no-site' && !viewAsUser) {
-    return <NoSiteAssigned onSignOut={handleLogout} />;
+    return <NoSitePage onSignOut={handleLogout} />;
   }
 
   const viewer = uiUser ?? currentUser;
@@ -606,182 +607,128 @@ export default function App() {
   const currentRole = roles.find((r) => r.id === viewer.roleId);
   const canManageDomains = getModuleRights(viewer, currentRole, 'REGISTRATION').canEdit;
 
-  const userCanOpen = (tab: ActiveTabType) => canOpenTab(viewer, currentRole, tab);
   const viewSiteLabel = siteContextValue.isAllSites
     ? 'All sites'
     : siteContextValue.activeSite?.siteName || 'No site chosen';
+  const isMasterViewer = isMasterAdmin(viewer);
+  const oneSite = !!currentSiteId && currentSiteId !== ALL_SITES;
+  const landing = landingRoute(viewer, currentRole, oneSite);
+  const def = routeById(route);
+  const allowed = !!def && canOpenRoute(viewer, currentRole, def);
+  // Platform pages (Master's Sites, Billing, Audit log, Settings) need no site chosen.
+  const platformPage = allowed && !!def?.platform;
+  const currentId = route ?? landing;
 
-  // siteId is the chosen site or 'ALL' (never empty for console users).
-  // A page the role can't open (deep link, stale tab, role changed) shows
-  // S-NA instead of its content (L-5, AC-07). The server enforces it too.
-  const renderActiveTab = (siteId: string) =>
-    !userCanOpen(activeTab) ? (
-      <NoAccess onGoHome={() => setActiveTab('HOME')} />
-    ) : (
-    <>
-            {activeTab === 'HOME' && (
-              isSiteAdmin && siteId !== ALL_SITES ? (
-                <SiteAdminOverview
-                  siteId={siteId}
-                  onNavigate={(screen) => {
-                    const map: Record<string, ActiveTabType> = {
-                      alerts: 'ALERTS',
-                      slots: 'FLOOR_PLAN',
-                      staff: 'INVENTORY',
-                      employees: 'INVENTORY',
-                    };
-                    setActiveTab(map[screen] || 'HOME');
-                  }}
-                />
-              ) : (
-                <RoleHomePage
-                  currentUser={viewer}
-                  roles={roles}
-                  slots={slots}
-                  employees={employees}
-                  logs={logs}
-                  alertCount={alertCount}
-                  pendingReqCount={pendingReqCount}
-                  setActiveTab={setActiveTab}
-                  onRefreshAll={refreshAll}
-                />
-              )
-            )}
+  // siteId is the chosen site or 'ALL'. A page the role can't open (deep link,
+  // stale link, role changed) or an unknown one shows "No access" inside the
+  // shell (L-5, AC-08); the server enforces the same rules.
+  const renderRoute = (siteId: string) => {
+    if (!def || !allowed) {
+      const home = landing ? routeById(landing) : undefined;
+      return <NoAccessPage homeHref={home ? hrefFor(home.id) : null} homeLabel={home?.title ?? null} />;
+    }
+    // R1.1 screens get the page template's header now (AC-09); their insides are restyled in R1.1.
+    const wrap = (body: React.ReactNode, extra?: { updatedAt?: number | null; primary?: React.ReactNode }) => (
+      <>
+        <PageHeader title={def.title} description={def.description} updatedAt={extra?.updatedAt} primary={extra?.primary} />
+        {body}
+      </>
+    );
+    const listsPending = lists.loading && !lists.updatedAt;
+    switch (def.id) {
+      case 'overview':
+        return siteId === ALL_SITES
+          ? wrap(<EmptyState title="Choose one site to see its overview" text="The overview covers one site at a time. Pick a site from the switcher in the top bar." />)
+          : wrap(<SiteAdminOverview siteId={siteId} onNavigate={(screen) => goRoute(({ alerts: 'alerts', slots: 'live-parking', staff: 'inventory', employees: 'employees' } as Record<string, string>)[screen] ?? null)} />);
+      case 'live-parking':
+        return wrap(
+          listsPending ? <PageSkeleton /> : (
+            <LiveFloorPlan slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onVehicleEntry={handleVehicleEntry} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} />
+          ),
+          { updatedAt: lists.updatedAt }
+        );
+      case 'logs':
+        return wrap(
+          listsPending ? <PageSkeleton /> : <ParkingLogs logs={logs} onVehicleEntry={handleVehicleEntry} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} />,
+          { updatedAt: lists.updatedAt }
+        );
+      case 'alerts':
+        return wrap(<NonParkedAlerts onRefresh={refreshAll} />);
+      case 'reports': {
+        const predictive = routeById('predictive');
+        const primary = canOpenRoute(viewer, currentRole, predictive) ? (
+          <a className="pf-link" href={hrefFor('predictive')}>
+            Predictive analytics (sample data)
+          </a>
+        ) : undefined;
+        return wrap(
+          siteId !== ALL_SITES ? <SiteAdminReports siteId={siteId} /> : <EmptyState title="Choose one site to see its reports" text="Reports cover one site at a time. Pick a site from the switcher in the top bar." />,
+          { primary }
+        );
+      }
+      case 'predictive':
+        return wrap(<AnalyticsPredictive />);
+      case 'valet':
+        return wrap(<ValetXModule />);
+      case 'employees': {
+        // One route for both modules (AC-11); the merged screen comes with F6.
+        const mode = userCanOpenModule('APPROVALS') ? 'APPROVALS' : 'REGISTRATION';
+        return wrap(<EmployeeRegistration mode={mode} onRefreshAll={refreshAll} currentSiteId={siteId} canManageDomains={canManageDomains} />);
+      }
+      case 'users':
+        return wrap(<UserManagementModule currentUser={currentUser} isMaster={isMasterViewer} onSelectSimulatedUser={(u) => startViewAs(u)} onRefreshAll={refreshAll} />);
+      case 'inventory':
+        return wrap(
+          listsPending ? <PageSkeleton /> : (
+            <InventoryMaster slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} currentSiteId={siteId} />
+          ),
+          { updatedAt: lists.updatedAt }
+        );
+      case 'sites':
+        return wrap(<MasterAdminSites />);
+      case 'billing':
+        return wrap(<MasterAdminBilling />);
+      case 'audit':
+        return wrap(<MasterAdminAudit />);
+      case 'settings':
+        return wrap(<MasterAdminData />);
+      case 'design-system':
+        return (
+          <Suspense fallback={<PageSkeleton />}>
+            <DesignSystemPreview />
+          </Suspense>
+        );
+      default:
+        return null;
+    }
+  };
+  const userCanOpenModule = (m: string) => canOpenTab(viewer, currentRole, m);
 
-            {activeTab === 'FLOOR_PLAN' && (
-              // Per explicit request: Site Admin uses the exact same
-              // Live Parking Status UI as Master Admin — previously
-              // routed to a separate, differently-designed
-              // SiteAdminLiveSlots component here. The underlying
-              // `slots` prop is already correctly scoped to the current
-              // site, so this shows only the right site's data while
-              // looking identical to Master Admin's view — the same
-              // component, not a lookalike rebuild.
-              <LiveFloorPlan
-                slots={slots}
-                onUpdateSlotStatus={handleUpdateSlotStatus}
-                onVehicleEntry={handleVehicleEntry}
-                onVehicleExit={handleVehicleExit}
-                onRefresh={refreshAll}
-              />
-            )}
+  const landingReady = rolesReady && (sitePhase === 'ready' || sitePhase === 'no-site');
 
-            {activeTab === 'ANALYTICS' && <AnalyticsPredictive />}
-
-            {activeTab === 'REPORTS' && (
-              siteId !== ALL_SITES ? (
-                <SiteAdminReports siteId={siteId} />
-              ) : (
-                <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-                  Select a specific site (top right) to view its reports.
-                </div>
-              )
-            )}
-
-            {activeTab === 'INVENTORY' && (
-              <InventoryMaster
-                slots={slots}
-                onUpdateSlotStatus={handleUpdateSlotStatus}
-                onVehicleExit={handleVehicleExit}
-                onRefresh={refreshAll}
-                currentSiteId={siteId}
-              />
-            )}
-
-            {activeTab === 'LOGS' && (
-              <ParkingLogs
-                logs={logs}
-                onVehicleEntry={handleVehicleEntry}
-                onVehicleExit={handleVehicleExit}
-                onRefresh={refreshAll}
-              />
-            )}
-
-            {activeTab === 'ALERTS' && <NonParkedAlerts onRefresh={refreshAll} />}
-
-            {activeTab === 'MOBILE_APP' && (
-              <Suspense fallback={<div className="p-8 text-center text-slate-500 text-sm">Loading mobile app preview…</div>}>
-                <AttendantMobileApp
-                  slots={slots}
-                  employees={employees}
-                  onVehicleEntry={handleVehicleEntry}
-                  onVehicleExit={handleVehicleExit}
-                  onRefresh={refreshAll}
-                />
-              </Suspense>
-            )}
-
-            {activeTab === 'EMPLOYEE_MOBILE_APP' && (
-              <Suspense fallback={<div className="p-8 text-center text-slate-500 text-sm">Loading employee app preview…</div>}>
-                <EmployeeMobileApp
-                  slots={slots}
-                  onRefreshAll={refreshAll}
-                />
-              </Suspense>
-            )}
-
-            {activeTab === 'REGISTRATION' && (
-              <EmployeeRegistration
-                mode="REGISTRATION"
-                onRefreshAll={refreshAll}
-                currentSiteId={siteId}
-                canManageDomains={canManageDomains}
-              />
-            )}
-
-            {activeTab === 'APPROVALS' && (
-              <EmployeeRegistration
-                mode="APPROVALS"
-                onRefreshAll={refreshAll}
-                currentSiteId={siteId}
-                canManageDomains={canManageDomains}
-              />
-            )}
-
-            {activeTab === 'MASTER_CONFIG' && <MasterConfigModule onRefresh={refreshAll} />}
-
-            {activeTab === 'VALET_SERVICE' && <ValetXModule />}
-
-            {activeTab === 'USER_MANAGEMENT' && (
-              <UserManagementModule
-                currentUser={currentUser}
-                isMaster={isMasterAdmin(viewer)}
-                onSelectSimulatedUser={(u) => startViewAs(u)}
-                onRefreshAll={refreshAll}
-              />
-            )}
-
-            {activeTab === 'SECURITY_AUDIT' && (
-              <SecurityAuditModule
-                currentUserRole={currentUser?.roleName}
-                onRefreshAll={refreshAll}
-              />
-            )}
-    </>
-  );
-
-  // Grouped nav (AC-07): only the modules this role may open; counts only.
-  const counts: Partial<Record<ActiveTabType, { count: number; label: string; alert?: boolean }>> = {
-    APPROVALS: { count: pendingReqCount, label: 'pending requests' },
-    ALERTS: { count: alertCount, label: 'open alerts', alert: true },
+  // Grouped nav (AC-07): only the pages this role may open; counts only.
+  const counts: Partial<Record<RouteId, { count: number; label: string; alert?: boolean }>> = {
+    employees: { count: pendingReqCount, label: 'pending requests' },
+    alerts: { count: alertCount, label: 'open alerts', alert: true },
   };
   const navGroups: NavGroup[] = NAV_GROUPS.map((group) => ({
     label: group,
-    items: NAV_ENTRIES.filter((e) => e.group === group && userCanOpen(e.id)).map((e) => ({
-      id: e.id,
-      label: e.label,
-      icon: e.icon,
-      href: '#',
-      count: counts[e.id]?.count,
-      countLabel: counts[e.id]?.label,
-      alert: counts[e.id]?.alert,
+    items: ROUTES.filter((r) => r.nav?.group === group && canOpenRoute(viewer, currentRole, r)).map((r) => ({
+      id: r.id,
+      label: r.title,
+      icon: r.nav!.icon,
+      href: hrefFor(r.id),
+      count: counts[r.id]?.count,
+      countLabel: counts[r.id]?.label,
+      alert: counts[r.id]?.alert,
     })),
   }));
-  const approvalsTab: ActiveTabType | null = userCanOpen('APPROVALS') ? 'APPROVALS' : userCanOpen('REGISTRATION') ? 'REGISTRATION' : null;
   const attention = [
-    ...(approvalsTab ? [{ label: 'Pending pass requests', count: pendingReqCount, onSelect: () => setActiveTab(approvalsTab) }] : []),
-    ...(userCanOpen('ALERTS') ? [{ label: 'Open alerts', count: alertCount, onSelect: () => setActiveTab('ALERTS') }] : []),
+    ...(canOpenRoute(viewer, currentRole, routeById('employees')) ? [{ label: 'Pending pass requests', count: pendingReqCount, href: hrefFor('employees') }] : []),
+    ...(canOpenRoute(viewer, currentRole, routeById('alerts')) ? [{ label: 'Open alerts', count: alertCount, href: hrefFor('alerts') }] : []),
   ];
+
+  const needsSiteForPage = needsSite && !platformPage;
 
   return (
     <SiteContext.Provider value={siteContextValue}>
@@ -792,48 +739,62 @@ export default function App() {
         onExitViewAs={exitViewAs}
         sites={sites}
         siteId={currentSiteId}
-        allowAllSites={isMasterAdmin(viewer)}
+        allowAllSites={isMasterViewer}
         onSelectSite={(siteId) => selectSite(siteId)}
         nav={navGroups}
-        current={activeTab}
-        onNavigate={(id, e) => {
-          e.preventDefault();
-          setActiveTab(id as ActiveTabType);
-        }}
-        homeHref="#"
-        onHome={(e) => {
-          e.preventDefault();
-          setActiveTab('HOME');
-        }}
+        current={currentId}
+        homeHref={landing ? hrefFor(landing) : '#'}
         attention={attention}
         onSignOut={handleLogout}
       >
-        {!needsSite ? (
-          renderActiveTab('')
-        ) : sitePhase === 'resolving' ? (
-          <ListSkeleton />
+        <RouteKeeper route={route} landing={landing} ready={landingReady} />
+        {!needsSiteForPage ? (
+          sitePhase === 'resolving' && needsSite ? <PageSkeleton /> : <div key={`platform-${viewAsUser?.id ?? ''}`} className="pf-stack">{renderRoute(currentSiteId ?? '')}</div>
+        ) : sitePhase === 'resolving' || (route === null && !landingReady) ? (
+          <PageSkeleton />
         ) : sitePhase === 'error' ? (
           <ErrorState title="Couldn't load your sites" text="Try again in a moment." onRetry={() => setSiteResolveAttempt((n) => n + 1)} />
         ) : sitePhase === 'no-site' ? (
           // Only reachable while viewing as a user with no site.
-          <NoSiteAssigned embedded onSignOut={handleLogout} />
+          <NoSitePage />
         ) : !currentSiteId ? (
-          <ChooseSite sites={sites} allowAllSites={isMasterAdmin(viewer)} onChoose={selectSite} />
+          <ChooseSitePrompt sites={sites} allowAllSites={isMasterViewer} onChoose={selectSite} />
         ) : listsLoading ? (
-          <ListSkeleton />
+          <PageSkeleton />
         ) : (
           // Keyed by site: pages that fetch their own data remount on a
           // switch, so they drop the old site's rows and load afresh (L-2).
           // The current site is shown only in the switcher (AC-23).
           <div key={currentSiteId} className="pf-stack">
-            {listError && <ErrorCard onRetry={() => void lists.refresh()} />}
+            {listError && <ErrorState title="Couldn't refresh this site's data" text="What you see may be out of date." onRetry={() => void lists.refresh()} />}
             {/* Stale rows under an error are greyed out, never shown as current (§4). */}
-            <div className={listError ? 'opacity-50' : undefined} aria-busy={listError || undefined}>
-              {renderActiveTab(currentSiteId)}
+            <div className={listError ? 'pf-stale pf-stack' : 'pf-stack'} aria-busy={listError || undefined}>
+              {renderRoute(currentSiteId)}
             </div>
           </div>
         )}
       </AppShell>
     </SiteContext.Provider>
   );
+}
+
+/**
+ * Route side effects that must not sit after App's early returns (hooks rule):
+ * put the landing page in the URL once it is known (AC-10), and move focus to the
+ * new page's H1 after navigation for keyboard and screen-reader users.
+ */
+function RouteKeeper({ route, landing, ready }: { route: string | null; landing: RouteId | null; ready: boolean }) {
+  useEffect(() => {
+    if (route === null && ready && landing) replaceRoute(landing);
+  }, [route, ready, landing]);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const t = setTimeout(() => (document.querySelector('[data-page-title]') as HTMLElement | null)?.focus(), 0);
+    return () => clearTimeout(t);
+  }, [route]);
+  return null;
 }

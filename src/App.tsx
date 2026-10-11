@@ -20,6 +20,7 @@ import { NonParkedAlerts } from './components/NonParkedAlerts';
 const DesignSystemPreview = lazy(() => import('./design-system/preview/DesignSystemPreview'));
 import { Employees } from './screens/Employees';
 import { Sites } from './screens/Sites';
+import { DemoRequests } from './screens/DemoRequests';
 import { MasterAdminBilling } from './components/MasterAdminBilling';
 import { ValetXModule } from './components/ValetXModule';
 import { UserManagementModule } from './components/UserManagementModule';
@@ -263,6 +264,7 @@ export default function App() {
     setSites([]);
     setAlertCount(0);
     setPendingReqCount(0);
+    setNewDemoCount(0);
     setCurrentSiteId(null);
     currentSiteIdRef.current = null;
     setSitePhase('resolving');
@@ -337,6 +339,23 @@ export default function App() {
   // The page decides which lists load, so a page change loads afresh.
   const listsKey = route === 'inventory' ? 'slots' : route === 'logs' ? 'logs' : 'counts';
   const lists = useAutoRefresh(loadSiteLists, [currentUser?.id, currentSiteId, viewAsUser?.id, listsKey], { enabled: listsActive });
+
+  // The New demo-requests badge (F10): Master Admin only, no site needed; the only signal
+  // sales gets (03: no email), so it refreshes every minute.
+  const [newDemoCount, setNewDemoCount] = useState<number>(0);
+  const demoActive = !!currentUser && isMasterAdmin(viewAsUser ?? currentUser);
+  const demo = useAutoRefresh(
+    async (isCurrent) => {
+      const res = await fetch('/api/v1/demo-requests?status=NEW');
+      if (!res.ok) return false;
+      const body = (await res.json()) as { requests?: unknown[] };
+      if (!isCurrent()) return false;
+      setNewDemoCount(Array.isArray(body.requests) ? body.requests.length : 0);
+      return true;
+    },
+    [currentUser?.id, viewAsUser?.id],
+    { enabled: demoActive, intervalMs: 60000 }
+  );
 
   const refreshAll = () => {
     if (!currentUser || isEmployeeUser(currentUser)) return;
@@ -686,6 +705,8 @@ export default function App() {
         return wrap(<MasterAdminAudit />);
       case 'settings':
         return wrap(<MasterAdminData />);
+      case 'demo-requests':
+        return <DemoRequests onChanged={() => void demo.refresh()} />;
       case 'design-system':
         return (
           <Suspense fallback={<PageSkeleton />}>
@@ -704,6 +725,7 @@ export default function App() {
   const counts: Partial<Record<RouteId, { count: number; label: string; alert?: boolean }>> = {
     employees: { count: pendingReqCount, label: 'pending requests' },
     alerts: { count: alertCount, label: 'open alerts', alert: true },
+    'demo-requests': { count: newDemoCount, label: 'new demo requests' },
   };
   const navGroups: NavGroup[] = NAV_GROUPS.map((group) => ({
     label: group,
@@ -720,6 +742,7 @@ export default function App() {
   const attention = [
     ...(canOpenRoute(viewer, currentRole, routeById('employees')) ? [{ label: 'Pending pass requests', count: pendingReqCount, href: hrefFor('employees') }] : []),
     ...(canOpenRoute(viewer, currentRole, routeById('alerts')) ? [{ label: 'Open alerts', count: alertCount, href: hrefFor('alerts') }] : []),
+    ...(canOpenRoute(viewer, currentRole, routeById('demo-requests')) ? [{ label: 'New demo requests', count: newDemoCount, href: hrefFor('demo-requests') }] : []),
   ];
 
   const needsSiteForPage = needsSite && !platformPage;

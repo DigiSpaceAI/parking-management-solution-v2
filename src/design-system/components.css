@@ -646,6 +646,8 @@
   .pf-domain-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font: var(--type-body-strong); }
   .pf-form-row--end { align-items: flex-end; }
 
+  .pf-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
     .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }

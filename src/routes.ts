@@ -5,7 +5,7 @@
  */
 import type { LucideIcon } from 'lucide-react';
 import {
-  Building2, FileText, Gauge, LayoutGrid, ListOrdered, ReceiptIndianRupee, Settings, ShieldCheck, Sparkles,
+  Building2, FileText, Gauge, Inbox, LayoutGrid, ListOrdered, ReceiptIndianRupee, Settings, ShieldCheck, Sparkles,
   TriangleAlert, Users, UserRoundCheck, Warehouse,
 } from 'lucide-react';
 import type { AppModuleId, AppUser, RolePermissionConfig } from './types';
@@ -14,7 +14,7 @@ import { canOpenTab, isMasterAdmin } from './utils/rbac';
 export type RouteId =
   | 'overview' | 'live-parking' | 'logs' | 'alerts' | 'reports' | 'predictive' | 'valet'
   | 'employees' | 'users'
-  | 'inventory' | 'sites' | 'billing' | 'audit' | 'settings'
+  | 'inventory' | 'sites' | 'billing' | 'audit' | 'settings' | 'demo-requests'
   | 'design-system';
 
 export type NavGroupId = 'Operations' | 'People' | 'Setup';
@@ -49,6 +49,7 @@ export const ROUTES: RouteDef[] = [
   { id: 'billing', title: 'Billing', description: 'Plans and invoices for each site.', modules: ['MASTER_CONFIG'], masterOnly: true, platform: true, nav: { group: 'Setup', icon: ReceiptIndianRupee } },
   { id: 'audit', title: 'Audit log', description: 'Who did what, when, on which site.', modules: ['SECURITY_AUDIT'], masterOnly: true, platform: true, nav: { group: 'Setup', icon: ShieldCheck } },
   { id: 'settings', title: 'Settings', description: 'Data retention and platform tools.', modules: ['SECURITY_AUDIT'], masterOnly: true, platform: true, nav: { group: 'Setup', icon: Settings } },
+  { id: 'demo-requests', title: 'Demo requests', description: 'Requests from the Book a demo form on parkflows.in.', modules: [], masterOnly: true, platform: true, nav: { group: 'Setup', icon: Inbox } },
   { id: 'design-system', title: 'Design system', description: 'Every ParkFlows component in every state. Example data only.', modules: [], masterOnly: true, platform: true },
 ];
 

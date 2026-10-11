@@ -10,6 +10,7 @@
 // FAKE_FAIL_READS=n makes the first n store reads throw DEADLINE_EXCEEDED.
 import path from 'node:path';
 import http from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { FakeFirestore, productionSeed } from './fakeFirestore.mjs';
 
@@ -18,9 +19,16 @@ const mode = process.argv[2];
 process.env.FIREBASE_PROJECT_ID = 'fake-project';
 const imp = (rel) => import(pathToFileURL(path.join(REPO, rel)).href);
 
-const fake = new FakeFirestore(process.env.EMPTY_FIRESTORE === '1' ? {} : productionSeed(), {
+// FAKE_DATA_FILE (002 R1b tests): start from that JSON file when it exists and
+// write every change back to it, so a test can restart the server on the same
+// "Firestore" (re-load the store) and read what was really stored or deleted.
+const dataFile = process.env.FAKE_DATA_FILE || null;
+const seed = dataFile && existsSync(dataFile) ? JSON.parse(readFileSync(dataFile, 'utf-8'))
+  : process.env.EMPTY_FIRESTORE === '1' ? {} : productionSeed();
+const fake = new FakeFirestore(seed, {
   loadDelayMs: Number(process.env.FAKE_LOAD_DELAY_MS || 0),
   failReads: Number(process.env.FAKE_FAIL_READS || 0),
+  persistFile: dataFile,
 });
 const client = await imp('src/server/firestoreClient.ts');
 client.__setFirestoreDbForTests(fake);

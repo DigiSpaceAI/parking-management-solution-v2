@@ -176,3 +176,60 @@ test('B1 mass assignment: a slot save can no longer set fields the form never se
   assert.ok(!made.body.slot.currentVehicle && !('cameraNumber' in made.body.slot), 'same on create');
   await c.post('adminA', '/slots/update-status', { slotId: base.id, newStatus: 'VACANT' }, { site: F.A.id });
 });
+
+// ------------------------------------------------------------------ seeded "Firestore" servers
+// Boots once on an empty fake Firestore (seeds the default roles + bootstrap
+// Master into FAKE_DATA_FILE), lets `mutate(data)` add hand-made records with
+// exact timestamps, then restarts on that file so the API serves them.
+async function seededServer(mutate, env = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pf-r1b-fs-'));
+  const dataFile = path.join(dir, 'firestore.json');
+  const boot = await startServer({ fake: true, env: { EMPTY_FIRESTORE: '1', FAKE_DATA_FILE: dataFile } });
+  boot.stop();
+  assert.ok(existsSync(dataFile), 'seed file written');
+  const data = JSON.parse(readFileSync(dataFile, 'utf-8'));
+  mutate(data);
+  writeFileSync(dataFile, JSON.stringify(data));
+  const s = await startServer({ fake: true, env: { FAKE_DATA_FILE: dataFile, ...env } });
+  const cl = client(s);
+  await cl.login('master', MASTER_EMAIL);
+  return { srv: s, c: cl, dataFile, readData: () => JSON.parse(readFileSync(dataFile, 'utf-8')),
+    restart: async () => { s.stop(); const s2 = await startServer({ fake: true, env: { FAKE_DATA_FILE: dataFile, ...env } }); const c2 = client(s2); await c2.login('master', MASTER_EMAIL); return { srv: s2, c: c2 }; },
+    stop: () => { s.stop(); try { rmSync(dir, { recursive: true, force: true }); } catch {} } };
+}
+const mkSite = (id, code, name) => ({ id, siteCode: code, siteName: name, city: 'Pune', address: 'Addr', contactPerson: 'P', contactEmail: 'p@x.in',
+  contactPhone: '+91 98200 00000', totalSlots: 4, basementLevels: 1, hasPuzzleParking: true, hasEVCharging: false, status: 'ACTIVE',
+  pricing: { hourlyRate: 40, dailyMaxRate: 300, monthlyPassRate: 2500, currency: 'INR', taxPercentage: 18 },
+  onboardedAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z' });
+const mkSlot = (id, siteId, num, status = 'VACANT', extra = {}) => ({ id, siteId, ...slot(num, { status }), ...extra });
+const mkLog = (id, siteId, slotId, slotNumber, entryTime, extra = {}) => ({ id, siteId, vehicleNumber: `MH12AB${id.slice(-4).padStart(4, '0')}`,
+  employeeName: 'Guest Visitor', department: 'Visitor', slotId, slotNumber, basement: 'B1', entryTime, exitTime: null, durationMinutes: null,
+  entryType: 'MANUAL', status: 'ACTIVE', remarks: '', ...extra });
+
+// ------------------------------------------------------------------ B2
+test('B2 inSince: an occupied slot gets its ACTIVE log time; no join across sites; hours bucketed in IST', async () => {
+  const T1 = '2026-10-09T04:15:00.000Z';
+  const fx = await seededServer((d) => {
+    d.sites = [mkSite('s-one', 'ONE', 'Site One'), mkSite('s-two', 'TWO', 'Site Two')];
+    d.slots = [mkSlot('one-1', 's-one', 'ONE-01', 'OCCUPIED', { currentVehicle: 'MH12AB0001' }),
+      mkSlot('one-2', 's-one', 'ONE-02', 'OCCUPIED', { currentVehicle: 'MH12AB0002' }), mkSlot('one-3', 's-one', 'ONE-03')];
+    d.logs = [
+      mkLog('log-0001', 's-one', 'one-1', 'ONE-01', T1),
+      // ACTIVE log at site TWO that (wrongly) names site ONE's slot: must not join.
+      mkLog('log-0002', 's-two', 'one-2', 'ONE-02', '2026-10-09T05:00:00.000Z'),
+      // Completed entries at 03:30Z (= 09:00 IST) and 20:00Z (= 01:30 IST next day).
+      mkLog('log-0003', 's-one', 'one-3', 'ONE-03', '2026-10-10T03:30:00.000Z', { status: 'COMPLETED', exitTime: '2026-10-10T05:00:00.000Z' }),
+      mkLog('log-0004', 's-one', 'one-3', 'ONE-03', '2026-10-10T20:00:00.000Z', { status: 'COMPLETED', exitTime: '2026-10-10T21:00:00.000Z' }),
+    ];
+  });
+  try {
+    const slots = (await fx.c.get('master', '/slots', { site: 's-one' })).body.slots;
+    assert.equal(slots.find((s) => s.id === 'one-1').inSince, T1);
+    assert.ok(!('inSince' in slots.find((s) => s.id === 'one-2')), 'a log at another site never lends its time');
+    assert.ok(!('inSince' in slots.find((s) => s.id === 'one-3')), 'vacant slots have no inSince');
+    const all = (await fx.c.get('master', '/slots?siteId=ALL')).body.slots;
+    assert.ok(!('inSince' in all.find((s) => s.id === 'one-2')), 'not even in All sites mode');
+    const peak = (await fx.c.get('master', '/reports/peak-hours?from=2026-10-10T00:00:00.000Z&to=2026-10-11T00:00:00.000Z', { site: 's-one' })).body.hours;
+    assert.deepEqual(peak.filter((h) => h.avgEntries > 0).map((h) => h.hour), [1, 9], 'IST hours, not UTC (would be 3 and 20)');
+  } finally { fx.stop(); }
+});

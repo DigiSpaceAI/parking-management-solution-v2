@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
+import { istHour } from './time';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -2984,7 +2985,8 @@ export function getPeakHours(siteId: string, fromISO: string, toISO: string): {
 
   const hourCounts = new Array(24).fill(0);
   for (const log of inRangeEntries) {
-    const hour = new Date(log.entryTime).getHours();
+    // 002 B2: bucket by IST hour, not server time (UTC on Cloud Run).
+    const hour = istHour(log.entryTime);
     hourCounts[hour]++;
   }
 

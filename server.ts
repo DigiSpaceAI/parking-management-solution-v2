@@ -679,18 +679,44 @@ app.get('/api/v1/slots', (req, res) => {
     },
   };
 
+  const inSinceBySlot = activeEntryIndex(filterBySite(store.logs, siteId));
   res.json({
     summary,
     totalReturned: slots.length,
-    slots: slots.map(withSlotExtras),
+    slots: slots.map((s) => withSlotExtras(s, inSinceBySlot)),
   });
 });
 
-// 002 B1: response-only fields (nothing stored). heightM = the first number
-// in the stored height string ("Standard (2.0m)" -> 2), so cards show "2.0 m".
-function withSlotExtras<T extends { height?: string }>(slot: T): T & { heightM?: number } {
+// 002 B2: entryTime of the ACTIVE log per occupied slot, keyed by
+// "<site>|<slotId>". A log only joins a slot of its OWN site, so a log at
+// another site can never lend its time to this site's slot.
+function activeEntryIndex(logs: { status: string; slotId?: string; siteId?: string; entryTime: string }[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const l of logs) {
+    if (l.status !== 'ACTIVE' || !l.slotId) continue;
+    const key = `${recordSite(l)}|${l.slotId}`;
+    const prev = index.get(key);
+    if (!prev || new Date(l.entryTime).getTime() > new Date(prev).getTime()) index.set(key, l.entryTime);
+  }
+  return index;
+}
+
+// 002 B1/B2: response-only fields (nothing stored). heightM = the first
+// number in the stored height string ("Standard (2.0m)" -> 2), so cards show
+// "2.0 m". inSince = entry time of the slot's ACTIVE log at the same site
+// (OCCUPIED slots only; absent when none is found, e.g. legacy data).
+function withSlotExtras<T extends { id: string; siteId?: string; status?: string; height?: string }>(
+  slot: T,
+  inSinceBySlot?: Map<string, string>
+): T & { heightM?: number; inSince?: string } {
+  const out: T & { heightM?: number; inSince?: string } = { ...slot };
   const m = String(slot.height || '').match(/\d+(?:\.\d+)?/);
-  return m ? { ...slot, heightM: parseFloat(m[0]) } : { ...slot };
+  if (m) out.heightM = parseFloat(m[0]);
+  if (slot.status === 'OCCUPIED' && inSinceBySlot) {
+    const since = inSinceBySlot.get(`${recordSite(slot)}|${slot.id}`);
+    if (since) out.inSince = since;
+  }
+  return out;
 }
 
 // 3. Employee Master Data Endpoint (with PII Privacy Masking & Audit)

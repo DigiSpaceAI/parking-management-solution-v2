@@ -54,6 +54,8 @@ import {
   OvernightRequest,
   OvernightRequestStatus,
   OverviewToday,
+  DemoRequest,
+  DemoRequestStatus,
   SiteSummaryRow,
   PublicAppUser,
   ModuleAccessRights
@@ -76,6 +78,7 @@ interface StoreData {
   appRoles: RolePermissionConfig[];
   appUsers: AppUser[];
   overnightRequests: OvernightRequest[];
+  demoRequests: DemoRequest[]; // 002 B6
   lastUpdated: string;
 }
 
@@ -93,6 +96,7 @@ let store: StoreData = {
   appRoles: [],
   appUsers: [],
   overnightRequests: [],
+  demoRequests: [],
   lastUpdated: new Date().toISOString(),
 };
 
@@ -911,6 +915,7 @@ function generate1080Inventory(): StoreData {
     appRoles: defaultRoles,
     appUsers: defaultUsers,
     overnightRequests: [],
+    demoRequests: [],
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -1180,6 +1185,7 @@ export function initDB(): StoreData {
         appRoles: finalAppRoles,
         appUsers: finalAppUsers,
         overnightRequests: loadedStore.overnightRequests || [],
+        demoRequests: loadedStore.demoRequests || [],
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
@@ -1216,6 +1222,7 @@ export function initDB(): StoreData {
         appRoles: defaultRoles,
         appUsers: defaultUsers,
         overnightRequests: [],
+        demoRequests: [],
         lastUpdated: new Date().toISOString(),
       };
       // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
@@ -1246,7 +1253,7 @@ export function initDB(): StoreData {
 const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
   'slots', 'employees', 'logs', 'alerts', 'registrationRequests',
   'whitelistedDomains', 'sites', 'invoices', 'slotChangeNotifications',
-  'valetTickets', 'appRoles', 'appUsers', 'overnightRequests',
+  'valetTickets', 'appRoles', 'appUsers', 'overnightRequests', 'demoRequests',
 ];
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
@@ -1540,7 +1547,7 @@ function scheduleDebouncedFullSync() {
   }, FULL_SYNC_DEBOUNCE_MS);
 }
 
-export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+function writeLocalCopy() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1550,6 +1557,29 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
   } catch (err) {
     console.error('Error saving PMS database:', err);
   }
+}
+
+// 002 B6: targeted Firestore delete (a full sync never deletes, so a removed
+// record would otherwise come back on the next cold start). Same "no write
+// before the store is loaded" rule as every sync (2 Oct hotfix).
+async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): Promise<void> {
+  if (!storeReady || ids.length === 0) return;
+  const db = getFirestoreDb();
+  if (!db) return;
+  try {
+    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
+      const batch = db.batch();
+      for (const id of ids.slice(i, i + FIRESTORE_BATCH_CHUNK)) batch.delete(db.collection(collection).doc(id));
+      await batch.commit();
+    }
+  } catch (err) {
+    if (isFatalFirestoreConfigError(err)) markFirestoreUnavailable(String((err as any)?.message || err));
+    else console.error('[firestore] Targeted delete failed:', err);
+  }
+}
+
+export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+  writeLocalCopy();
 
   // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
   // loaded. The local JSON copy above is still written.
@@ -2390,6 +2420,147 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
   }
 
   return { added, updated, total: getStore().slots.length, errors };
+}
+
+// ==========================================
+// 002 B6: DEMO REQUESTS (parkflows.in "Book a demo", US-18 / AC-32a-d)
+// ==========================================
+export const DEMO_FACILITY_TYPES = ['Office park', 'Tech campus', 'Mall', 'Hospital', 'Residential', 'Other'] as const;
+export const DEMO_REQUEST_STATUSES: DemoRequestStatus[] = ['NEW', 'CONTACTED', 'CLOSED'];
+const DEMO_NUMBER_MAX = 100_000;
+const DEMO_MESSAGE_MAX = 1000;
+
+export type DemoRequestInput = Pick<DemoRequest, 'name' | 'company' | 'workEmail' | 'phone' | 'city' | 'facilityType' | 'slotsApprox' | 'sitesApprox' | 'preferredContact' | 'message'>;
+
+// Server-side check of the public form (same rules and wording as
+// marketing/demo/demo.js). Unknown fields are ignored; strings are trimmed
+// and stored as plain text.
+export function validateDemoRequest(body: Record<string, unknown>): { values?: DemoRequestInput; errors: Record<string, string> } {
+  const errors: Record<string, string> = {};
+  const str = (k: string) => (typeof body[k] === 'string' ? (body[k] as string).trim() : null);
+
+  const name = str('name');
+  if (name === null || name.length < 2 || name.length > 80) errors.name = 'Enter your name (2 to 80 characters).';
+  const company = str('company');
+  if (company === null || company.length < 2 || company.length > 120) errors.company = 'Enter your company name (2 to 120 characters).';
+  const workEmail = str('workEmail');
+  if (workEmail === null || workEmail.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(workEmail)) errors.workEmail = 'Enter a work email, like name@company.com.';
+  const phoneRaw = str('phone');
+  const phoneMatch = phoneRaw === null ? null : phoneRaw.replace(/[\s\-()]/g, '').match(/^(?:\+91|91|0)?(\d{10})$/);
+  if (!phoneMatch) errors.phone = 'Enter a 10-digit Indian phone number, like 98206 03518.';
+  const city = str('city');
+  if (city === null || city.length < 2 || city.length > 80) errors.city = 'Enter your city.';
+  const facilityType = str('facilityType');
+  if (!facilityType || !(DEMO_FACILITY_TYPES as readonly string[]).includes(facilityType)) errors.facilityType = 'Choose a facility type.';
+
+  const count = (k: 'slotsApprox' | 'sitesApprox'): number | undefined => {
+    const raw = body[k];
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^[\d,\s]+$/.test(raw.trim()) ? Number(raw.replace(/[,\s]/g, '')) : NaN;
+    if (!Number.isInteger(n) || n < 1 || n > DEMO_NUMBER_MAX) {
+      errors[k] = 'Enter a whole number from 1 to 100,000, or leave it empty.';
+      return undefined;
+    }
+    return n;
+  };
+  const slotsApprox = count('slotsApprox');
+  const sitesApprox = count('sitesApprox');
+
+  const preferredContact = str('preferredContact');
+  if (preferredContact !== 'Email' && preferredContact !== 'Phone') errors.preferredContact = 'Choose how we should contact you.';
+  let message: string | undefined;
+  if (body.message !== undefined && body.message !== null) {
+    const m = str('message');
+    if (m === null || m.length > DEMO_MESSAGE_MAX) errors.message = 'Keep the message to 1,000 characters or fewer.';
+    else if (m) message = m;
+  }
+  if (body.consent !== true) errors.consent = 'Tick the box so we can contact you about the demo.';
+
+  if (Object.keys(errors).length > 0) return { errors };
+  return {
+    errors,
+    values: {
+      name: name!, company: company!, workEmail: workEmail!, phone: `+91${phoneMatch![1]}`, city: city!,
+      facilityType: facilityType as DemoRequest['facilityType'],
+      ...(slotsApprox !== undefined ? { slotsApprox } : {}),
+      ...(sitesApprox !== undefined ? { sitesApprox } : {}),
+      preferredContact: preferredContact as 'Email' | 'Phone',
+      ...(message ? { message } : {}),
+    },
+  };
+}
+
+// TEST SEAM ONLY (AC-32b "500 path tested with a forced store failure"):
+// the cold-start harness calls this; nothing in the app does.
+let failNextDemoSave = false;
+export function __failNextDemoRequestSaveForTests() {
+  failNextDemoSave = true;
+}
+
+export function createDemoRequest(values: DemoRequestInput, now: Date = new Date()): DemoRequest {
+  if (failNextDemoSave) {
+    failNextDemoSave = false;
+    throw new Error('forced demo request store failure (test seam)');
+  }
+  const storeData = getStore();
+  if (!storeData.demoRequests) storeData.demoRequests = [];
+  const createdAt = now.toISOString();
+  const request: DemoRequest = {
+    id: `demo-${crypto.randomBytes(9).toString('hex')}`,
+    createdAt,
+    ...values,
+    consentAt: createdAt,
+    source: 'parkflows.in',
+    status: 'NEW',
+  };
+  storeData.demoRequests.unshift(request);
+  saveDB([{ collection: 'demoRequests', ids: [request.id] }]);
+  return request;
+}
+
+export function getDemoRequests(status?: string): DemoRequest[] {
+  const list = [...(getStore().demoRequests || [])];
+  list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return status && (DEMO_REQUEST_STATUSES as string[]).includes(status) ? list.filter((r) => r.status === status) : list;
+}
+
+export function updateDemoRequestStatus(id: string, status: DemoRequestStatus, note: string | undefined, handledBy: string): DemoRequest | null {
+  const request = (getStore().demoRequests || []).find((r) => r.id === id);
+  if (!request) return null;
+  request.status = status;
+  request.handledBy = handledBy;
+  request.handledAt = new Date().toISOString();
+  if (note !== undefined) request.note = note;
+  saveDB([{ collection: 'demoRequests', ids: [request.id] }]);
+  return request;
+}
+
+// Hard delete (AC-32d "delete on request"): memory, local copy AND the
+// Firestore document, so it can't come back on a cold start.
+export function deleteDemoRequest(id: string): boolean {
+  const storeData = getStore();
+  const before = (storeData.demoRequests || []).length;
+  storeData.demoRequests = (storeData.demoRequests || []).filter((r) => r.id !== id);
+  if (storeData.demoRequests.length === before) return false;
+  writeLocalCopy();
+  void deleteFirestoreDocs('demoRequests', [id]);
+  return true;
+}
+
+// 12-month retention (AC-32d): removes requests created more than 12 months
+// before `now`, from memory, the local copy and Firestore. Returns the count.
+export function expireDemoRequests(now: Date = new Date()): number {
+  const storeData = getStore();
+  const cutoff = new Date(now);
+  cutoff.setMonth(cutoff.getMonth() - 12);
+  const cutoffISO = cutoff.toISOString();
+  const expired = (storeData.demoRequests || []).filter((r) => r.createdAt < cutoffISO).map((r) => r.id);
+  if (expired.length === 0) return 0;
+  const gone = new Set(expired);
+  storeData.demoRequests = storeData.demoRequests.filter((r) => !gone.has(r.id));
+  writeLocalCopy();
+  void deleteFirestoreDocs('demoRequests', expired);
+  return expired.length;
 }
 
 // Domain Whitelist Management

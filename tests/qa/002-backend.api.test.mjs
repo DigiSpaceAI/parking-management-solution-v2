@@ -386,3 +386,177 @@ test('B5 /sites/update: Site Admin 403; view-as POST 403; bad email/phone/name 4
   const nf = await c.post('master', '/sites/update', { siteId: 'site-nope', city: 'X' });
   assert.equal(nf.status, 404);
 });
+
+// ------------------------------------------------------------------ B6 demo requests (PRD AC-32a–d)
+const demo = (extra = {}) => ({ name: 'Asha Rao', company: 'Rao Estates', workEmail: 'asha@raoestates.in', phone: '+919820603518',
+  city: 'Pune', facilityType: 'Tech campus', slotsApprox: 450, sitesApprox: 2, preferredContact: 'Email',
+  message: 'We run two campuses.', consent: true, pf_hp_field: '', ...extra });
+let ipSeq = 10;
+const nextIp = () => `203.0.113.${ipSeq++}`;
+const submit = (cl, body, ip = nextIp(), o = {}) => cl.call(null, 'POST', '/demo-requests', { body, headers: { 'X-Forwarded-For': ip }, ...o });
+const DEMO_FIELDS = new Set(['id', 'createdAt', 'name', 'company', 'workEmail', 'phone', 'city', 'facilityType', 'slotsApprox', 'sitesApprox',
+  'preferredContact', 'message', 'consentAt', 'source', 'status', 'handledBy', 'handledAt', 'note']);
+const demoList = async (cl) => (await cl.get('master', '/demo-requests')).body.requests;
+
+test('AC-32a valid request is stored and nothing is echoed; invalid fields get their own 400 message; honeypot stores nothing', async () => {
+  const before = (await demoList(c)).length;
+  const ok = await submit(c, demo({ phone: '98206 03518', slotsApprox: '1,200' }));
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual(ok.body, { success: true }, 'nothing echoed');
+  const list = await demoList(c);
+  assert.equal(list.length, before + 1);
+  const r = list[0];
+  assert.equal(r.name, 'Asha Rao'); assert.equal(r.phone, '+919820603518'); assert.equal(r.slotsApprox, 1200);
+  assert.equal(r.status, 'NEW'); assert.equal(r.source, 'parkflows.in'); assert.ok(r.consentAt && r.id.startsWith('demo-'));
+  assert.ok(!('pf_hp_field' in r) && !('consent' in r));
+
+  const cases = [
+    [{ name: 'A' }, 'name', 'Enter your name (2 to 80 characters).'],
+    [{ name: 'x'.repeat(81) }, 'name', 'Enter your name (2 to 80 characters).'],
+    [{ company: '' }, 'company', 'Enter your company name (2 to 120 characters).'],
+    [{ workEmail: 'asha@raoestates' }, 'workEmail', 'Enter a work email, like name@company.com.'],
+    [{ phone: '12345' }, 'phone', 'Enter a 10-digit Indian phone number, like 98206 03518.'],
+    [{ phone: '+1 415 555 0100' }, 'phone', 'Enter a 10-digit Indian phone number, like 98206 03518.'],
+    [{ city: '' }, 'city', 'Enter your city.'],
+    [{ city: 'P' }, 'city', 'Enter your city.'],
+    [{ facilityType: 'Airport' }, 'facilityType', 'Choose a facility type.'],
+    [{ slotsApprox: 0 }, 'slotsApprox', 'Enter a whole number from 1 to 100,000, or leave it empty.'],
+    [{ slotsApprox: 100001 }, 'slotsApprox', 'Enter a whole number from 1 to 100,000, or leave it empty.'],
+    [{ sitesApprox: 2.5 }, 'sitesApprox', 'Enter a whole number from 1 to 100,000, or leave it empty.'],
+    [{ preferredContact: 'Fax' }, 'preferredContact', 'Choose how we should contact you.'],
+    [{ message: 'm'.repeat(1001) }, 'message', 'Keep the message to 1,000 characters or fewer.'],
+    [{ consent: false }, 'consent', 'Tick the box so we can contact you about the demo.'],
+    [{ consent: 'true' }, 'consent', 'Tick the box so we can contact you about the demo.'],
+  ];
+  for (const [patch, field, msg] of cases) {
+    const bad = await submit(c, demo(patch));
+    assert.equal(bad.status, 400, `${field}: ${JSON.stringify(bad.body)}`);
+    assert.equal(bad.body.errors[field], msg, field);
+    assert.deepEqual(Object.keys(bad.body.errors), [field], `${field}: only its own message`);
+  }
+  const empty = await submit(c, demo({ slotsApprox: null, sitesApprox: undefined, message: undefined }));
+  assert.equal(empty.status, 200, 'optional numbers and message may be empty');
+
+  const n = (await demoList(c)).length;
+  const hp = await submit(c, demo({ pf_hp_field: 'http://spam.example' }));
+  assert.equal(hp.status, 200); assert.deepEqual(hp.body, { success: true });
+  assert.equal((await demoList(c)).length, n, 'honeypot: nothing stored');
+});
+
+test('AC-32a 6th request in 10 minutes from one IP -> 429', async () => {
+  const ip = nextIp();
+  for (let i = 0; i < 5; i++) {
+    const r = await submit(c, demo({ name: '' }), ip); // invalid ones count too
+    assert.equal(r.status, 400, `request ${i + 1}`);
+  }
+  const sixth = await submit(c, demo(), ip);
+  assert.equal(sixth.status, 429); assert.equal(sixth.body.errorCode, 'ERR_RATE_LIMITED');
+  assert.equal((await submit(c, demo())).status, 200, 'another IP is not affected');
+});
+
+test('AC-32a 31st stored request in an hour overall -> 429', async () => {
+  const s = await startServer();
+  try {
+    const cl = client(s);
+    for (let i = 0; i < 30; i++) {
+      const r = await submit(cl, demo({ name: `Prospect ${i}` }));
+      assert.equal(r.status, 200, `request ${i + 1}: ${JSON.stringify(r.body)}`);
+    }
+    const r31 = await submit(cl, demo());
+    assert.equal(r31.status, 429); assert.equal(r31.body.errorCode, 'ERR_RATE_LIMITED');
+    await cl.login('master', MASTER_EMAIL);
+    assert.equal((await demoList(cl)).length, 30, 'the 31st was not stored');
+  } finally { s.stop(); }
+});
+
+test('AC-32c only POST with a JSON body: GET with query fields 405, form post 415, oversize 413; nothing stored', async () => {
+  const n = (await demoList(c)).length;
+  const q = new URLSearchParams({ ...demo(), consent: 'true' }).toString();
+  const g = await c.call(null, 'GET', `/demo-requests?${q}`);
+  assert.equal(g.status, 405); assert.equal(g.headers.get('allow'), 'POST');
+  const form = await c.call(null, 'POST', '/demo-requests', { raw: q, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-For': nextIp() } });
+  assert.equal(form.status, 415);
+  const big = await submit(c, demo({ message: 'x'.repeat(9000) }));
+  assert.equal(big.status, 413); assert.ok(!JSON.stringify(big.body).includes('xxxx'), 'nothing echoed');
+  const broken = await c.call(null, 'POST', '/demo-requests', { raw: '{"name": "Asha', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': nextIp() } });
+  assert.equal(broken.status, 400); assert.ok(!JSON.stringify(broken.body).includes('Asha'));
+  assert.equal((await demoList(c)).length, n, 'nothing stored');
+});
+
+test('AC-32d Master-only: non-Master GET/export/status/DELETE 403, view-as DELETE 403; export escapes =cmd; no browser fields stored', async () => {
+  assert.equal((await submit(c, demo({ name: '=cmd|calc', company: '+Rao', message: '@SUM(A1)' }))).status, 200);
+  const list = await demoList(c);
+  for (const r of list) for (const k of Object.keys(r)) assert.ok(DEMO_FIELDS.has(k), `unexpected stored field ${k}`);
+  const id = list[0].id;
+  for (const [m, url, body] of [['GET', '/demo-requests'], ['GET', '/demo-requests/export'], ['POST', '/demo-requests/status', { id, status: 'CONTACTED' }], ['DELETE', `/demo-requests/${id}`]]) {
+    const r = await c.call('adminA', m, url, { body });
+    assert.equal(r.status, 403, `${m} ${url}`); assert.equal(r.body.errorCode, 'ERR_MASTER_ONLY', `${m} ${url}`);
+  }
+  const vaGet = await c.get('master', '/demo-requests', { headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(vaGet.status, 403, 'view-as a non-Master: no list');
+  const vaDel = await c.call('master', 'DELETE', `/demo-requests/${id}`, { headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(vaDel.status, 403); assert.equal(vaDel.body.errorCode, 'ERR_VIEW_AS_READ_ONLY');
+
+  const csv = await c.get('master', '/demo-requests/export');
+  assert.equal(csv.status, 200);
+  assert.ok(csv.body.includes(`"'=cmd|calc"`) && csv.body.includes(`"'+Rao"`) && csv.body.includes(`"'@SUM(A1)"`), 'formula cells escaped');
+  assert.ok(!/(^|,)"=cmd/m.test(csv.body));
+
+  const st = await c.post('master', '/demo-requests/status', { id, status: 'CONTACTED', note: 'Called back' });
+  assert.equal(st.status, 200); assert.equal(st.body.request.status, 'CONTACTED'); assert.equal(st.body.request.handledBy, MASTER_EMAIL);
+  assert.equal((await c.post('master', '/demo-requests/status', { id, status: 'DONE' })).status, 400);
+  assert.equal((await c.post('master', '/demo-requests/status', { id: 'demo-nope', status: 'CLOSED' })).status, 404);
+  const upd = (await c.audit('DEMO_REQUEST_UPDATED')).find((l) => l.targetResource === `demo-request/${id}`);
+  assert.ok(upd && !JSON.stringify(upd).includes('cmd|calc') && !JSON.stringify(upd).includes('Called back'), 'audit: id + status only');
+  assert.equal((await c.get('master', '/demo-requests?status=CONTACTED')).body.requests.every((r) => r.status === 'CONTACTED'), true);
+});
+
+test('AC-32b forced store failure -> plain 500; AC-32d delete and 12-month cleanup remove the Firestore document', async () => {
+  const now = Date.now();
+  const old = new Date(now); old.setMonth(old.getMonth() - 13);
+  const recent = new Date(now); recent.setMonth(recent.getMonth() - 11);
+  const rec = (id, createdAt) => ({ id, createdAt, name: 'Old Prospect', company: 'Old Co', workEmail: 'old@oldco.in', phone: '+919800000000',
+    city: 'Mumbai', facilityType: 'Mall', preferredContact: 'Phone', consentAt: createdAt, source: 'parkflows.in', status: 'NEW' });
+  const fx = await seededServer((d) => { d.demoRequests = [rec('demo-old13', old.toISOString()), rec('demo-recent11', recent.toISOString())]; },
+    { FAIL_NEXT_DEMO_SAVE: '1' });
+  try {
+    // 12-month cleanup ran once the store loaded.
+    let ids = [];
+    for (let i = 0; i < 20; i++) { ids = (await demoList(fx.c)).map((r) => r.id); if (!ids.includes('demo-old13')) break; await sleep(250); }
+    assert.ok(!ids.includes('demo-old13'), 'older than 12 months: removed'); assert.ok(ids.includes('demo-recent11'), '11 months: kept');
+    await sleep(300);
+    assert.ok(!(fx.readData().demoRequests || []).some((r) => r.id === 'demo-old13'), 'Firestore document deleted');
+    const exp = await fx.c.audit('DEMO_REQUESTS_EXPIRED');
+    assert.equal(exp.length, 1); assert.ok(exp[0].details.startsWith('1 demo request'), exp[0].details);
+    assert.ok(!JSON.stringify(exp[0]).includes('Old Prospect'));
+
+    // AC-32b: plain error body, no stack, nothing echoed, nothing stored.
+    const fail = await submit(fx.c, demo({ name: 'Forced Failure' }));
+    assert.equal(fail.status, 500);
+    assert.deepEqual(Object.keys(fail.body).sort(), ['message', 'success']);
+    assert.ok(!/Forced Failure|Error|at \//.test(fail.body.message), fail.body.message);
+    assert.ok(!(await demoList(fx.c)).some((r) => r.name === 'Forced Failure'));
+    assert.equal((await submit(fx.c, demo({ name: 'After Failure' }))).status, 200, 'next request works');
+    await sleep(300);
+    const stored = (fx.readData().demoRequests || []).find((r) => r.name === 'After Failure');
+    assert.ok(stored, 'targeted sync wrote the new document');
+    for (const k of Object.keys(stored)) assert.ok(DEMO_FIELDS.has(k), `no IP / user-agent / browser field: ${k}`);
+
+    // AC-32d: Master DELETE -> gone from the list, from Firestore, and after a re-load.
+    assert.equal((await fx.c.call('master', 'DELETE', '/demo-requests/demo-nope')).status, 404);
+    const del = await fx.c.call('master', 'DELETE', '/demo-requests/demo-recent11');
+    assert.equal(del.status, 200); assert.deepEqual(del.body, { success: true });
+    assert.ok(!(await demoList(fx.c)).some((r) => r.id === 'demo-recent11'), 'gone from the list');
+    await sleep(300);
+    assert.ok(!(fx.readData().demoRequests || []).some((r) => r.id === 'demo-recent11'), 'gone from Firestore');
+    const a = (await fx.c.audit('DEMO_REQUEST_DELETED')).find((l) => l.targetResource === 'demo-request/demo-recent11');
+    assert.ok(a); assert.equal(a.status, 'SUCCESS');
+    assert.equal(a.details, `Demo request demo-recent11 deleted on request by ${MASTER_EMAIL}.`);
+    for (const v of ['Old Prospect', 'Old Co', 'old@oldco.in', '+919800000000', 'Mumbai']) assert.ok(!JSON.stringify(a).includes(v), `audit has no ${v}`);
+    const r2 = await fx.restart();
+    try {
+      const after = (await demoList(r2.c)).map((r) => r.id);
+      assert.ok(!after.includes('demo-recent11') && !after.includes('demo-old13'), 'still gone after a cold start');
+    } finally { r2.srv.stop(); }
+  } finally { fx.stop(); }
+});

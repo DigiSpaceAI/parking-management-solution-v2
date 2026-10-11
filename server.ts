@@ -72,12 +72,20 @@ import {
   hashPassword,
   setUserPassword,
   clearHistoricalRecords,
-  type ClearableCollection
+  type ClearableCollection,
+  validateDemoRequest,
+  createDemoRequest,
+  getDemoRequests,
+  updateDemoRequestStatus,
+  deleteDemoRequest,
+  expireDemoRequests,
+  DEMO_REQUEST_STATUSES,
 } from './src/server/db';
 import cookieParser from 'cookie-parser';
 import {
   securityHeadersMiddleware,
   rateLimiterMiddleware,
+  resolveSessionUserId,
   loginRateLimiterMiddleware,
   checkLoginRateLimit,
   recordFailedLoginAttempt,
@@ -188,6 +196,16 @@ app.use((req, res, next) => {
   }
   next();
 });
+// 002 B6: the public demo form gets its own 8 KB body cap (registered before
+// the global parser, which then skips the already-parsed body). A body that
+// is too large or not valid JSON gets a plain error: no stack, nothing echoed.
+const DEMO_REQUESTS_PATH = '/api/v1/demo-requests';
+app.use(DEMO_REQUESTS_PATH, express.json({ limit: '8kb' }));
+app.use(DEMO_REQUESTS_PATH, (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!err) return next();
+  if (err.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'The request is too large.' });
+  return res.status(400).json({ success: false, message: 'The request could not be read.' });
+});
 app.use(express.json({ limit: '10mb' }));
 
 // Set explicit Cache-Control headers on all API responses to prevent 304 cached data
@@ -237,6 +255,16 @@ const PUBLIC_API_PATHS = new Set([
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/v1/') && req.path !== '/login') return next();
   if (PUBLIC_API_PATHS.has(req.path)) return next();
+  // 002 B6: POST /demo-requests is public (the parkflows.in form). Its other
+  // methods are the Master console's; without a session they answer 405
+  // (AC-32c: a GET with query-string fields is not a way to submit).
+  if (req.path === DEMO_REQUESTS_PATH) {
+    if (req.method === 'POST') return next();
+    if (!resolveSessionUserId(extractSessionToken(req))) {
+      res.setHeader('Allow', 'POST');
+      return res.status(405).json({ success: false, message: 'Send the form with POST.' });
+    }
+  }
   return requireAuth(req, res, (err?: any) =>
     err ? next(err) : applyViewAs(req, res, () => enforceSiteScope(req, res, next))
   );
@@ -1402,6 +1430,136 @@ app.post('/api/v1/sites/update', requireMasterAdmin, requirePermission('MASTER_C
   }
   res.json({ success: true, site: result.site });
 });
+
+// ---------------------------------------------------------------------------
+// 002 B6: DEMO REQUESTS (US-18, AC-32a-d). Platform-level, not site-scoped:
+// a prospect is not a site yet. This is the documented exception to the
+// siteId rule, made safe by making every read Master Admin only.
+// ---------------------------------------------------------------------------
+const DEMO_GLOBAL_MAX_PER_HOUR = 30;
+const demoStoredAt: number[] = []; // in memory only, like the 001 limiter
+
+app.post(DEMO_REQUESTS_PATH, rateLimiterMiddleware(5, 10 * 60 * 1000), (req, res) => {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ success: false, message: 'Send the form as JSON.' });
+  }
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+  // Honeypot: a filled hidden field gets a silent success and nothing stored.
+  const hp = body.pf_hp_field;
+  if (hp !== undefined && hp !== null && String(hp).trim() !== '') {
+    return res.json({ success: true });
+  }
+  const { values, errors } = validateDemoRequest(body);
+  if (!values) {
+    return res.status(400).json({ success: false, message: 'Check the highlighted fields.', errors });
+  }
+  const now = Date.now();
+  while (demoStoredAt.length > 0 && demoStoredAt[0] <= now - 60 * 60 * 1000) demoStoredAt.shift();
+  if (demoStoredAt.length >= DEMO_GLOBAL_MAX_PER_HOUR) {
+    res.setHeader('Retry-After', String(Math.ceil((demoStoredAt[0] + 60 * 60 * 1000 - now) / 1000)));
+    return res.status(429).json({ success: false, message: 'Too many requests. Try again later.', errorCode: 'ERR_RATE_LIMITED' });
+  }
+  try {
+    createDemoRequest(values);
+  } catch (err) {
+    console.error('[demo-requests] Could not store a demo request:', (err as Error)?.message);
+    return res.status(500).json({ success: false, message: 'We could not send your request. Try again, or email sales@parkflows.in.' });
+  }
+  demoStoredAt.push(now);
+  // Nothing about the request is echoed back (no id, no fields).
+  res.json({ success: true });
+});
+
+app.get(DEMO_REQUESTS_PATH, requireMasterAdminView, (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  res.json({ requests: getDemoRequests(status) });
+});
+
+app.get(`${DEMO_REQUESTS_PATH}/export`, requireMasterAdminView, (req, res) => {
+  const rows = getDemoRequests();
+  let csv = 'Received,Name,Company,Work Email,Phone,City,Facility Type,Slots (approx),Sites (approx),Preferred Contact,Message,Status,Handled By,Handled At,Note\n';
+  for (const r of rows) {
+    csv += [r.createdAt, r.name, r.company, r.workEmail, r.phone, r.city, r.facilityType, r.slotsApprox ?? '', r.sitesApprox ?? '', r.preferredContact, r.message || '', r.status, r.handledBy || '', r.handledAt || '', r.note || '']
+      .map(csvCell).join(',') + '\n';
+  }
+  logSecurityEvent({
+    action: 'DEMO_REQUESTS_EXPORTED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: 'demo-requests/export',
+    status: 'SUCCESS',
+    details: `${rows.length} demo request(s) exported.`,
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="demo-requests.csv"');
+  res.send(csv);
+});
+
+app.post(`${DEMO_REQUESTS_PATH}/status`, requireMasterAdmin, (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const errors: Record<string, string> = {};
+  if (!body.id || typeof body.id !== 'string') errors.id = 'id is required.';
+  if (!(DEMO_REQUEST_STATUSES as unknown[]).includes(body.status)) errors.status = 'Choose New, Contacted or Closed.';
+  if (body.note !== undefined && body.note !== null && (typeof body.note !== 'string' || body.note.length > 1000)) errors.note = 'Keep the note to 1,000 characters or fewer.';
+  if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  const note = typeof body.note === 'string' ? body.note.trim() : undefined;
+  const request = updateDemoRequestStatus(body.id, body.status, note, req.user!.email);
+  if (!request) return res.status(404).json({ success: false, message: 'Demo request not found.' });
+  logSecurityEvent({
+    action: 'DEMO_REQUEST_UPDATED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `demo-request/${request.id}`,
+    status: 'SUCCESS',
+    details: `Demo request ${request.id} set to ${request.status}.`,
+  });
+  res.json({ success: true, request });
+});
+
+app.delete(`${DEMO_REQUESTS_PATH}/:id`, requireMasterAdmin, (req, res) => {
+  const id = String(req.params.id || '');
+  if (!deleteDemoRequest(id)) return res.status(404).json({ success: false, message: 'Demo request not found.' });
+  logSecurityEvent({
+    action: 'DEMO_REQUEST_DELETED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `demo-request/${id}`,
+    status: 'SUCCESS',
+    details: `Demo request ${id} deleted on request by ${req.user!.email}.`,
+  });
+  res.json({ success: true });
+});
+
+// 12-month retention (AC-32d). There is no shared housekeeping scheduler in
+// server.ts, so this follows the security module's timer style: once the
+// store has loaded (never before: hotfix rule), then every 24 hours.
+function runDemoRequestExpiry() {
+  try {
+    const count = expireDemoRequests();
+    if (count > 0) {
+      logSecurityEvent({
+        action: 'DEMO_REQUESTS_EXPIRED',
+        actor: 'SYSTEM',
+        actorRole: 'SYSTEM',
+        targetResource: 'demo-requests',
+        status: 'SUCCESS',
+        details: `${count} demo request(s) older than 12 months deleted.`,
+      });
+    }
+  } catch (err) {
+    console.error('[demo-requests] Expiry run failed:', (err as Error)?.message);
+  }
+}
+const demoExpiryStartTimer = setInterval(() => {
+  if (!isStoreReady()) return;
+  clearInterval(demoExpiryStartTimer);
+  runDemoRequestExpiry();
+  setInterval(runDemoRequestExpiry, 24 * 60 * 60 * 1000).unref();
+}, 1000);
+demoExpiryStartTimer.unref();
 
 app.post('/api/v1/sites/delete', requirePermission('MASTER_CONFIG', 'canDelete'), (req, res) => {
   const { siteId } = req.body;

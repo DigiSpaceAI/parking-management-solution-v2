@@ -397,3 +397,29 @@ export interface SiteSummaryRow {
   pendingRequests: number;
   lastActivityAt: string | null;
 }
+
+// 002 B6 (US-18, AC-32a-d): a "Book a demo" request from parkflows.in.
+// Platform-level (a prospect is not a site yet): every read is Master Admin
+// only. No IP address, user-agent or other browser detail is ever stored.
+export type DemoFacilityType = 'Office park' | 'Tech campus' | 'Mall' | 'Hospital' | 'Residential' | 'Other';
+export type DemoRequestStatus = 'NEW' | 'CONTACTED' | 'CLOSED';
+export interface DemoRequest {
+  id: string; // random, non-identifying
+  createdAt: string;
+  name: string;
+  company: string;
+  workEmail: string;
+  phone: string; // +91XXXXXXXXXX
+  city: string;
+  facilityType: DemoFacilityType;
+  slotsApprox?: number;
+  sitesApprox?: number;
+  preferredContact: 'Email' | 'Phone';
+  message?: string; // <= 1000 chars, plain text, never rendered as HTML
+  consentAt: string;
+  source: 'parkflows.in';
+  status: DemoRequestStatus;
+  handledBy?: string;
+  handledAt?: string;
+  note?: string;
+}

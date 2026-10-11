@@ -100,4 +100,6 @@ if (mode === 'store') {
     }).listen(Number(process.env.FAKE_REPORT_PORT), '127.0.0.1');
   }
   await imp('server.ts');
+  // 002 B6 (AC-32b): make the next demo-request store write fail.
+  if (process.env.FAIL_NEXT_DEMO_SAVE === '1') (await imp('src/server/db.ts')).__failNextDemoRequestSaveForTests();
 }

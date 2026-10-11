@@ -9,7 +9,7 @@ import { clearSessionToken } from './sessionTokenFallback';
 import { AppShell } from './screens/AppShell';
 import { useToast, ErrorState, EmptyState, PageHeader, type NavGroup } from './design-system/components';
 import { useAutoRefresh } from './utils/useAutoRefresh';
-import { LiveFloorPlan } from './components/LiveFloorPlan';
+import { LiveParking } from './screens/LiveParking';
 import { Overview } from './screens/Overview';
 import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
@@ -291,7 +291,7 @@ export default function App() {
     const skip = <T,>(): Promise<ApiResult<T>> => Promise.resolve({ ok: true, status: 200, body: null });
     const page = routeRef.current;
     const [slotsRes, logsRes, alertsRes, regsRes] = await Promise.allSettled([
-      page === 'live-parking' || page === 'inventory' ? getJson<{ slots?: ParkingSlot[] }>('/api/v1/slots') : skip<{ slots?: ParkingSlot[] }>(),
+      page === 'inventory' ? getJson<{ slots?: ParkingSlot[] }>('/api/v1/slots') : skip<{ slots?: ParkingSlot[] }>(),
       page === 'logs' ? getJson<{ logs?: ParkingLog[] }>('/api/v1/logs') : skip<{ logs?: ParkingLog[] }>(),
       getJson<{ totalAlerts?: number }>('/api/v1/alerts/non-parked'),
       getJson<{ pendingCount?: number }>('/api/v1/registrations'),
@@ -335,7 +335,7 @@ export default function App() {
   const routeRef = useRef<string | null>(route);
   routeRef.current = route;
   // The page decides which lists load, so a page change loads afresh.
-  const listsKey = route === 'live-parking' || route === 'inventory' ? 'slots' : route === 'logs' ? 'logs' : 'counts';
+  const listsKey = route === 'inventory' ? 'slots' : route === 'logs' ? 'logs' : 'counts';
   const lists = useAutoRefresh(loadSiteLists, [currentUser?.id, currentSiteId, viewAsUser?.id, listsKey], { enabled: listsActive });
 
   const refreshAll = () => {
@@ -637,12 +637,7 @@ export default function App() {
           ? wrap(<EmptyState title="Choose one site to see its overview" text="The overview covers one site at a time. Pick a site from the switcher in the top bar." />)
           : <Overview siteId={siteId} canOpen={(id) => canOpenRoute(viewer, currentRole, routeById(id))} />;
       case 'live-parking':
-        return wrap(
-          listsPending ? <PageSkeleton /> : (
-            <LiveFloorPlan slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onVehicleEntry={handleVehicleEntry} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} />
-          ),
-          { updatedAt: lists.updatedAt }
-        );
+        return <LiveParking siteId={siteId} onChanged={() => void lists.refresh()} />;
       case 'logs':
         return wrap(
           listsPending ? <PageSkeleton /> : <ParkingLogs logs={logs} onVehicleEntry={handleVehicleEntry} onVehicleExit={handleVehicleExit} onRefresh={refreshAll} />,

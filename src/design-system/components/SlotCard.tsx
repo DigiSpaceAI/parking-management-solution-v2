@@ -5,7 +5,7 @@ import { enumLabel, formatNumber, formatPlate, formatSince } from '../../utils/f
 import { cx } from './cx';
 import { Icon } from './Icon';
 import { Button } from './Button';
-import { StatusChip } from './StatusChip';
+import { StatusChip, SiteTag } from './StatusChip';
 
 export type SlotStatus = 'VACANT' | 'OCCUPIED' | 'RESERVED' | 'MAINTENANCE';
 
@@ -14,6 +14,12 @@ const BAND_ICON: Record<SlotStatus, LucideIcon> = { VACANT: CircleCheck, OCCUPIE
 /** "2.5 m" or "—" (missing values are never invented). */
 export function formatMetres(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? `${formatNumber(value, 1)} m` : '—';
+}
+
+/** "1.8 × 5.0 m" for the list's Size column at 768–1279px (NFR-5); "—" for a missing side. */
+export function sizeText(h: number | null | undefined, l: number | null | undefined): string {
+  const f = (v: number | null | undefined) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? formatNumber(v, 1) : '—');
+  return `${f(h)} × ${f(l)} m`;
 }
 
 export interface SlotCardProps {
@@ -39,12 +45,14 @@ export interface SlotCardProps {
   /** Shows the outlined "Mark exit" (write-guarded) on an occupied slot. */
   onMarkExit?: () => void;
   selected?: boolean;
+  /** Site code, shown in All sites mode so every slot shows its site (AC-24). */
+  siteCode?: string;
   className?: string;
 }
 
 /** Live parking slot card (option B · status band, approved 2026-10-03). */
 export const SlotCard: React.FC<SlotCardProps> = ({
-  code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, level, compact, onOpen, onMarkExit, selected, className,
+  code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, level, compact, onOpen, onMarkExit, selected, siteCode, className,
 }) => {
   const occupied = status === 'OCCUPIED';
   const statusWord = enumLabel(status);
@@ -58,6 +66,7 @@ export const SlotCard: React.FC<SlotCardProps> = ({
       <span className="pf-slot-body">
         <span className="pf-slot-head">
           <span className="pf-slot-code">{code}</span>
+          {siteCode && <SiteTag code={siteCode} />}
           {slotType && (
             <span className="pf-chip pf-chip--neutral">
               {ev && <Zap aria-hidden="true" strokeWidth={2} />}
@@ -112,10 +121,10 @@ export const SlotCard: React.FC<SlotCardProps> = ({
   );
 };
 
-export interface SlotRowProps extends Omit<SlotCardProps, 'compact' | 'decode' | 'level'> {}
+export interface SlotRowProps extends Omit<SlotCardProps, 'compact' | 'level'> {}
 
-/** Live parking list view (D): Status · Slot · Type · Height · Length · Vehicle · Mark exit. Use inside a pf-table. */
-export const SlotRow: React.FC<SlotRowProps> = ({ code, status, slotType, ev, plate, inSince, heightM, lengthM, onOpen, onMarkExit }) => {
+/** Live parking list view (D): Status · Slot · Type · Height · Length · Vehicle · Mark exit (Height and Length merge into Size at 768–1279px). Use inside a pf-table. */
+export const SlotRow: React.FC<SlotRowProps> = ({ code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, onOpen, onMarkExit, siteCode }) => {
   const occupied = status === 'OCCUPIED';
   return (
     <tr
@@ -137,14 +146,20 @@ export const SlotRow: React.FC<SlotRowProps> = ({ code, status, slotType, ev, pl
         <StatusChip status={status} />
       </td>
       <td>
-        <span className="pf-slot-code">{code}</span>
+        <span className="pf-stack pf-stack--tight">
+          <span className="pf-slot-code">
+            {code} {siteCode && <SiteTag code={siteCode} />}
+          </span>
+          {decode && <span className="pf-slot-since">{decode}</span>}
+        </span>
       </td>
       <td className="is-secondary">
         {slotType ? enumLabel(slotType) : '—'}
         {ev && ' · EV'}
       </td>
-      <td className="is-num">{formatMetres(heightM)}</td>
-      <td className="is-num">{formatMetres(lengthM)}</td>
+      <td className="is-num pf-col-wide">{formatMetres(heightM)}</td>
+      <td className="is-num pf-col-wide">{formatMetres(lengthM)}</td>
+      <td className="is-num pf-col-mid">{sizeText(heightM, lengthM)}</td>
       <td>
         {occupied ? (
           <span className="pf-stack">

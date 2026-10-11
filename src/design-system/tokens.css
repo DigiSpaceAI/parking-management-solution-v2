@@ -84,10 +84,30 @@
   --text-caption-size: 12px;
   --text-caption-line: 16px;
   --text-caption-tracking: 0.02em;
+  --type-eyebrow: 500 12px/16px var(--font-text);
+  --text-eyebrow-size: 12px;
+  --text-eyebrow-line: 16px;
+  --text-eyebrow-tracking: 0.08em;
+  --type-mono-xs: 500 12px/16px var(--font-mono);
+  --text-mono-xs-size: 12px;
+  --text-mono-xs-line: 16px;
+  --text-mono-xs-tracking: normal;
+  --type-mono-xs-strong: 600 12px/16px var(--font-mono);
+  --text-mono-xs-strong-size: 12px;
+  --text-mono-xs-strong-line: 16px;
+  --text-mono-xs-strong-tracking: normal;
   --type-mono: 500 14px/20px var(--font-mono);
   --text-mono-size: 14px;
   --text-mono-line: 20px;
   --text-mono-tracking: normal;
+  --type-mono-md: 600 18px/24px var(--font-mono);
+  --text-mono-md-size: 18px;
+  --text-mono-md-line: 24px;
+  --text-mono-md-tracking: normal;
+  --type-mono-plate: 600 20px/26px var(--font-mono);
+  --text-mono-plate-size: 20px;
+  --text-mono-plate-line: 26px;
+  --text-mono-plate-tracking: 0.04em;
   --type-mono-lg: 600 32px/38px var(--font-mono);
   --text-mono-lg-size: 32px;
   --text-mono-lg-line: 38px;
@@ -120,6 +140,7 @@
   /* Duration */
   --duration-fast: 120ms;
   --duration-base: 200ms;
+  --duration-spin: 800ms;
 
   /* Easing */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
@@ -132,6 +153,16 @@
   --header-h: 56px;
   --sidebar-w: 248px;
   --panel-w: 440px;
+  --icon-xs: 14px;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+  --checkbox: 20px;
+  --tile-min-w: 56px;
+  --slot-card-min: 212px;
+  --modal-w: 480px;
+  --measure: 46rem;
+  --underline-offset: 3px;
 
   /* Breakpoints (reference only; media queries use the px values) */
   --bp-sm: 360px;
@@ -151,5 +182,6 @@
   :root {
     --duration-fast: 0ms;
     --duration-base: 0ms;
+    --duration-spin: 0ms;
   }
 }

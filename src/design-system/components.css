@@ -11,12 +11,12 @@
      states come from :hover, :focus-visible, [disabled], [aria-invalid], [aria-selected], [aria-current]. */
 
   .pf, .pf * { box-sizing: border-box; }
-  .pf { font-family: var(--font-text); font-size: var(--text-body-size); line-height: 20px; color: var(--ink); -webkit-font-smoothing: antialiased; }
+  .pf { font-family: var(--font-text); font-size: var(--text-body-size); line-height: var(--text-body-line); color: var(--ink); -webkit-font-smoothing: antialiased; }
   .pf-mono { font-family: var(--font-mono); font-weight: 500; font-variant-numeric: tabular-nums; }
   .pf-num { font-variant-numeric: tabular-nums; }
   .pf-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
   .pf-stack { display: flex; flex-direction: column; gap: var(--space-3); }
-  .pf-label-sm { font-size: var(--text-caption-size); line-height: 16px; font-weight: 500; color: var(--text-muted); }
+  .pf-label-sm { font: var(--type-caption); color: var(--text-muted); }
   @media (prefers-reduced-motion: reduce) { .pf * { transition: none !important; animation: none !important; } }
 
   /* Focus */
@@ -28,7 +28,7 @@
   .pf-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); height: var(--control-md); padding: 0 var(--space-4);
     border-radius: var(--radius-md); border: 1px solid transparent; font: var(--type-body-strong); cursor: pointer; white-space: nowrap;
     transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard); text-decoration: none; }
-  .pf-btn svg { width: 16px; height: 16px; flex: none; }
+  .pf-btn svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; }
   .pf-btn--primary { background: var(--navy-600); color: var(--on-navy); }
   .pf-btn--primary:hover { background: var(--navy-700); }
   .pf-btn--secondary { background: var(--surface-0); color: var(--ink); border-color: var(--line-300); }
@@ -43,12 +43,12 @@
   .pf-btn[disabled] { background: var(--surface-50); color: var(--text-disabled); border-color: var(--line-100); cursor: not-allowed; }
   .pf-btn--ghost[disabled] { background: transparent; border-color: transparent; }
   .pf-btn[aria-busy="true"] { cursor: progress; }
-  .pf-spinner { width: 16px; height: 16px; border-radius: var(--radius-full); border: 2px solid currentColor; border-right-color: transparent; animation: pf-spin 800ms linear infinite; }
+  .pf-spinner { width: var(--icon-sm); height: var(--icon-sm); border-radius: var(--radius-full); border: 2px solid currentColor; border-right-color: transparent; animation: pf-spin var(--duration-spin) linear infinite; }
   @keyframes pf-spin { to { transform: rotate(360deg); } }
   .pf-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: var(--control-md); height: var(--control-md); border-radius: var(--radius-md);
     border: 1px solid transparent; background: transparent; color: var(--text-secondary); cursor: pointer; }
   .pf-icon-btn:hover { background: var(--surface-50); color: var(--ink); }
-  .pf-icon-btn svg { width: 20px; height: 20px; }
+  .pf-icon-btn svg { width: var(--icon-md); height: var(--icon-md); }
 
   /* Field: label + input/select + help or error */
   .pf-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -56,7 +56,7 @@
   .pf-field-label .pf-req { color: var(--danger-600); margin-left: 2px; }
   .pf-field-help { font: var(--type-small); color: var(--text-muted); }
   .pf-field-error { display: flex; gap: var(--space-1); align-items: flex-start; font: 500 var(--text-small-size)/var(--text-small-line) var(--font-text); color: var(--danger-600); }
-  .pf-field-error svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+  .pf-field-error svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; margin-top: 1px; }
   .pf-input, .pf-select { width: 100%; height: var(--control-md); padding: 0 var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--line-300);
     background: var(--surface-0); color: var(--ink); font: var(--type-body);
     transition: border-color var(--duration-fast) var(--ease-standard); }
@@ -65,16 +65,17 @@
   .pf-input:focus-visible, .pf-select:focus-visible { border-color: var(--teal-600); }
   .pf-input[aria-invalid="true"], .pf-select[aria-invalid="true"] { border-color: var(--danger-600); border-width: 2px; padding: 0 11px; }
   .pf-input[disabled], .pf-select[disabled] { background: var(--surface-50); color: var(--text-disabled); border-color: var(--line-100); cursor: not-allowed; }
-  .pf-input--mono { font-family: var(--font-mono); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
-  .pf-select { appearance: none; padding-right: 36px; cursor: pointer; }
+  .pf-input--mono { font-family: var(--font-mono); font-weight: 500; letter-spacing: var(--text-mono-plate-tracking); text-transform: uppercase; }
+  .pf-select { appearance: none; padding-right: calc(var(--icon-sm) + var(--space-3) + var(--space-2)); cursor: pointer; }
 
   /* Checkbox and radio */
   .pf-check { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--touch-min); cursor: pointer; font: var(--type-body); color: var(--ink); position: relative; }
   .pf-check input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-  .pf-check-box { width: 20px; height: 20px; flex: none; border: 1.5px solid var(--line-300); border-radius: var(--radius-sm); background: var(--surface-0);
+  /* Border widths are fixed, not tokens (02 decision B3): 1px default, 1.5px checkbox/radio, 2px invalid/focus, 6px checked radio. */
+  .pf-check-box { width: var(--checkbox); height: var(--checkbox); flex: none; border: 1.5px solid var(--line-300); border-radius: var(--radius-sm); background: var(--surface-0);
     display: inline-flex; align-items: center; justify-content: center; color: var(--on-navy); }
   .pf-check--radio .pf-check-box { border-radius: var(--radius-full); }
-  .pf-check-box svg { width: 14px; height: 14px; opacity: 0; }
+  .pf-check-box svg { width: var(--icon-xs); height: var(--icon-xs); opacity: 0; }
   .pf-check input:checked + .pf-check-box { background: var(--navy-600); border-color: var(--navy-600); }
   .pf-check input:checked + .pf-check-box svg { opacity: 1; }
   .pf-check--radio input:checked + .pf-check-box { background: var(--surface-0); border: 6px solid var(--navy-600); }
@@ -113,7 +114,7 @@
   .pf-page:hover { background: var(--surface-50); }
   .pf-page[aria-current="page"] { background: var(--navy-600); color: var(--on-navy); }
   .pf-page[disabled] { color: var(--text-disabled); cursor: not-allowed; background: transparent; }
-  .pf-page svg { width: 16px; height: 16px; }
+  .pf-page svg { width: var(--icon-sm); height: var(--icon-sm); }
 
   /* Card and KPI */
   .pf-card { background: var(--surface-0); border: 1px solid var(--line-100); border-radius: var(--radius-lg); box-shadow: var(--shadow-1); padding: var(--space-6); }
@@ -128,7 +129,7 @@
   .pf-table-wrap { background: var(--surface-0); border: 1px solid var(--line-100); border-radius: var(--radius-lg); overflow-x: auto; }
   .pf-table { width: 100%; border-collapse: collapse; font: var(--type-body); }
   .pf-table th { position: sticky; top: 0; background: var(--surface-50); text-align: left; padding: 10px var(--space-4); font: 600 var(--text-caption-size)/var(--text-caption-line) var(--font-text);
-    letter-spacing: 0.02em; color: var(--text-secondary); white-space: nowrap; border-bottom: 1px solid var(--line-100); }
+    letter-spacing: var(--text-caption-tracking); color: var(--text-secondary); white-space: nowrap; border-bottom: 1px solid var(--line-100); }
   .pf-table th[aria-sort] { color: var(--ink); }
   .pf-table th svg { width: 12px; height: 12px; vertical-align: -1px; margin-left: 4px; }
   .pf-table td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line-100); color: var(--ink); vertical-align: middle; height: var(--touch-min); }
@@ -147,7 +148,7 @@
   /* Empty and error states */
   .pf-state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--space-2); padding: var(--space-12) var(--space-6); }
   .pf-state-icon { width: 48px; height: 48px; border-radius: var(--radius-full); display: inline-flex; align-items: center; justify-content: center; background: var(--navy-50); color: var(--navy-600); margin-bottom: var(--space-2); }
-  .pf-state-icon svg { width: 24px; height: 24px; }
+  .pf-state-icon svg { width: var(--icon-lg); height: var(--icon-lg); }
   .pf-state--error .pf-state-icon { background: var(--danger-50); color: var(--danger-600); }
   .pf-state-title { font: var(--type-title-3); color: var(--ink); margin: 0; }
   .pf-state-text { font: var(--type-body); color: var(--text-secondary); margin: 0; max-width: 44ch; }
@@ -155,7 +156,7 @@
 
   /* Banner (inline message across a page or card) */
   .pf-banner { display: flex; gap: var(--space-3); align-items: flex-start; padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); font: var(--type-body); color: var(--ink); }
-  .pf-banner svg { width: 20px; height: 20px; flex: none; }
+  .pf-banner svg { width: var(--icon-md); height: var(--icon-md); flex: none; }
   .pf-banner strong { font-weight: 600; }
   .pf-banner--info { background: var(--navy-50); } .pf-banner--info svg { color: var(--navy-600); }
   .pf-banner--warning { background: var(--warning-50); } .pf-banner--warning svg { color: var(--warning-700); }
@@ -169,7 +170,7 @@
   /* Toast */
   .pf-toast { display: flex; align-items: flex-start; gap: var(--space-3); width: 360px; max-width: 100%; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
     background: var(--ink); color: var(--on-navy); box-shadow: var(--shadow-2); font: var(--type-body); }
-  .pf-toast svg { width: 20px; height: 20px; flex: none; }
+  .pf-toast svg { width: var(--icon-md); height: var(--icon-md); flex: none; }
   .pf-toast--success svg { color: var(--success-300); }
   .pf-toast--error { background: var(--danger-600); }
   .pf-toast-action { margin-left: auto; color: var(--teal-300); font-weight: 600; background: none; border: 0; cursor: pointer; font: inherit; }
@@ -177,7 +178,7 @@
 
   /* Modal and side panel */
   .pf-overlay { background: var(--overlay); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
-  .pf-modal { width: 480px; max-width: 100%; background: var(--surface-0); border-radius: var(--radius-xl); box-shadow: var(--shadow-3); display: flex; flex-direction: column; }
+  .pf-modal { width: var(--modal-w); max-width: 100%; background: var(--surface-0); border-radius: var(--radius-xl); box-shadow: var(--shadow-3); display: flex; flex-direction: column; }
   .pf-modal-head { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-6) var(--space-6) 0; }
   .pf-modal-head h2 { font: var(--type-title-2); margin: 0; flex: 1; }
   .pf-modal-body { padding: var(--space-4) var(--space-6); display: flex; flex-direction: column; gap: var(--space-4); color: var(--text-secondary); }
@@ -195,10 +196,10 @@
   .pf-brand { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--ink); text-decoration: none; font: 600 17px/1 var(--font-display); }
   .pf-brand b { font-weight: 700; } .pf-brand span { font-weight: 600; }
   .pf-nav { width: var(--sidebar-w); background: var(--surface-0); border-right: 1px solid var(--line-100); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-1); }
-  .pf-nav-group { font: 600 var(--text-caption-size)/var(--text-caption-line) var(--font-text); letter-spacing: 0.02em; color: var(--text-muted); padding: var(--space-4) var(--space-3) var(--space-2); }
+  .pf-nav-group { font: 600 var(--text-caption-size)/var(--text-caption-line) var(--font-text); letter-spacing: var(--text-caption-tracking); color: var(--text-muted); padding: var(--space-4) var(--space-3) var(--space-2); }
   .pf-nav-item { display: flex; align-items: center; gap: var(--space-3); min-height: var(--touch-min); padding: 0 var(--space-3); border-radius: var(--radius-md);
     color: var(--text-secondary); font: 500 var(--text-body-size)/var(--text-body-line) var(--font-text); text-decoration: none; }
-  .pf-nav-item svg { width: 20px; height: 20px; flex: none; }
+  .pf-nav-item svg { width: var(--icon-md); height: var(--icon-md); flex: none; }
   .pf-nav-item:hover { background: var(--surface-50); color: var(--ink); }
   .pf-nav-item[aria-current="page"] { background: var(--navy-50); color: var(--navy-600); font-weight: 600; }
   .pf-nav-item .pf-count { margin-left: auto; }
@@ -212,7 +213,7 @@
   /* Site switcher */
   .pf-switcher { display: inline-flex; align-items: center; gap: var(--space-2); height: var(--control-md); max-width: 280px; padding: 0 var(--space-3); border-radius: var(--radius-md);
     border: 1px solid var(--line-300); background: var(--surface-0); color: var(--ink); font: var(--type-body-strong); cursor: pointer; }
-  .pf-switcher svg { width: 16px; height: 16px; flex: none; color: var(--text-secondary); }
+  .pf-switcher svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; color: var(--text-secondary); }
   .pf-switcher-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pf-switcher[aria-disabled="true"] { cursor: default; border-color: var(--line-100); }
   .pf-menu { width: 300px; max-width: 100%; background: var(--surface-0); border: 1px solid var(--line-100); border-radius: var(--radius-lg); box-shadow: var(--shadow-2); padding: var(--space-2); }
@@ -221,15 +222,15 @@
     border: 0; background: transparent; text-align: left; cursor: pointer; font: var(--type-body); color: var(--ink); }
   .pf-menu-item:hover { background: var(--surface-50); }
   .pf-menu-item[aria-selected="true"] { background: var(--navy-50); }
-  .pf-menu-item small { display: block; color: var(--text-muted); font-size: var(--text-small-size); line-height: 18px; }
-  .pf-menu-item .pf-check-icon { margin-left: auto; width: 16px; height: 16px; color: var(--navy-600); }
+  .pf-menu-item small { display: block; color: var(--text-muted); font: var(--type-small); }
+  .pf-menu-item .pf-check-icon { margin-left: auto; width: var(--icon-sm); height: var(--icon-sm); color: var(--navy-600); }
   .pf-menu-sep { height: 1px; background: var(--line-100); margin: var(--space-2) 0; }
 
   /* Floor-plan slot tile */
-  .pf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: var(--space-1); }
-  .pf-tile { position: relative; height: 48px; border-radius: var(--radius-sm); border: 1px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font: 600 12px/14px var(--font-mono); cursor: pointer; padding: 2px; }
-  .pf-tile small { font: 500 12px/14px var(--font-mono); }
+  .pf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--tile-min-w), 1fr)); gap: var(--space-1); }
+  .pf-tile { position: relative; height: var(--control-lg); border-radius: var(--radius-sm); border: 1px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font: var(--type-mono-xs-strong); cursor: pointer; padding: 2px; }
+  .pf-tile small { font: var(--type-mono-xs); }
   .pf-tile--vacant { background: var(--success-50); color: var(--success-700); border-color: var(--success-700); }
   .pf-tile--occupied { background: var(--danger-600); color: var(--on-navy); }
   .pf-tile--reserved { background: var(--warning-50); color: var(--warning-700); border: 2px dashed var(--warning-700); }
@@ -239,7 +240,7 @@
 
   /* Gate result (Attendant app, release R2) */
   .pf-gate { border-radius: var(--radius-xl); padding: var(--space-6); color: var(--on-navy); display: flex; flex-direction: column; gap: var(--space-2); }
-  .pf-gate-head { display: flex; align-items: center; gap: var(--space-3); font: 700 22px/28px var(--font-display); }
+  .pf-gate-head { display: flex; align-items: center; gap: var(--space-3); font: var(--type-title-1); letter-spacing: var(--text-title-1-tracking); }
   .pf-gate-head svg { width: 32px; height: 32px; flex: none; }
   .pf-gate--allowed { background: var(--success-600); }
   .pf-gate--refused { background: var(--danger-600); }
@@ -252,7 +253,7 @@
   .pf-slot-hit { all: unset; cursor: pointer; display: flex; flex-direction: column; }
   .pf-slot-hit:focus-visible { box-shadow: var(--focus-ring); border-radius: var(--radius-lg); }
   .pf-slot-band { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; font: 600 var(--text-small-size)/var(--text-small-line) var(--font-text); }
-  .pf-slot-band svg { width: 16px; height: 16px; flex: none; }
+  .pf-slot-band svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; }
   .pf-slot-band .pf-slot-band-end { margin-left: auto; font-weight: 500; }
   .pf-slot-band--vacant { background: var(--success-50); color: var(--success-700); }
   .pf-slot-band--occupied { background: var(--danger-600); color: var(--on-navy); }
@@ -260,24 +261,25 @@
   .pf-slot-band--maintenance { background: var(--surface-50); color: var(--neutral-600); }
   .pf-slot-body { padding: 12px 12px 0; display: flex; flex-direction: column; gap: 10px; }
   .pf-slot-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; }
-  .pf-slot-code { font: 600 18px/24px var(--font-mono); color: var(--ink); }
+  .pf-slot-code { font: var(--type-mono-md); color: var(--ink); }
   .pf-slot-decode { font: var(--type-small); color: var(--text-secondary); margin-top: -6px; }
-  .pf-slot-plate { font: 600 20px/26px var(--font-mono); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pf-slot-plate { font: var(--type-mono-plate); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pf-slot-since { font: var(--type-small); color: var(--text-muted); }
   .pf-slot-dims { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .pf-slot-dim { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: var(--radius-md); background: var(--surface-25); }
-  .pf-slot-dim svg { width: 18px; height: 18px; flex: none; color: var(--text-secondary); }
+  .pf-slot-dim svg { width: var(--icon-md); height: var(--icon-md); flex: none; color: var(--text-secondary); }
   .pf-slot-dim span { display: flex; flex-direction: column; }
   .pf-slot-dim small { font: 400 var(--text-caption-size)/var(--text-caption-line) var(--font-text); color: var(--text-muted); }
   .pf-slot-dim b { font: 600 var(--text-body-size)/var(--text-body-line) var(--font-mono); color: var(--ink); }
   .pf-slot-foot { padding: 10px 12px 12px; min-height: 12px; }
   .pf-btn--exit { background: var(--surface-0); color: var(--danger-600); border-color: var(--danger-600); }
   .pf-btn--exit:hover { background: var(--danger-50); }
-  .pf-slot--compact .pf-slot-band { height: 30px; padding: 0 10px; }
+  .pf-slot--compact .pf-slot-band { height: var(--control-sm); padding: 0 10px; }
   .pf-slot--compact .pf-slot-body { padding: 10px 10px 0; gap: 8px; }
-  .pf-slot--compact .pf-slot-code, .pf-slot--compact .pf-slot-plate { font-size: var(--text-title-3-size); line-height: 22px; }
+  .pf-slot--compact .pf-slot-code { font: var(--type-mono); }
+  .pf-slot--compact .pf-slot-plate { font: var(--type-mono-md); }
   .pf-slot--compact .pf-slot-dim { flex-direction: column; align-items: flex-start; gap: 0; padding: 6px 8px; }
-  .pf-slot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 12px; }
+  .pf-slot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--slot-card-min), 1fr)); gap: var(--space-3); }
 
   /* ======================================================================
      Additions for the app (002 T3). Written only with token variables.
@@ -285,10 +287,10 @@
 
   /* Utilities used by the components */
   .pf-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  .pf-icon { width: var(--text-body-line); height: var(--text-body-line); flex: none; }
-  .pf-icon--sm { width: var(--space-4); height: var(--space-4); }
-  .pf-icon--lg { width: var(--space-6); height: var(--space-6); }
-  .pf-link { color: var(--navy-600); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+  .pf-icon { width: var(--icon-md); height: var(--icon-md); flex: none; }
+  .pf-icon--sm { width: var(--icon-sm); height: var(--icon-sm); }
+  .pf-icon--lg { width: var(--icon-lg); height: var(--icon-lg); }
+  .pf-link { color: var(--navy-600); font-weight: 600; text-decoration: underline; text-underline-offset: var(--underline-offset); }
   .pf-link:hover { color: var(--navy-700); }
   .pf-link:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
   /* .pf-link is a standalone link by default (UX 02, 2026-10-08): a 24px target with a mouse, 44px on touch
@@ -308,7 +310,7 @@
 
   /* Select: the chevron is a mask coloured by a token (no colour literal) */
   .pf-select-wrap { position: relative; display: block; width: 100%; }
-  .pf-select-wrap::after { content: ""; position: absolute; top: 50%; right: var(--space-3); width: var(--space-4); height: var(--space-4); margin-top: calc(var(--space-4) / -2);
+  .pf-select-wrap::after { content: ""; position: absolute; top: 50%; right: var(--space-3); width: var(--icon-sm); height: var(--icon-sm); margin-top: calc(var(--icon-sm) / -2);
     pointer-events: none; background-color: var(--text-secondary);
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat; }
   .pf-select-wrap:has(.pf-select[disabled])::after { background-color: var(--text-disabled); }
@@ -351,7 +353,7 @@
   /* Dialog-based modal and side panel (native <dialog>, showModal()) */
   .pf-dialog { padding: 0; border: 0; background: transparent; color: var(--ink); max-width: 100%; max-height: 100%; overflow: visible; }
   .pf-dialog::backdrop { background: var(--overlay); }
-  .pf-dialog--modal { margin: auto; width: 480px; }
+  .pf-dialog--modal { margin: auto; width: var(--modal-w); }
   .pf-dialog--modal[open] { animation: pf-fade-in var(--duration-base) var(--ease-standard); }
   .pf-dialog--panel { margin: 0 0 0 auto; height: 100%; max-height: 100dvh; width: var(--panel-w); }
   .pf-dialog--panel[open] { animation: pf-slide-in var(--duration-base) var(--ease-standard); }
@@ -385,7 +387,7 @@
   .pf-banner-title { font: var(--type-body-strong); }
 
   /* Viewing-as bar: the exit control */
-  .pf-viewing-as-exit { background: none; border: 0; padding: 0 var(--space-1); color: var(--teal-300); font: var(--type-body-strong); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; min-height: var(--touch-min); }
+  .pf-viewing-as-exit { background: none; border: 0; padding: 0 var(--space-1); color: var(--teal-300); font: var(--type-body-strong); text-decoration: underline; text-underline-offset: var(--underline-offset); cursor: pointer; min-height: var(--touch-min); }
   .pf-viewing-as-exit:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px var(--teal-300); border-radius: var(--radius-sm); }
 
   /* Skeleton: width from the allowed --pf-w custom property */
@@ -418,15 +420,14 @@
   /* Occupancy bar (Sites table, Overview levels): fill width from --pf-occ (0–100%) */
   .pf-occ { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
   .pf-occ-track { position: relative; flex: 1 1 auto; min-width: var(--space-12); height: var(--space-2); border-radius: var(--radius-full); background: var(--surface-50); overflow: hidden; }
-  .pf-occ-fill { position: absolute; inset: 0 auto 0 0; width: var(--pf-occ, 0%); border-radius: var(--radius-full); background: var(--navy-600);
-    transition: width var(--duration-base) var(--ease-standard); }
+  .pf-occ-fill { position: absolute; inset: 0 auto 0 0; width: var(--pf-occ, 0%); border-radius: var(--radius-full); background: var(--navy-600); }
   .pf-occ--high .pf-occ-fill { background: var(--danger-600); }
   .pf-occ-label { font: var(--type-small); color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   /* Bar chart (plain SVG): bars, value labels, axis labels; the peak is darker */
   .pf-bars { display: block; width: 100%; height: auto; overflow: visible; }
-  .pf-bars-bar { fill: var(--navy-100); }
-  .pf-bars-bar--peak { fill: var(--navy-600); }
+  .pf-bars-bar { fill: var(--navy-600); }
+  .pf-bars-bar--peak { fill: var(--ink); }
   .pf-bars-value { font: var(--type-caption); fill: var(--text-secondary); text-anchor: middle; font-variant-numeric: tabular-nums; }
   .pf-bars-value--peak { fill: var(--ink); font-weight: 600; }
   .pf-bars-axis { font: var(--type-caption); fill: var(--text-muted); text-anchor: middle; }
@@ -437,7 +438,7 @@
   .pf-slot-row .pf-slot-code { font: var(--type-mono); font-weight: 600; }
 
   /* Data text: plates, slot codes and IDs only (AC-22) */
-  .pf-plate { font: var(--type-mono); letter-spacing: 0.04em; white-space: nowrap; }
+  .pf-plate { font: var(--type-mono); letter-spacing: var(--text-mono-plate-tracking); white-space: nowrap; }
   .pf-plate--lg { font: var(--type-mono-lg); }
   .pf-id { font: var(--type-mono); color: var(--text-secondary); white-space: nowrap; }
 
@@ -462,7 +463,7 @@
 
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
-    .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn { height: auto; min-height: var(--touch-min); }
+    .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher { height: auto; min-height: var(--touch-min); }
     .pf-icon-btn { width: var(--touch-min); height: var(--touch-min); }
     .pf-pager-ellipsis { min-width: var(--touch-min); }
     .pf-page { min-width: var(--touch-min); height: var(--touch-min); }

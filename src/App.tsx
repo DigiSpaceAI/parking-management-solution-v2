@@ -10,7 +10,7 @@ import { AppShell } from './screens/AppShell';
 import { useToast, ErrorState, EmptyState, PageHeader, type NavGroup } from './design-system/components';
 import { useAutoRefresh } from './utils/useAutoRefresh';
 import { LiveFloorPlan } from './components/LiveFloorPlan';
-import { SiteAdminOverview } from './components/SiteAdminOverview';
+import { Overview } from './screens/Overview';
 import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
@@ -635,7 +635,7 @@ export default function App() {
       case 'overview':
         return siteId === ALL_SITES
           ? wrap(<EmptyState title="Choose one site to see its overview" text="The overview covers one site at a time. Pick a site from the switcher in the top bar." />)
-          : wrap(<SiteAdminOverview siteId={siteId} onNavigate={(screen) => goRoute(({ alerts: 'alerts', slots: 'live-parking', staff: 'inventory', employees: 'employees' } as Record<string, string>)[screen] ?? null)} />);
+          : <Overview siteId={siteId} canOpen={(id) => canOpenRoute(viewer, currentRole, routeById(id))} />;
       case 'live-parking':
         return wrap(
           listsPending ? <PageSkeleton /> : (

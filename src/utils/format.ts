@@ -49,6 +49,23 @@ export function formatDate(value: DateInput): string {
   return `${p.day} ${MONTHS[p.month]} ${p.year}`;
 }
 
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** "Friday, 3 Oct 2026" in IST (the Overview header line). Invalid input → "—". */
+export function formatDayDate(value: DateInput): string {
+  const d = toDate(value);
+  if (!d) return '—';
+  const p = istParts(d);
+  const weekday = WEEKDAYS[new Date(Date.UTC(p.year, p.month, p.day)).getUTCDay()];
+  return `${weekday}, ${p.day} ${MONTHS[p.month]} ${p.year}`;
+}
+
+/** The hour of the day (0–23) in IST. Invalid input → null. */
+export function istHour(value: DateInput): number | null {
+  const d = toDate(value);
+  return d ? istParts(d).hour : null;
+}
+
 /** "09:14" (24-hour) in IST. Invalid input → "—". */
 export function formatTime(value: DateInput): string {
   const d = toDate(value);

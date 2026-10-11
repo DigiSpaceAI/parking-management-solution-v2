@@ -560,6 +560,26 @@
     .pf-login-main { padding: var(--space-6) var(--space-4) var(--space-8); align-items: flex-start; }
   }
 
+  /* Link cards (Overview KPIs) and the Overview layout (002 F4, UX S2) */
+  .pf-card--link { display: block; color: inherit; text-decoration: none; transition: border-color var(--duration-fast) var(--ease-standard); }
+  .pf-card--link:hover { border-color: var(--navy-600); }
+  .pf-card--link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .pf-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-4); }
+  .pf-cards-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); align-items: start; }
+  @media (max-width: 1279.98px) { .pf-cards-2 { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 767.98px) { .pf-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); } }
+  .pf-levels { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+  .pf-levels li { display: grid; grid-template-columns: minmax(72px, auto) minmax(0, 1fr); gap: var(--space-3); align-items: center; }
+  .pf-levels-name { font: var(--type-body-strong); }
+  .pf-attn { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .pf-attn li + li { border-top: 1px solid var(--line-100); }
+  .pf-attn-row { display: flex; align-items: center; gap: var(--space-3); min-height: calc(var(--touch-min) + var(--space-2)); color: var(--ink); text-decoration: none; }
+  .pf-attn-row span:nth-child(2) { flex: 1 1 auto; min-width: 0; }
+  .pf-attn-go { font: var(--type-body-strong); color: var(--navy-600); }
+  a.pf-attn-row:hover .pf-attn-go { text-decoration: underline; text-underline-offset: var(--underline-offset); }
+  a.pf-attn-row:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+  .pf-card-note { font: var(--type-small); color: var(--text-muted); }
+
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
     .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }

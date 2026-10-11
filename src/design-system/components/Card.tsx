@@ -37,14 +37,17 @@ export interface KpiCardProps {
   /** A meta line under the value, e.g. "3 active · 1 on hold". */
   meta?: React.ReactNode;
   loading?: boolean;
+  /** The whole card is a link to the page behind the figure (Overview). */
+  href?: string;
   className?: string;
 }
 
-/** A KPI: value, "—" + reason, or loading. */
-export const KpiCard: React.FC<KpiCardProps> = ({ label, value, emptyReason, meta, loading, className }) => {
+/** A KPI: value, "—" + reason, or loading. With `href` the card is one link. */
+export const KpiCard: React.FC<KpiCardProps> = ({ label, value, emptyReason, meta, loading, href, className }) => {
   const empty = !loading && (value === undefined || value === null || value === '');
+  const Box = href ? 'a' : 'div';
   return (
-    <div className={cx('pf-card pf-card--kpi', className)} aria-busy={loading || undefined}>
+    <Box className={cx('pf-card pf-card--kpi', href && 'pf-card--link', className)} href={href} aria-busy={loading || undefined}>
       <div className="pf-kpi">
         <span className="pf-kpi-label">{label}</span>
         {loading ? (
@@ -67,6 +70,6 @@ export const KpiCard: React.FC<KpiCardProps> = ({ label, value, emptyReason, met
           </>
         )}
       </div>
-    </div>
+    </Box>
   );
 };

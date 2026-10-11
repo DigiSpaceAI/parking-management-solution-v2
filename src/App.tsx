@@ -18,7 +18,7 @@ import { ParkingLogs } from './components/ParkingLogs';
 import { NonParkedAlerts } from './components/NonParkedAlerts';
 // The design-system preview is loaded only when a Master opens #/design-system (dev/staging).
 const DesignSystemPreview = lazy(() => import('./design-system/preview/DesignSystemPreview'));
-import { EmployeeRegistration } from './components/EmployeeRegistration';
+import { Employees } from './screens/Employees';
 import { MasterAdminSites } from './components/MasterAdminSites';
 import { MasterAdminBilling } from './components/MasterAdminBilling';
 import { ValetXModule } from './components/ValetXModule';
@@ -662,9 +662,12 @@ export default function App() {
       case 'valet':
         return wrap(<ValetXModule />);
       case 'employees': {
-        // One route for both modules (AC-11); the merged screen comes with F6.
-        const mode = userCanOpenModule('APPROVALS') ? 'APPROVALS' : 'REGISTRATION';
-        return wrap(<EmployeeRegistration mode={mode} onRefreshAll={refreshAll} currentSiteId={siteId} canManageDomains={canManageDomains} />);
+        // One route for Registration and Approvals (AC-11); each tab and action follows its own module's rights.
+        const rights = (m: string) => {
+          const r = getModuleRights(viewer, currentRole, m);
+          return { view: userCanOpenModule(m), create: r.canCreate, edit: r.canEdit };
+        };
+        return <Employees siteId={siteId} approvals={rights('APPROVALS')} registration={rights('REGISTRATION')} onChanged={() => void lists.refresh()} />;
       }
       case 'users':
         return wrap(<UserManagementModule currentUser={currentUser} isMaster={isMasterViewer} onSelectSimulatedUser={(u) => startViewAs(u)} onRefreshAll={refreshAll} />);

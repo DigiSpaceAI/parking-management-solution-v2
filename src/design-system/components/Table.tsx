@@ -15,6 +15,8 @@ export interface Column<T> {
   kind?: 'num' | 'secondary';
   /** Hide this column in the phone card view (it's repeated elsewhere). */
   hideInCard?: boolean;
+  /** Tables by width (NFR-5): 'wide' = only from 1280px; 'mid' = only at 768–1279px (a merged stand-in). */
+  width?: 'wide' | 'mid';
 }
 
 export type SortDir = 'asc' | 'desc';
@@ -96,7 +98,7 @@ export function Table<T>({
                 <th
                   key={c.key}
                   scope="col"
-                  className={cx(c.kind === 'num' && 'is-num')}
+                  className={cx(c.kind === 'num' && 'is-num', c.width && `pf-col-${c.width}`)}
                   aria-sort={c.sortable ? (active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined}
                 >
                   {c.sortable && onSort ? (
@@ -152,7 +154,7 @@ export function Table<T>({
                     </td>
                   )}
                   {columns.map((c) => (
-                    <td key={c.key} className={cx(c.kind === 'num' && 'is-num', c.kind === 'secondary' && 'is-secondary')}>
+                    <td key={c.key} className={cx(c.kind === 'num' && 'is-num', c.kind === 'secondary' && 'is-secondary', c.width && `pf-col-${c.width}`)}>
                       {c.render(row)}
                     </td>
                   ))}
@@ -181,7 +183,7 @@ export function Table<T>({
             rows.map((row) => {
               const k = rowKey(row);
               const isSel = selectable && selected!.has(k);
-              const [head, ...rest] = columns.filter((c) => !c.hideInCard);
+              const [head, ...rest] = columns.filter((c) => !c.hideInCard && c.width !== 'mid');
               return (
                 <div
                   key={k}

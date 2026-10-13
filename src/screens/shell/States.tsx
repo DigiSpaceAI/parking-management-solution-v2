@@ -1,11 +1,16 @@
 import React from 'react';
 import { Building2, Globe, Lock, MapPin } from 'lucide-react';
 import type { SiteConfig } from '../../types';
-import { Button, Card, EmptyState, Icon, Skeleton } from '../../design-system/components';
+import { Button, Card, EmptyState, Icon, PageHeader, Skeleton } from '../../design-system/components';
 import { ALL_SITES } from '../../utils/withSite';
 
-/** S-NA "No access" inside the shell (AC-08): unknown route, or a page the role can't open. */
+/**
+ * S-NA "No access" inside the shell (AC-08): unknown route, or a page the role can't open.
+ * It has the page template's H1 (05 R1b m-2), so focus-to-H1 and screen readers get a page title.
+ */
 export const NoAccessPage: React.FC<{ homeHref: string | null; homeLabel: string | null }> = ({ homeHref, homeLabel }) => (
+  <>
+  <PageHeader title="No access" />
   <Card>
     <EmptyState
       icon={Lock}
@@ -20,10 +25,16 @@ export const NoAccessPage: React.FC<{ homeHref: string | null; homeLabel: string
       }
     />
   </Card>
+  </>
 );
 
-/** "Choose a site" (001 §3.0, L-3): no site-scoped call is made until a choice. */
-export const ChooseSitePrompt: React.FC<{ sites: SiteConfig[]; allowAllSites: boolean; onChoose: (id: string) => void }> = ({ sites, allowAllSites, onChoose }) => (
+/**
+ * "Choose a site" (001 §3.0, L-3): no site-scoped call is made until a choice. The H1 is the
+ * page the user asked for (or "Choose a site" before a page is known), 05 R1b m-2.
+ */
+export const ChooseSitePrompt: React.FC<{ title?: string; sites: SiteConfig[]; allowAllSites: boolean; onChoose: (id: string) => void }> = ({ title, sites, allowAllSites, onChoose }) => (
+  <>
+  <PageHeader title={title || 'Choose a site'} description="This page shows one site's data. Choose a site to continue." />
   <Card className="pf-choose">
     <EmptyState icon={MapPin} title="Choose a site to see its data" text="You can switch sites at any time from the top bar." />
     <ul className="pf-choose-list">
@@ -51,21 +62,31 @@ export const ChooseSitePrompt: React.FC<{ sites: SiteConfig[]; allowAllSites: bo
       )}
     </ul>
   </Card>
+  </>
 );
 
 /** S-0 "No site assigned" (001 L-4): full page with Sign out, or inside the shell while viewing as such a user. */
 export const NoSitePage: React.FC<{ onSignOut?: () => void }> = ({ onSignOut }) => {
   const body = (
-    <Card>
-      <EmptyState
-        icon={Building2}
-        title="No site assigned"
-        text="Your account isn't linked to a site yet. Contact your administrator."
-        actions={onSignOut ? <Button onClick={onSignOut}>Sign out</Button> : undefined}
-      />
-    </Card>
+    <>
+      <PageHeader title="No site assigned" />
+      <Card>
+        <EmptyState
+          icon={Building2}
+          title="Your account isn't linked to a site yet"
+          text="Contact your administrator."
+          actions={onSignOut ? <Button onClick={onSignOut}>Sign out</Button> : undefined}
+        />
+      </Card>
+    </>
   );
-  return onSignOut ? <main className="pf pf-fullpage">{body}</main> : body;
+  return onSignOut ? (
+    <main className="pf pf-fullpage">
+      <div className="pf-stack pf-fullpage-body">{body}</div>
+    </main>
+  ) : (
+    body
+  );
 };
 
 /** Loading placeholder for a whole page (site switch, first load). */

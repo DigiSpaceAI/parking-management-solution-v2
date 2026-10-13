@@ -734,7 +734,7 @@ export default function App() {
           // Only reachable while viewing as a user with no site.
           <NoSitePage />
         ) : !currentSiteId ? (
-          <ChooseSitePrompt sites={sites} allowAllSites={isMasterViewer} onChoose={selectSite} />
+          <ChooseSitePrompt title={def && allowed ? def.title : undefined} sites={sites} allowAllSites={isMasterViewer} onChoose={selectSite} />
         ) : listsLoading ? (
           <PageSkeleton />
         ) : (

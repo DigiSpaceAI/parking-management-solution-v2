@@ -535,6 +535,7 @@
   .pf-choose-list .pf-menu-item { border: 1px solid var(--line-100); }
   .pf-fullpage { min-height: 100dvh; display: grid; place-items: center; padding: var(--space-4); background: var(--surface-25); }
   .pf-fullpage > .pf-card { width: 100%; max-width: var(--modal-w); }
+  .pf-fullpage-body { width: 100%; max-width: var(--modal-w); }
   .pf-stale { opacity: 0.5; }
 
   /* Sign in (002 F3, UX S1): ink brand panel + form; stacks on phones */

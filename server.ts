@@ -81,6 +81,7 @@ import {
   expireDemoRequests,
   DEMO_REQUEST_STATUSES,
 } from './src/server/db';
+import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
 import {
   securityHeadersMiddleware,
@@ -196,16 +197,59 @@ app.use((req, res, next) => {
   }
   next();
 });
-// 002 B6: the public demo form gets its own 8 KB body cap (registered before
-// the global parser, which then skips the already-parsed body). A body that
-// is too large or not valid JSON gets a plain error: no stack, nothing echoed.
+// 002 B6 / B6b (03 v1.3): the public demo form's front door, in this order,
+// before the global body parser:
+//   1. visitor IP by the route-only rule in src/server/clientIp.ts. On Cloud
+//      Run a request that didn't come through the parkflows.in Hosting rewrite
+//      gets 403 ERR_VIA_HOSTING_ONLY (nothing stored, no limiter bucket used);
+//   2. 5 per 10 min per visitor, key "demo:<ip or IPv6 /64>", audit redacted;
+//   3. its own 8 KB body cap (the global parser then skips the parsed body).
+// A body that is too large or not valid JSON gets a plain error: no stack,
+// nothing echoed. 413/415/400 count toward the visitor's own bucket only.
+// Until the store has loaded, all of this is skipped and the cold-start guard
+// below answers 503 ERR_STARTING, as for every API route.
 const DEMO_REQUESTS_PATH = '/api/v1/demo-requests';
-app.use(DEMO_REQUESTS_PATH, express.json({ limit: '8kb' }));
-app.use(DEMO_REQUESTS_PATH, (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (!err) return next();
-  if (err.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'The request is too large.' });
-  return res.status(400).json({ success: false, message: 'The request could not be read.' });
-});
+const DEMO_ON_CLOUD_RUN = Boolean(process.env.K_SERVICE);
+const demoHosting = parseHostingCidrs(process.env.DEMO_HOSTING_EGRESS_CIDRS);
+if (demoHosting.invalid.length > 0) {
+  console.warn(`[demo-requests] DEMO_HOSTING_EGRESS_CIDRS: ignored ${demoHosting.invalid.length} invalid entr${demoHosting.invalid.length === 1 ? 'y' : 'ies'}: ${demoHosting.invalid.join(', ')}`);
+}
+if (DEMO_ON_CLOUD_RUN && demoHosting.cidrs.count === 0) {
+  console.warn('[demo-requests] DEMO_HOSTING_EGRESS_CIDRS is not set: every demo request is refused (403) until it is.');
+}
+app.post(
+  DEMO_REQUESTS_PATH,
+  (req, res, next) => {
+    if (!isStoreReady()) return next('route');
+    const picked = pickDemoClientIp({
+      xff: req.headersDistinct['x-forwarded-for'],
+      socketIp: req.socket.remoteAddress,
+      onCloudRun: DEMO_ON_CLOUD_RUN,
+      hostingCidrs: demoHosting.cidrs,
+    });
+    if ('reason' in picked) {
+      logSecurityEvent({
+        action: 'DEMO_REQUEST_NOT_VIA_HOSTING',
+        actor: 'anonymous',
+        actorRole: 'ANONYMOUS',
+        redactClient: true,
+        targetResource: DEMO_REQUESTS_PATH,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: `Demo request refused: ${picked.reason}.`,
+      });
+      return res.status(403).json({ success: false, errorCode: 'ERR_VIA_HOSTING_ONLY', message: 'Please use the form on parkflows.in.' });
+    }
+    res.locals.demoClientKey = (picked as { key: string }).key;
+    next();
+  },
+  rateLimiterMiddleware(5, 10 * 60 * 1000, { key: (_req, res) => `demo:${res.locals.demoClientKey}`, redactAudit: true }),
+  express.json({ limit: '8kb' }),
+  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!err) return next();
+    if (err.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'The request is too large.' });
+    return res.status(400).json({ success: false, message: 'The request could not be read.' });
+  },
+);
 app.use(express.json({ limit: '10mb' }));
 
 // Set explicit Cache-Control headers on all API responses to prevent 304 cached data
@@ -1439,7 +1483,8 @@ app.post('/api/v1/sites/update', requireMasterAdmin, requirePermission('MASTER_C
 const DEMO_GLOBAL_MAX_PER_HOUR = 30;
 const demoStoredAt: number[] = []; // in memory only, like the 001 limiter
 
-app.post(DEMO_REQUESTS_PATH, rateLimiterMiddleware(5, 10 * 60 * 1000), (req, res) => {
+// Per-visitor limit, Hosting check and body cap: see the front door above.
+app.post(DEMO_REQUESTS_PATH, (req, res) => {
   if (!req.is('application/json')) {
     return res.status(415).json({ success: false, message: 'Send the form as JSON.' });
   }
@@ -1471,7 +1516,12 @@ app.post(DEMO_REQUESTS_PATH, rateLimiterMiddleware(5, 10 * 60 * 1000), (req, res
 });
 
 app.get(DEMO_REQUESTS_PATH, requireMasterAdminView, (req, res) => {
-  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const raw = req.query.status;
+  const status = typeof raw === 'string' && raw !== '' ? raw : undefined;
+  // Review 05 n-2: an unknown status is a 400, not "all requests".
+  if ((raw !== undefined && typeof raw !== 'string') || (status !== undefined && !(DEMO_REQUEST_STATUSES as string[]).includes(status))) {
+    return res.status(400).json({ success: false, message: 'Choose New, Contacted or Closed.', errors: { status: 'Choose New, Contacted or Closed.' } });
+  }
   res.json({ requests: getDemoRequests(status) });
 });
 
@@ -1518,9 +1568,15 @@ app.post(`${DEMO_REQUESTS_PATH}/status`, requireMasterAdmin, (req, res) => {
   res.json({ success: true, request });
 });
 
-app.delete(`${DEMO_REQUESTS_PATH}/:id`, requireMasterAdmin, (req, res) => {
+app.delete(`${DEMO_REQUESTS_PATH}/:id`, requireMasterAdmin, async (req, res) => {
   const id = String(req.params.id || '');
-  if (!deleteDemoRequest(id)) return res.status(404).json({ success: false, message: 'Demo request not found.' });
+  const result = await deleteDemoRequest(id);
+  if (result === 'not-found') return res.status(404).json({ success: false, message: 'Demo request not found.' });
+  // Review 05 m-1: the Firestore delete is awaited; on failure the record is
+  // kept and the Master is told to try again (no audit: nothing was deleted).
+  if (result === 'failed') {
+    return res.status(503).json({ success: false, errorCode: 'ERR_DELETE_FAILED', message: "Couldn't delete the request. Try again." });
+  }
   logSecurityEvent({
     action: 'DEMO_REQUEST_DELETED',
     actor: req.user!.email,

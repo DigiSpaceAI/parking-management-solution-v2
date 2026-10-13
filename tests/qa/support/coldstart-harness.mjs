@@ -29,6 +29,7 @@ const fake = new FakeFirestore(seed, {
   loadDelayMs: Number(process.env.FAKE_LOAD_DELAY_MS || 0),
   failReads: Number(process.env.FAKE_FAIL_READS || 0),
   persistFile: dataFile,
+  failDeletes: Number(process.env.FAKE_FAIL_DELETES || 0),
 });
 const client = await imp('src/server/firestoreClient.ts');
 client.__setFirestoreDbForTests(fake);

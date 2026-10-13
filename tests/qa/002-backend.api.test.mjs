@@ -20,13 +20,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TSX = path.join(REPO, 'node_modules', '.bin', 'tsx');
 const BASE_ENV = { NODE_ENV: 'production', BOOTSTRAP_ADMIN_PASSWORD: PW, SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
   K_SERVICE: '', SITE_SCOPE_MODE: '', AUDIT_HMAC_SECRET: 'r1b'.repeat(22) };
+// B6b (03 v1.3): demo POSTs are tested as Cloud Run sees them through the
+// parkflows.in Hosting rewrite: "<visitor>, <Hosting egress hop>".
+const HOSTING_HOP = '198.51.100.7';
+const DEMO_ENV = { K_SERVICE: 'parkflows-test', DEMO_HOSTING_EGRESS_CIDRS: '198.51.100.0/24' };
 
 // Boots server.ts (plain) or the cold-start harness (fake Firestore) and waits
 // until /health reports ready.
 async function startServer({ fake = false, env = {} } = {}) {
   const port = 5000 + Math.floor(Math.random() * 900);
   const workDir = mkdtempSync(path.join(tmpdir(), 'pf-r1b-'));
-  const fullEnv = { ...process.env, ...BASE_ENV, PORT: String(port), PF_REPO: REPO,
+  const fullEnv = { ...process.env, ...BASE_ENV, ...DEMO_ENV, PORT: String(port), PF_REPO: REPO,
     FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', ...env };
   const args = fake ? [path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs'), 'server'] : [path.join(REPO, 'server.ts')];
   const proc = spawn(TSX, args, { cwd: workDir, env: fullEnv, stdio: 'pipe' });
@@ -264,7 +268,9 @@ test('B3 /overview: counts match seeded logs, today and hours in IST, other site
   const today = istStart(now);
   const inToday = (ms) => Math.max(today, Math.min(ms, now - 1000));
   const t = {
-    activeToday: new Date(inToday(today + 60 * 60 * 1000)).toISOString(),
+    // Review 05 m-2: at most 1 h old, so it is never "parked over 12 h",
+    // whatever the time of day the test runs (was IST 01:00: flaky after 13:00).
+    activeToday: new Date(inToday(Math.max(today, now - 60 * 60 * 1000))).toISOString(),
     doneIn: new Date(inToday(today + 30 * 60 * 1000)).toISOString(),
     doneOut: new Date(now - 500).toISOString(),
     old: new Date(now - 13 * 3600 * 1000).toISOString(),
@@ -393,7 +399,8 @@ const demo = (extra = {}) => ({ name: 'Asha Rao', company: 'Rao Estates', workEm
   message: 'We run two campuses.', consent: true, pf_hp_field: '', ...extra });
 let ipSeq = 10;
 const nextIp = () => `203.0.113.${ipSeq++}`;
-const submit = (cl, body, ip = nextIp(), o = {}) => cl.call(null, 'POST', '/demo-requests', { body, headers: { 'X-Forwarded-For': ip }, ...o });
+const viaHosting = (ip) => ({ 'X-Forwarded-For': `${ip}, ${HOSTING_HOP}` });
+const submit = (cl, body, ip = nextIp(), o = {}) => cl.call(null, 'POST', '/demo-requests', { body, headers: viaHosting(ip), ...o });
 const DEMO_FIELDS = new Set(['id', 'createdAt', 'name', 'company', 'workEmail', 'phone', 'city', 'facilityType', 'slotsApprox', 'sitesApprox',
   'preferredContact', 'message', 'consentAt', 'source', 'status', 'handledBy', 'handledAt', 'note']);
 const demoList = async (cl) => (await cl.get('master', '/demo-requests')).body.requests;
@@ -474,11 +481,11 @@ test('AC-32c only POST with a JSON body: GET with query fields 405, form post 41
   const q = new URLSearchParams({ ...demo(), consent: 'true' }).toString();
   const g = await c.call(null, 'GET', `/demo-requests?${q}`);
   assert.equal(g.status, 405); assert.equal(g.headers.get('allow'), 'POST');
-  const form = await c.call(null, 'POST', '/demo-requests', { raw: q, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-For': nextIp() } });
+  const form = await c.call(null, 'POST', '/demo-requests', { raw: q, headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...viaHosting(nextIp()) } });
   assert.equal(form.status, 415);
   const big = await submit(c, demo({ message: 'x'.repeat(9000) }));
   assert.equal(big.status, 413); assert.ok(!JSON.stringify(big.body).includes('xxxx'), 'nothing echoed');
-  const broken = await c.call(null, 'POST', '/demo-requests', { raw: '{"name": "Asha', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': nextIp() } });
+  const broken = await c.call(null, 'POST', '/demo-requests', { raw: '{"name": "Asha', headers: { 'Content-Type': 'application/json', ...viaHosting(nextIp()) } });
   assert.equal(broken.status, 400); assert.ok(!JSON.stringify(broken.body).includes('Asha'));
   assert.equal((await demoList(c)).length, n, 'nothing stored');
 });
@@ -509,6 +516,9 @@ test('AC-32d Master-only: non-Master GET/export/status/DELETE 403, view-as DELET
   const upd = (await c.audit('DEMO_REQUEST_UPDATED')).find((l) => l.targetResource === `demo-request/${id}`);
   assert.ok(upd && !JSON.stringify(upd).includes('cmd|calc') && !JSON.stringify(upd).includes('Called back'), 'audit: id + status only');
   assert.equal((await c.get('master', '/demo-requests?status=CONTACTED')).body.requests.every((r) => r.status === 'CONTACTED'), true);
+  // Review 05 n-2: an unknown status is a 400, not the whole list.
+  const unknown = await c.get('master', '/demo-requests?status=FOO');
+  assert.equal(unknown.status, 400); assert.ok(unknown.body.errors.status); assert.ok(!('requests' in unknown.body));
 });
 
 test('AC-32b forced store failure -> plain 500; AC-32d delete and 12-month cleanup remove the Firestore document', async () => {
@@ -558,5 +568,24 @@ test('AC-32b forced store failure -> plain 500; AC-32d delete and 12-month clean
       const after = (await demoList(r2.c)).map((r) => r.id);
       assert.ok(!after.includes('demo-recent11') && !after.includes('demo-old13'), 'still gone after a cold start');
     } finally { r2.srv.stop(); }
+  } finally { fx.stop(); }
+});
+
+test('AC-32d delete waits for Firestore: a failed delete -> 503 and the record is kept; a retry deletes it (review m-1)', async () => {
+  const at = new Date(Date.now() - 86400000).toISOString();
+  const rec = { id: 'demo-keepme', createdAt: at, name: 'Keep Me', company: 'Keep Co', workEmail: 'keep@keepco.in', phone: '+919800000001',
+    city: 'Pune', facilityType: 'Mall', preferredContact: 'Email', consentAt: at, source: 'parkflows.in', status: 'NEW' };
+  const fx = await seededServer((d) => { d.demoRequests = [rec]; }, { FAKE_FAIL_DELETES: '1' });
+  try {
+    const fail = await fx.c.call('master', 'DELETE', '/demo-requests/demo-keepme');
+    assert.equal(fail.status, 503, JSON.stringify(fail.body));
+    assert.equal(fail.body.errorCode, 'ERR_DELETE_FAILED'); assert.ok(!JSON.stringify(fail.body).includes('Keep'));
+    assert.ok((await demoList(fx.c)).some((r) => r.id === 'demo-keepme'), 'still in the list');
+    assert.ok((fx.readData().demoRequests || []).some((r) => r.id === 'demo-keepme'), 'still in Firestore');
+    assert.equal((await fx.c.audit('DEMO_REQUEST_DELETED')).length, 0, 'no "deleted" audit for a failed delete');
+    const ok = await fx.c.call('master', 'DELETE', '/demo-requests/demo-keepme');
+    assert.equal(ok.status, 200);
+    assert.ok(!(await demoList(fx.c)).some((r) => r.id === 'demo-keepme'), 'gone from the list');
+    assert.ok(!(fx.readData().demoRequests || []).some((r) => r.id === 'demo-keepme'), 'gone from Firestore before the 200');
   } finally { fx.stop(); }
 });

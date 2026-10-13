@@ -2535,16 +2535,33 @@ export function updateDemoRequestStatus(id: string, status: DemoRequestStatus, n
   return request;
 }
 
-// Hard delete (AC-32d "delete on request"): memory, local copy AND the
-// Firestore document, so it can't come back on a cold start.
-export function deleteDemoRequest(id: string): boolean {
+// Hard delete (AC-32d "delete on request"): the Firestore document first,
+// awaited (review 05 m-1), then memory and the local copy. If Firestore is
+// configured but the delete fails (or Firestore is unavailable this run), the
+// record is KEPT and 'failed' is returned, so the Master is told to try again
+// instead of being told it is gone while the document would come back on the
+// next cold start. With no Firestore configured (local dev) memory + local
+// copy are the only copies.
+export async function deleteDemoRequest(id: string): Promise<'deleted' | 'not-found' | 'failed'> {
   const storeData = getStore();
-  const before = (storeData.demoRequests || []).length;
-  storeData.demoRequests = (storeData.demoRequests || []).filter((r) => r.id !== id);
-  if (storeData.demoRequests.length === before) return false;
+  if (!(storeData.demoRequests || []).some((r) => r.id === id)) return 'not-found';
+  if (isFirestoreConfigured()) {
+    const db = getFirestoreDb();
+    if (!db || !storeReady) return 'failed';
+    try {
+      const batch = db.batch();
+      batch.delete(db.collection('demoRequests').doc(id));
+      await batch.commit();
+    } catch (err) {
+      console.error('[firestore] Demo request delete failed; record kept:', (err as Error)?.message || err);
+      return 'failed';
+    }
+  }
+  // Re-read: the list may have changed while the delete was awaited.
+  const current = getStore();
+  current.demoRequests = (current.demoRequests || []).filter((r) => r.id !== id);
   writeLocalCopy();
-  void deleteFirestoreDocs('demoRequests', [id]);
-  return true;
+  return 'deleted';
 }
 
 // 12-month retention (AC-32d): removes requests created more than 12 months

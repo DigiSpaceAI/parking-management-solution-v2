@@ -139,12 +139,15 @@ export function logSecurityEvent(params: {
   status: 'SUCCESS' | 'BLOCKED_UNAUTHORIZED' | 'RATE_LIMITED' | 'VALIDATION_FAILED';
   details: string;
   siteId?: string;
+  // 002 B6b / PRD AC-32d (m-3): events from the public demo route keep no
+  // client detail: ipAddress is 'redacted' and no userAgent is written.
+  redactClient?: boolean;
 }): SecurityAuditLog {
   const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const timestamp = new Date().toISOString();
   const actorRole = params.actorRole || 'ANONYMOUS';
-  const ipAddress = params.ipAddress || '127.0.0.1';
-  const userAgent = params.userAgent || 'Smart-PMS-Client/1.0';
+  const ipAddress = params.redactClient ? 'redacted' : params.ipAddress || '127.0.0.1';
+  const userAgent = params.redactClient ? undefined : params.userAgent || 'Smart-PMS-Client/1.0';
 
   const partialEntry: Omit<SecurityAuditLog, 'integrityHash'> = {
     id,
@@ -153,7 +156,7 @@ export function logSecurityEvent(params: {
     actor: params.actor,
     actorRole,
     ipAddress,
-    userAgent,
+    ...(userAgent !== undefined ? { userAgent } : {}),
     targetResource: params.targetResource,
     status: params.status,
     details: params.details,
@@ -547,15 +550,27 @@ export function securityHeadersMiddleware(req: Request, res: Response, next: Nex
   next();
 }
 
-export function rateLimiterMiddleware(maxRequests: number = 3000, windowMs: number = 60000) {
+// 002 B6b (03 v1.3): optional `key` (the full limiter key, its own key space)
+// and `redactAudit` (no IP / user-agent / query string in RATE_LIMIT_EXCEEDED).
+// Without options every existing route behaves exactly as before.
+export function rateLimiterMiddleware(
+  maxRequests: number = 3000,
+  windowMs: number = 60000,
+  options: { key?: (req: Request, res: Response) => string; redactAudit?: boolean } = {}
+) {
   return (req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
     // Signed-in traffic is limited per verified session user, not per IP: behind
     // a shared proxy every user can share one address, and the user id can't be
     // spoofed. A token is only honoured if it resolves to a live session, so
     // rotating fake tokens can't dodge the per-IP limit on public endpoints.
-    const sessionUser = resolveSessionUserId(extractSessionToken(req));
-    const key = `${sessionUser ? 'u:' + sessionUser : 'ip:' + ip}:${req.path}`;
+    let key: string;
+    if (options.key) {
+      key = options.key(req, res);
+    } else {
+      const sessionUser = resolveSessionUserId(extractSessionToken(req));
+      key = `${sessionUser ? 'u:' + sessionUser : 'ip:' + ip}:${req.path}`;
+    }
     const now = Date.now();
 
     const record = rateLimitMap.get(key);
@@ -566,16 +581,26 @@ export function rateLimiterMiddleware(maxRequests: number = 3000, windowMs: numb
 
     record.count++;
     if (record.count > maxRequests) {
-      logSecurityEvent({
-        action: 'RATE_LIMIT_EXCEEDED',
-        actor: ip,
-        actorRole: 'ANONYMOUS',
-        ipAddress: ip,
-        userAgent: req.headers['user-agent'] as string,
-        targetResource: req.originalUrl,
-        status: 'RATE_LIMITED',
-        details: `Exceeded threshold of ${maxRequests} requests per ${windowMs / 1000}s. Client throttled.`,
-      });
+      logSecurityEvent(options.redactAudit
+        ? {
+            action: 'RATE_LIMIT_EXCEEDED',
+            actor: 'anonymous',
+            actorRole: 'ANONYMOUS',
+            redactClient: true,
+            targetResource: req.originalUrl.split('?')[0],
+            status: 'RATE_LIMITED',
+            details: `Exceeded threshold of ${maxRequests} requests per ${windowMs / 1000}s. Client throttled.`,
+          }
+        : {
+            action: 'RATE_LIMIT_EXCEEDED',
+            actor: ip,
+            actorRole: 'ANONYMOUS',
+            ipAddress: ip,
+            userAgent: req.headers['user-agent'] as string,
+            targetResource: req.originalUrl,
+            status: 'RATE_LIMITED',
+            details: `Exceeded threshold of ${maxRequests} requests per ${windowMs / 1000}s. Client throttled.`,
+          });
 
       res.setHeader('Retry-After', Math.ceil((record.resetAt - now) / 1000).toString());
       return res.status(429).json({

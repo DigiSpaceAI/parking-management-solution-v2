@@ -8,8 +8,11 @@ export class FakeFirestore {
   // securityAuditLogs reads are not counted, so the store load is what fails.
   // persistFile (002 R1b tests): when set, every write and delete rewrites that
   // JSON file, so a later process can start from the same "Firestore" (re-load).
-  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded', persistFile = null } = {}) {
+  // failDeletes (002 review m-1): the first n batch commits that contain a
+  // delete throw `failMessage` and change nothing.
+  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded', persistFile = null, failDeletes = 0 } = {}) {
     this.persistFile = persistFile;
+    this.failDeletesLeft = failDeletes;
     this.data = new Map();
     this.writes = [];
     this.loadDelayMs = loadDelayMs;
@@ -67,8 +70,14 @@ export class FakeFirestore {
     const fs = this;
     return {
       set(ref, value, opts) { ops.push(() => fs._write(ref._c, ref._id, value, !!opts?.merge)); },
-      delete(ref) { ops.push(() => { fs.writes.push({ collection: ref._c, id: ref._id, deleted: true }); fs._coll(ref._c).delete(ref._id); fs._persist(); }); },
-      async commit() { for (const op of ops) op(); },
+      delete(ref) { ops.hasDelete = true; ops.push(() => { fs.writes.push({ collection: ref._c, id: ref._id, deleted: true }); fs._coll(ref._c).delete(ref._id); fs._persist(); }); },
+      async commit() {
+        if (ops.hasDelete && fs.failDeletesLeft > 0) {
+          fs.failDeletesLeft--;
+          const err = new Error(fs.failMessage); err.code = 4; throw err;
+        }
+        for (const op of ops) op();
+      },
     };
   }
 }

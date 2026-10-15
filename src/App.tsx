@@ -104,6 +104,10 @@ export default function App() {
   };
   // False until /rbac/roles has answered (the landing page depends on the role's modules).
   const [rolesReady, setRolesReady] = useState<boolean>(false);
+  // Which sign-in (+ view-as) the site resolution last finished for, `${userId}|${viewAsId}`.
+  // Used instead of `sitePhase` alone, which still says 'ready' from the previous user for one
+  // render after a view-as change (d10a055) (06 BUG-R1B-2).
+  const [siteSettledFor, setSiteSettledFor] = useState<string | null>(null);
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
   const [logs, setLogs] = useState<ParkingLog[]>([]);
   const [roles, setRoles] = useState<RolePermissionConfig[]>([]);
@@ -266,6 +270,7 @@ export default function App() {
     setLogs([]);
     setRoles([]);
     setRolesReady(false);
+    setSiteSettledFor(null);
     rolesRequest.current += 1; // a roles answer still in flight belongs to the old session
     setSites([]);
     setAlertCount(0);
@@ -458,6 +463,7 @@ export default function App() {
     const userId = currentUser.id;
     // Under view-as the server answers /my-sites for the viewed user.
     const viewing = viewAsUser;
+    const settledKey = `${userId}|${viewing?.id ?? ''}`;
     const master = isMasterAdmin(viewing ?? currentUser);
     const generation = bumpGeneration();
     setSitePhase('resolving');
@@ -474,6 +480,7 @@ export default function App() {
         }
         if (!ok) {
           setSitePhase('error');
+          setSiteSettledFor(settledKey);
           return;
         }
         const permitted = body?.sites || [];
@@ -481,12 +488,14 @@ export default function App() {
         if (permitted.length === 0 && !master) {
           selectSite(null);
           setSitePhase('no-site');
+          setSiteSettledFor(settledKey);
           return;
         }
         if (viewing) {
           // View-as: the viewed user's only site, else let the Master Admin choose.
           selectSite(permitted.length === 1 && !master ? permitted[0].id : null);
           setSitePhase('ready');
+          setSiteSettledFor(settledKey);
           return;
         }
         // After a session ended, return to the same page and site (AC-47);
@@ -504,8 +513,12 @@ export default function App() {
         if (returnTo) goRoute(returnTo.tab);
         selectSite(next);
         setSitePhase('ready');
+        setSiteSettledFor(settledKey);
       } catch {
-        if (isCurrentGeneration(generation)) setSitePhase('error');
+        if (isCurrentGeneration(generation)) {
+          setSitePhase('error');
+          setSiteSettledFor(settledKey);
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -684,7 +697,14 @@ export default function App() {
 
   // Wait until the site is settled too: Overview is only the landing page with one site chosen,
   // so a landing picked while the site is still resolving (sign-in, view-as) would skip it.
-  const landingReady = rolesReady && (sitePhase === 'no-site' || (sitePhase === 'ready' && (!!currentSiteId || isMasterViewer)));
+  // 06 BUG-R1B-2: "settled" now comes from the resolution itself, so a user with several sites and
+  // none remembered is settled with no site: they get "Choose a site" (not an endless "Loading"),
+  // and the landing page is picked once they choose (Overview for a Site Admin, AC-10).
+  const siteSettled = !!currentUser && siteSettledFor === `${currentUser.id}|${viewAsUser?.id ?? ''}` && sitePhase !== 'resolving';
+  const landingReady = rolesReady && siteSettled && (sitePhase === 'no-site' || !!currentSiteId || isMasterViewer);
+  // A page this role can't open shows No access straight away, with or without a site chosen
+  // (it used to ask a multi-site Site Admin to choose a site first on #/sites).
+  const noAccessNow = route !== null && rolesReady && !allowed;
 
   // Grouped nav (AC-07): only the pages this role may open; counts only.
   const counts: Partial<Record<RouteId, { count: number; label: string; alert?: boolean }>> = {
@@ -710,7 +730,7 @@ export default function App() {
     ...(canOpenRoute(viewer, currentRole, routeById('demo-requests')) ? [{ label: 'New demo requests', count: newDemoCount, href: hrefFor('demo-requests') }] : []),
   ];
 
-  const needsSiteForPage = needsSite && !platformPage;
+  const needsSiteForPage = needsSite && !platformPage && !noAccessNow;
 
   return (
     <SiteContext.Provider value={siteContextValue}>
@@ -732,7 +752,7 @@ export default function App() {
         <RouteKeeper route={route} landing={landing} ready={landingReady} />
         {!needsSiteForPage ? (
           sitePhase === 'resolving' && needsSite ? <PageSkeleton /> : <div key={`platform-${viewAsUser?.id ?? ''}`} className="pf-stack">{renderRoute(currentSiteId ?? '')}</div>
-        ) : sitePhase === 'resolving' || (route === null && !landingReady) ? (
+        ) : sitePhase === 'resolving' || (route === null && !landingReady && !(rolesReady && siteSettled)) ? (
           <PageSkeleton />
         ) : sitePhase === 'error' ? (
           <ErrorState title="Couldn't load your sites" text="Try again in a moment." onRetry={() => setSiteResolveAttempt((n) => n + 1)} />

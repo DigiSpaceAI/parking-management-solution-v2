@@ -211,18 +211,23 @@ export default function App() {
     }
   };
 
+  // The role list is the same for every site, so a site switch must not drop it: 06 BUG-R1B-1
+  // (the site generation used to be checked here, and the auto-selected site of a single-site
+  // user bumped it while this call was in flight, so rolesReady never came and the landing page
+  // stayed on "Loading"). Only a newer roles call or a sign-out makes a result stale.
+  const rolesRequest = useRef(0);
   const fetchRoles = async () => {
-    const generation = getGeneration();
+    const request = ++rolesRequest.current;
     try {
       const { body } = await getJson<{ success: boolean; roles?: RolePermissionConfig[] }>('/api/v1/rbac/roles');
-      if (!isCurrentGeneration(generation)) return;
+      if (request !== rolesRequest.current) return;
       if (body?.success && body.roles && body.roles.length > 0) {
         setRoles(body.roles);
       }
       setRolesReady(true);
     } catch (err) {
       console.error('Failed to fetch roles:', err);
-      if (isCurrentGeneration(generation)) setRolesReady(true);
+      if (request === rolesRequest.current) setRolesReady(true);
     }
   };
 
@@ -261,6 +266,7 @@ export default function App() {
     setLogs([]);
     setRoles([]);
     setRolesReady(false);
+    rolesRequest.current += 1; // a roles answer still in flight belongs to the old session
     setSites([]);
     setAlertCount(0);
     setPendingReqCount(0);

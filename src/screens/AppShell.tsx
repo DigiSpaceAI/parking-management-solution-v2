@@ -51,9 +51,14 @@ export const AppShell: React.FC<AppShellProps> = ({
 }) => {
   const [drawer, setDrawer] = useState(false);
   const total = attention.reduce((n, e) => n + (e.count || 0), 0);
+  // WCAG 2.5.3 Label in Name (06 BUG-R1B-6): each accessible name starts with the text the
+  // button shows, so a voice-control user can say what they see ("click 91", "click DA").
+  // The bell shows only its badge ("91", or "99+" over 99, as CountBadge does).
+  const bellShown = total > 99 ? '99+' : String(total);
   const bellLabel = total
-    ? `Notifications: ${attention.filter((e) => e.count).map((e) => `${e.count} ${e.label.toLowerCase()}`).join(', ')}`
+    ? `${bellShown} ${total === 1 ? 'notification' : 'notifications'}: ${attention.filter((e) => e.count).map((e) => `${e.count} ${e.label.toLowerCase()}`).join(', ')}`
     : 'Notifications: nothing needs your attention';
+  const userInitials = initials(user.fullName);
   const switcherSites = sites.map((s) => ({ id: s.id, name: s.siteName, code: s.siteCode, city: s.city }));
   return (
     <div className="pf pf-app">
@@ -81,12 +86,12 @@ export const AppShell: React.FC<AppShellProps> = ({
           />
           <TopBarMenu
             triggerClassName="pf-account"
-            label={`Account: ${user.fullName}, ${user.roleName}`}
+            label={`${userInitials} ${user.fullName}, ${user.roleName}: account`}
             trigger={
               <>
                 <span className="pf-avatar" aria-hidden="true">
-                  {initials(user.fullName)}
-                </span>
+                  {userInitials}
+                </span>{' '}
                 <span className="pf-account-name">{user.fullName}</span>
               </>
             }

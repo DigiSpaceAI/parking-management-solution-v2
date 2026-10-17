@@ -480,7 +480,7 @@ export interface TopBarMenuProps {
   /** The trigger: an icon, or an account face. */
   trigger: React.ReactNode;
   triggerClassName?: string;
-  /** Accessible name of the trigger, e.g. "Notifications: 3 pending requests, 2 alerts". */
+  /** Accessible name of the trigger. It starts with the visible text (WCAG 2.5.3), e.g. "5 notifications: 3 pending requests, 2 alerts". */
   label: string;
   /** A block at the top (who is signed in, or "Nothing needs your attention"). */
   head?: React.ReactNode;

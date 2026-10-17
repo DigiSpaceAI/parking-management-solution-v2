@@ -116,6 +116,23 @@ void loadAuditLogsFromFirestore();
 
 const app = express();
 
+// HOTFIX R1B-S1 (17 Oct, 002 07-security-review): Express 4 matches routes
+// case-insensitively by default, but the sign-in gate and the cold-start guard
+// below compare req.path case-sensitively, so /API/V1/... reached handlers
+// without requireAuth, view-as or site scoping. Two layers:
+//  1. routes (and app.use mounts) now match case-sensitively. Every route is
+//     registered in lower case and every client (console, Android app) calls
+//     lower-case /api/v1, so only non-canonical paths stop matching;
+//  2. the gate and the guard decide on gatePath(): lower case, repeated
+//     slashes collapsed, trailing slash dropped, i.e. every spelling Express
+//     could ever route to the same handler is gated like the canonical one.
+// Must be set before the first app.use (the router is created lazily there).
+app.set('case sensitive routing', true);
+function gatePath(p: string): string {
+  const collapsed = p.replace(/\/{2,}/g, '/').toLowerCase();
+  return collapsed.length > 1 ? collapsed.replace(/\/+$/, '') : collapsed;
+}
+
 // Trust exactly N proxy hops so req.ip is the real client address and cannot
 // be spoofed by a client-supplied X-Forwarded-For header. Default 1 = Cloud Run
 // only (the direct *.run.app URL): safe against spoofing. If ALL traffic comes
@@ -197,7 +214,8 @@ app.use('/api', (req, res, next) => {
 // 503 ERR_STARTING instead of serving (and possibly writing) the boot-time
 // seed store. /health stays up for Cloud Run and reports `ready`.
 app.use((req, res, next) => {
-  const isApi = (req.path.startsWith('/api/v1/') && req.path !== '/api/v1/health') || req.path === '/login';
+  const p = gatePath(req.path); // R1B-S1
+  const isApi = (p.startsWith('/api/v1/') && p !== '/api/v1/health') || p === '/login';
   if (isApi && !isStoreReady()) {
     res.setHeader('Retry-After', '5');
     return sendApiError(res, 503, 'ERR_STARTING', 'ParkFlows is starting up. Try again in a moment.');
@@ -229,8 +247,9 @@ const PUBLIC_API_PATHS = new Set([
 ]);
 
 app.use((req, res, next) => {
-  if (!req.path.startsWith('/api/v1/') && req.path !== '/login') return next();
-  if (PUBLIC_API_PATHS.has(req.path)) return next();
+  const p = gatePath(req.path); // R1B-S1: same decision for every spelling of a path
+  if (!p.startsWith('/api/v1/') && p !== '/login') return next();
+  if (PUBLIC_API_PATHS.has(p)) return next();
   return requireAuth(req, res, (err?: any) =>
     err ? next(err) : applyViewAs(req, res, () => enforceSiteScope(req, res, next))
   );

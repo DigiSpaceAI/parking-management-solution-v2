@@ -219,3 +219,33 @@ test('B6b off Cloud Run (local dev): X-Forwarded-For is ignored, so rotating it 
     assert.equal((await post(s, via('203.0.113.150'))).status, 429);
   } finally { s.stop(); }
 });
+
+test('R1B-S2 m-3: the global /api/ limiter never logs a demo POST unredacted (606 posts from 121 visitors in a minute)', async () => {
+  const s = await startServer();
+  try {
+    await s.login();
+    const ua = 'QA-Agent/S2 (r1b)';
+    const statuses = {};
+    for (let v = 0; v < 121; v++) {
+      const ip = `203.0.${115 + Math.floor(v / 250)}.${(v % 250) + 1}`;
+      const batch = await Promise.all(Array.from({ length: 5 }, () => post(s, via(ip), honeypot(), { 'User-Agent': ua })));
+      for (const r of batch) statuses[r.status] = (statuses[r.status] || 0) + 1;
+    }
+    const sixth = await post(s, via('203.0.115.1'), honeypot(), { 'User-Agent': ua });
+    assert.deepEqual(statuses, { 200: 605 }, 'more than 600 demo POSTs a minute: none refused by the global limiter');
+    assert.equal(sixth.status, 429, "the visitor's own limit still applies");
+    // Another spelling of the demo path doesn't route, and is not public data either.
+    const odd = await post(s, via('203.0.116.1'), demo(), { 'User-Agent': ua });
+    assert.equal(odd.status, 200, 'sanity: a fresh visitor');
+    const variant = await s.call('POST', '//demo-requests', { body: demo({ name: 'Variant' }), headers: { 'X-Forwarded-For': via('203.0.116.2'), 'User-Agent': ua } });
+    assert.equal(variant.status, 404, JSON.stringify(variant.body));
+    assert.ok(!(await s.list()).some((r) => r.name === 'Variant'));
+    const events = (await s.audit('RATE_LIMIT_EXCEEDED')).filter((l) => /demo-requests/.test(l.targetResource));
+    for (const l of events) {
+      assert.equal(l.ipAddress, 'redacted', JSON.stringify(l)); assert.ok(!('userAgent' in l));
+      assert.ok(!JSON.stringify(l).includes('QA-Agent') && !JSON.stringify(l).includes('198.51.100'), JSON.stringify(l));
+    }
+    assert.ok(events.length >= 1, 'the per-visitor 429 is still counted (redacted)');
+    assert.ok(!(await s.audit('RATE_LIMIT_EXCEEDED')).some((l) => (l.userAgent || '').includes('QA-Agent')), 'no event anywhere carries the visitor user-agent');
+  } finally { s.stop(); }
+});

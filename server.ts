@@ -292,7 +292,19 @@ app.use((req, res, next) => {
 });
 
 // Global API Rate Limiter (Anti-DDoS & Brute Force Protection - 600 req/min for high-volume ANPR & Gate Ops)
-app.use('/api/', rateLimiterMiddleware(600, 60000));
+// 002 R1B-S2 (PRD v1.7/v1.8 m-3): no unredacted event from the public demo
+// route. A demo POST that passed the demo front door (Hosting check + its own
+// per-visitor limit, res.locals.demoClientKey set) skips this limiter: it is
+// keyed on req.ip, which there is the Hosting egress address, and it would log
+// the visitor's user-agent. Any other spelling of the demo path (it doesn't
+// route) still counts here, with a redacted audit. Same buckets either way.
+const globalApiLimiter = rateLimiterMiddleware(600, 60000);
+const globalApiLimiterRedacted = rateLimiterMiddleware(600, 60000, { redactAudit: true });
+app.use('/api/', (req, res, next) => {
+  if (res.locals.demoClientKey !== undefined) return next();
+  if (gatePath(req.baseUrl + req.path) === DEMO_REQUESTS_PATH) return globalApiLimiterRedacted(req, res, next);
+  return globalApiLimiter(req, res, next);
+});
 
 // Require a valid session for all API routes except the ones listed here.
 // Public: health check, login, set-password, employee self-registration

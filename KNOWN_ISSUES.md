@@ -110,3 +110,70 @@ fresh 1080-slot set via the standard CSV bulk-upload flow. Neither of
 those was related to the cross-site data mixing described above — that
 bug affects *any* two (or more) sites that each have real inventory,
 which is exactly how it surfaced once Alphatech got its own slots.
+
+## S7-1 (High, open): `POST /alerts/trigger-cron` ("Run cutoff scan") is not site-scoped
+
+**Opened in backlog:** 2026-10-15 by devops (002 R1b security review asked for it). **Finding:** 001 `07-security-review.md` **S7-1**, High, risk accepted by the user 1 Oct 2026. It was meant to be fixed in the first patch after launch (001 `08`, first patch item 1) and hasn't been yet. It is still present on `main` (`server.ts:1817`) and `feature/002-r1b` (`server.ts:2138`).
+
+**Owner: to be assigned by the architect.** Flow: backend-dev → code-reviewer → QA → devops → user.
+
+**Problem:** the route only checks `requirePermission('ALERTS','canEdit')` and never calls `resolveSite`. `runNonParkedRosterScan()` (`src/server/db.ts`) scans every site's active employees, **replaces the whole `alerts` collection**, and returns every site's alerts (names, plates, mobiles) to the caller. That is cross-tenant PII disclosure plus a platform-wide write.
+
+**Fix (from 001 07):**
+- scope the route with `resolveSite` (no ALL for non-Masters);
+- scan, replace and return per site only;
+- mask mobiles as other routes do;
+- audit actor = `req.user` (not the `x-user-email` header).
+
+Tests:
+- Site Admin A → 0 foreign rows, and Site B's alerts are unchanged;
+- Master with a site → that site only.
+
+Then a short code review and the QA browser check of "Run cutoff scan".
+
+**Until fixed:** the control is no non-Master user with ALERTS Edit (custom role `role-1790920354180` for Alphatech), and Masters don't press the button. It is verified by V1b/V2 (002 `08` "001 S7-1 control through the R1b deploy"). Related risks:
+- the R1b Sites panel lists only `role-site-manager` users as site admins (R1b-C1);
+- new users default to `role-site-manager` (R1b-C2).
+
+**After the fix ships:** restore ALERTS Edit on the site admin role (001 08 item a in reverse), retire V1b/V2's S7-1 part, and tell Masters the scan is usable again.
+
+## Seeded user records: edits return 200 but are never written to Firestore (Major, open)
+
+**Found:** 2026-10-17 by devops during the R1B-S1 hotfix deploy. Evidence is in 002 `08-release.md`, "Post-switch S7-1 checks".
+
+**Owner: to be assigned by the architect** (backend-dev fix → code-reviewer → QA).
+
+**Symptom:** suspending `usr-102` through `POST /api/v1/rbac/users` returned 200, and the in-memory record showed SUSPENDED. But the Firestore document kept its 22 Sep version, so after a revision restart the user was ACTIVE again.
+
+Cloud Run log:
+`[firestore] Targeted sync failed: Error: Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "customModuleOverrides")`
+
+**Cause:**
+- Seeded users (`getDefaultRolesAndUsers()`) were stored without `customModuleOverrides`.
+- `saveAppUser` builds the record with `customModuleOverrides: pick('customModuleOverrides')`, which is `undefined` for them.
+- The Firestore client isn't set up with `ignoreUndefinedProperties`, so the whole targeted write is rejected. The failure is only logged, and the API reports success.
+
+**Affected (Firestore read 17 Oct, 11 docs):**
+- `usr-digi-master` (Platform Master Admin)
+- `usr-101` (seed Platform Master Admin)
+- `usr-103`, `usr-104`, `usr-105`
+- `usr-102` was fixed by the workaround below.
+
+Any status, role, site or password change to these accounts is lost on the next restart. **That includes a Master password change.**
+
+**Fix direction:**
+- never write `undefined` (default `customModuleOverrides` to `{}` in `saveAppUser` and on load), or set `ignoreUndefinedProperties: true` on the Firestore client;
+- surface a failed targeted sync to the caller (not 200);
+- a one-off repair that adds `customModuleOverrides: {}` to every user document;
+- test: edit a seeded user, reload the store from Firestore, and the change is kept.
+
+**Workaround until fixed:** a Master saves the user once with `customModuleOverrides: {}` in the body (as done for `usr-102`, 15:35 UTC). After any change to these accounts, check the Firestore `updateTime`.
+
+**Related:** seeded demo accounts `usr-101` (a second Platform Master Admin), `usr-103..105` are ACTIVE in production. Their seed passwords are rotated to random values at boot, but they should be reviewed and suspended or removed (PM/security decision).
+
+
+## Whitelisted-domain removal is not durable (Minor, open)
+**Found:** 2026-10-17 (devops).
+`removeWhitelistedDomain()` (`src/server/db.ts`) removes the entry from memory and calls a full `saveDB()`. A full sync never deletes Firestore documents, so the removed domain's document stays and is loaded again on the next cold start. That is the real cause of `company.com` (`dom-1`) reappearing after restarts.
+**Fix:** do a targeted Firestore delete, like B6's `deleteFirestoreDocs`, then test remove → reload → absent.
+**Owner:** to be assigned by the architect.

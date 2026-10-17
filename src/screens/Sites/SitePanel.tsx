@@ -19,6 +19,42 @@ export interface SitePanelProps {
 
 type EditForm = { siteName: string; city: string; address: string; contactPerson: string; contactEmail: string; contactPhone: string };
 
+type ContactField = 'address' | 'contactPerson' | 'contactEmail' | 'contactPhone';
+const CONTACT_FIELDS: { key: ContactField; label: string }[] = [
+  { key: 'address', label: 'Address' },
+  { key: 'contactPerson', label: 'Contact person' },
+  { key: 'contactEmail', label: 'Contact email' },
+  { key: 'contactPhone', label: 'Contact phone' },
+];
+
+/**
+ * 06 BUG-R1B-7 (AC-04/AC-05): before a0410b1, onboarding stored these made-up values when the
+ * Master left a field blank, and they were shown as real. New sites store '' instead; sites
+ * onboarded before keep them until edited, so the console treats exactly these values as not
+ * entered. Only these four patterns, nothing else, is treated this way.
+ */
+function isMadeUpAtOnboarding(site: SiteConfig, key: ContactField): boolean {
+  const v = (site[key] || '').trim();
+  if (!v) return false;
+  switch (key) {
+    case 'address':
+      return !!site.city && v === `${site.city} Parking Complex`;
+    case 'contactPerson':
+      return v === 'Site Facility Manager';
+    case 'contactEmail':
+      return !!site.siteCode && v.toLowerCase() === `admin@${site.siteCode.toLowerCase()}.com`;
+    case 'contactPhone':
+      return v.replace(/\s/g, '') === '+919800000000';
+  }
+}
+
+/** The value to show and edit: what the Master entered, or '' when nothing real was entered. */
+function enteredValue(site: SiteConfig | null, key: ContactField): string {
+  if (!site) return '';
+  const v = (site[key] || '').trim();
+  return v && !isMadeUpAtOnboarding(site, key) ? v : '';
+}
+
 async function post(url: string, body: unknown) {
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   let data: { success?: boolean; message?: string; errorCode?: string; errors?: Record<string, string> } = {};
@@ -31,7 +67,7 @@ async function post(url: string, body: unknown) {
 }
 
 /**
- * Site details (UX S5): city, address, capacity, billing, site admins, email domains,
+ * Site details (UX S5): city, address and contacts ("— not entered" when missing, BUG-R1B-7), capacity, billing, site admins, email domains,
  * onboarded date; on hold shows the reason. Actions: Edit site (POST /sites/update, B5),
  * Change status (POST /sites/status), "⋯" View as site admin (001 view-as, read-only).
  */
@@ -80,10 +116,10 @@ export const SitePanel: React.FC<SitePanelProps> = ({ row, site, readOnly, onClo
     setForm({
       siteName: site?.siteName || row.siteName,
       city: site?.city || row.city,
-      address: site?.address || '',
-      contactPerson: site?.contactPerson || '',
-      contactEmail: site?.contactEmail || '',
-      contactPhone: site?.contactPhone || '',
+      address: enteredValue(site, 'address'),
+      contactPerson: enteredValue(site, 'contactPerson'),
+      contactEmail: enteredValue(site, 'contactEmail'),
+      contactPhone: enteredValue(site, 'contactPhone'),
     });
     setErrors({});
     setFormError(null);
@@ -188,6 +224,11 @@ export const SitePanel: React.FC<SitePanelProps> = ({ row, site, readOnly, onClo
             <TextField label="Contact email" type="email" value={form.contactEmail} error={errors.contactEmail} onChange={set('contactEmail')} />
             <TextField label="Contact phone" type="tel" value={form.contactPhone} error={errors.contactPhone} onChange={set('contactPhone')} />
             <p className="pf-card-note">The site code ({row.siteCode}) can't be changed: records and passes use it.</p>
+            {site && CONTACT_FIELDS.some(({ key }) => isMadeUpAtOnboarding(site, key)) && (
+              <p className="pf-card-note">
+                Contact details that were filled in automatically when the site was onboarded are left blank here. Saving clears them; enter the real ones if you have them.
+              </p>
+            )}
           </form>
         ) : (
           <>
@@ -199,12 +240,14 @@ export const SitePanel: React.FC<SitePanelProps> = ({ row, site, readOnly, onClo
             <dl className="pf-dl">
               <dt>City</dt>
               <dd>{row.city || '—'}</dd>
-              <dt>Address</dt>
-              <dd>{site?.address || '—'}</dd>
+              {CONTACT_FIELDS.map(({ key, label }) => (
+                <React.Fragment key={key}>
+                  <dt>{label}</dt>
+                  <dd>{site ? enteredValue(site, key) || '— not entered' : "— couldn't load the site details"}</dd>
+                </React.Fragment>
+              ))}
               <dt>Capacity</dt>
               <dd>{row.total ? `${formatNumber(row.total)} slots` : '— no slots yet'}</dd>
-              <dt>Contact</dt>
-              <dd>{site ? [site.contactPerson, site.contactEmail, site.contactPhone].filter(Boolean).join(' · ') || '—' : '—'}</dd>
               <dt>Billing</dt>
               <dd>
                 {pricing

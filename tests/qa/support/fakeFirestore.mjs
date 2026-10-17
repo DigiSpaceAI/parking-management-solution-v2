@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 // In-memory stand-in for the parts of the Firestore Admin API the server uses.
 // Every write is recorded in `writes` so tests can assert what (if anything)
 // a cold start pushed to "production" Firestore.
@@ -5,7 +6,13 @@ export class FakeFirestore {
   // failReads: the first n collection reads (get) throw `failMessage`, like a
   // Firestore DEADLINE_EXCEEDED on a throttled cold start. The append-only
   // securityAuditLogs reads are not counted, so the store load is what fails.
-  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded' } = {}) {
+  // persistFile (002 R1b tests): when set, every write and delete rewrites that
+  // JSON file, so a later process can start from the same "Firestore" (re-load).
+  // failDeletes (002 review m-1): the first n batch commits that contain a
+  // delete throw `failMessage` and change nothing.
+  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded', persistFile = null, failDeletes = 0 } = {}) {
+    this.persistFile = persistFile;
+    this.failDeletesLeft = failDeletes;
     this.data = new Map();
     this.writes = [];
     this.loadDelayMs = loadDelayMs;
@@ -20,10 +27,17 @@ export class FakeFirestore {
     if (!this.data.has(name)) this.data.set(name, new Map());
     return this.data.get(name);
   }
+  _persist() {
+    if (!this.persistFile) return;
+    const out = {};
+    for (const [name, docs] of this.data) out[name] = [...docs.values()];
+    writeFileSync(this.persistFile, JSON.stringify(out));
+  }
   _write(collection, id, value, merge) {
     this.writes.push({ collection, id: String(id) });
     const c = this._coll(collection);
     c.set(String(id), merge && c.has(String(id)) ? { ...c.get(String(id)), ...structuredClone(value) } : structuredClone(value));
+    this._persist();
   }
   collection(name) {
     const fs = this;
@@ -45,7 +59,7 @@ export class FakeFirestore {
           _c: name, _id: String(id),
           async set(value, opts) { fs._write(name, id, value, !!opts?.merge); },
           async get() { const v = fs._coll(name).get(String(id)); return { exists: !!v, data: () => (v ? structuredClone(v) : undefined) }; },
-          async delete() { fs.writes.push({ collection: name, id: String(id), deleted: true }); fs._coll(name).delete(String(id)); },
+          async delete() { fs.writes.push({ collection: name, id: String(id), deleted: true }); fs._coll(name).delete(String(id)); fs._persist(); },
         };
       },
     };
@@ -56,8 +70,14 @@ export class FakeFirestore {
     const fs = this;
     return {
       set(ref, value, opts) { ops.push(() => fs._write(ref._c, ref._id, value, !!opts?.merge)); },
-      delete(ref) { ops.push(() => { fs.writes.push({ collection: ref._c, id: ref._id, deleted: true }); fs._coll(ref._c).delete(ref._id); }); },
-      async commit() { for (const op of ops) op(); },
+      delete(ref) { ops.hasDelete = true; ops.push(() => { fs.writes.push({ collection: ref._c, id: ref._id, deleted: true }); fs._coll(ref._c).delete(ref._id); fs._persist(); }); },
+      async commit() {
+        if (ops.hasDelete && fs.failDeletesLeft > 0) {
+          fs.failDeletesLeft--;
+          const err = new Error(fs.failMessage); err.code = 4; throw err;
+        }
+        for (const op of ops) op();
+      },
     };
   }
 }

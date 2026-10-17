@@ -162,6 +162,10 @@ export interface ParkingSlot {
   status: SlotStatus;
   currentVehicle?: string | null;
   updatedAt?: string;
+  // 002 B1 (optional; old records have neither). Slot length in metres
+  // (0 < lengthM <= 20) and level within a puzzle stacker (1 = ground, 1-10).
+  lengthM?: number;
+  palletLevel?: number;
 }
 
 export interface ParkingLog {
@@ -359,4 +363,63 @@ export interface SecurityComplianceSummary {
   activeSecurityHeaders: string[];
 }
 
+// 002 B3: GET /api/v1/overview (one site, "today" = IST calendar day).
+export interface OverviewToday {
+  siteId: string;
+  asOf: string;
+  timezone: 'Asia/Kolkata';
+  occupied: number;
+  total: number;
+  free: number;
+  byLevel: { level: string; occupied: number; total: number }[];
+  entriesToday: number;
+  exitsToday: number;
+  entriesByHour: number[]; // 24 IST hours
+  pendingRequests: number;
+  oldestPendingDays: number | null;
+  parkedOver12h: number;
+  nonParkedAlerts: number;
+  latest: { vehicleNumber: string; slotNumber: string; entryTime: string; exitTime: string | null; status: string }[];
+  hasHistory: boolean; // false = the site has never logged a vehicle (UI shows "—" + reason)
+}
 
+// 002 B4: GET /api/v1/sites/summary (Master Admin only), one row per site.
+export interface SiteSummaryRow {
+  id: string;
+  siteName: string;
+  city: string;
+  siteCode: string;
+  status: SiteStatus;
+  holdReason?: string;
+  onboardedAt: string;
+  occupied: number;
+  total: number;
+  pendingRequests: number;
+  lastActivityAt: string | null;
+}
+
+// 002 B6 (US-18, AC-32a-d): a "Book a demo" request from parkflows.in.
+// Platform-level (a prospect is not a site yet): every read is Master Admin
+// only. No IP address, user-agent or other browser detail is ever stored.
+export type DemoFacilityType = 'Office park' | 'Tech campus' | 'Mall' | 'Hospital' | 'Residential' | 'Other';
+export type DemoRequestStatus = 'NEW' | 'CONTACTED' | 'CLOSED';
+export interface DemoRequest {
+  id: string; // random, non-identifying
+  createdAt: string;
+  name: string;
+  company: string;
+  workEmail: string;
+  phone: string; // +91XXXXXXXXXX
+  city: string;
+  facilityType: DemoFacilityType;
+  slotsApprox?: number;
+  sitesApprox?: number;
+  preferredContact: 'Email' | 'Phone';
+  message?: string; // <= 1000 chars, plain text, never rendered as HTML
+  consentAt: string;
+  source: 'parkflows.in';
+  status: DemoRequestStatus;
+  handledBy?: string;
+  handledAt?: string;
+  note?: string;
+}

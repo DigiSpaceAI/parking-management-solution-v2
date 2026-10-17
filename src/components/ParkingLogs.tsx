@@ -19,15 +19,11 @@ import {
 
 interface ParkingLogsProps {
   logs: ParkingLog[];
-  onVehicleEntry: (vehicleNumber: string, vehicleType?: VehicleType, entryType?: EntryType) => void;
-  onVehicleExit: (vehicleNumberOrSlot: string) => void;
   onRefresh: () => void;
 }
 
 export const ParkingLogs: React.FC<ParkingLogsProps> = ({
   logs,
-  onVehicleEntry,
-  onVehicleExit,
   onRefresh,
 }) => {
   const guard = useWriteGuard();
@@ -54,12 +50,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
 
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [basementFilter, setBasementFilter] = useState<string>('ALL');
-  const [showEntryModal, setShowEntryModal] = useState<boolean>(false);
-  const [showExitModal, setShowExitModal] = useState<boolean>(false);
 
-  const [entryPlate, setEntryPlate] = useState<string>('');
-  const [entryType, setEntryType] = useState<VehicleType>('SEDAN');
-  const [exitPlate, setExitPlate] = useState<string>('');
 
   const [currentPage, setCurrentPage] = useState<number>(1);
   const pageSize = 20;
@@ -79,22 +70,6 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
 
   const totalPages = Math.ceil(filteredLogs.length / pageSize) || 1;
   const paginatedLogs = filteredLogs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-
-  const handleManualEntry = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!entryPlate.trim()) return;
-    onVehicleEntry(entryPlate, entryType, 'MANUAL');
-    setEntryPlate('');
-    setShowEntryModal(false);
-  };
-
-  const handleManualExit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!exitPlate.trim()) return;
-    onVehicleExit(exitPlate);
-    setExitPlate('');
-    setShowExitModal(false);
-  };
 
   // A download is a browser navigation, so the fetch wrapper can't add
   // headers: pass the site and the session token in the query instead (the
@@ -123,24 +98,6 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            {...guard()}
-            onClick={() => setShowEntryModal(true)}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors shadow-sm flex items-center space-x-1.5"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Record Manual Entry</span>
-          </button>
-
-          <button
-            {...guard()}
-            onClick={() => setShowExitModal(true)}
-            className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl transition-colors shadow-sm flex items-center space-x-1.5"
-          >
-            <XCircle className="w-4 h-4" />
-            <span>Process Exit Checkout</span>
-          </button>
-
           <button
             {...guard()}
             onClick={() => downloadExport('logs')}
@@ -250,15 +207,7 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
                     )}
                   </td>
                   <td className="p-3.5 text-right">
-                    {log.status === 'ACTIVE' && (
-                      <button
-                        {...guard()}
-                        onClick={() => onVehicleExit(log.vehicleNumber)}
-                        className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded transition-colors shadow-sm"
-                      >
-                        Exit Checkout
-                      </button>
-                    )}
+                    {/* AC-11: entries and exits are recorded on Live parking only; this log is read-only + export. */}
                   </td>
                 </tr>
               ))}
@@ -292,106 +241,6 @@ export const ParkingLogs: React.FC<ParkingLogsProps> = ({
         </div>
       </div>
 
-      {/* Manual Entry Modal */}
-      {showEntryModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-md w-full shadow-2xl text-slate-900 relative">
-            <button
-              onClick={() => setShowEntryModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 text-lg font-bold"
-            >
-              ✕
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-              <PlusCircle className="w-5 h-5 text-emerald-600" />
-              Manual Vehicle Entry & Auto Slot Allocation
-            </h3>
-
-            <form onSubmit={handleManualEntry} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-600 font-semibold mb-1">Vehicle License Plate Number</label>
-                <input
-                  type="text"
-                  placeholder="e.g. KA-01-EX-8821"
-                  value={entryPlate}
-                  onChange={(e) => setEntryPlate(e.target.value)}
-                  required
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono placeholder-slate-400 focus:outline-none focus:border-emerald-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-600 font-semibold mb-1">Vehicle Category</label>
-                <select
-                  value={entryType}
-                  onChange={(e) => setEntryType(e.target.value as VehicleType)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600"
-                >
-                  <option value="SEDAN">Sedan</option>
-                  <option value="SUV">SUV (Requires 2.5m Clearance)</option>
-                  <option value="EV">EV (Requires EV Rapid Hub)</option>
-                  <option value="TWO_WHEELER">Two Wheeler</option>
-                  <option value="HATCHBACK">Hatchback</option>
-                </select>
-              </div>
-
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-slate-600 text-[11px] leading-relaxed font-mono">
-                Rules Engine will automatically assign the nearest vacant compatible slot in Basements B1, B2, or B3.
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center space-x-2 shadow-sm"
-              >
-                <CheckCircle className="w-4 h-4" />
-                <span>Process Entry & Assign Slot</span>
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Manual Exit Modal */}
-      {showExitModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-md w-full shadow-2xl text-slate-900 relative">
-            <button
-              onClick={() => setShowExitModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 text-lg font-bold"
-            >
-              ✕
-            </button>
-
-            <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-              <XCircle className="w-5 h-5 text-rose-600" />
-              Vehicle Exit Checkout
-            </h3>
-
-            <form onSubmit={handleManualExit} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-600 font-semibold mb-1">License Plate or Slot Number</label>
-                <input
-                  type="text"
-                  placeholder="e.g. KA-01-EX-8821 or B1-P01-S01"
-                  value={exitPlate}
-                  onChange={(e) => setExitPlate(e.target.value)}
-                  required
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono placeholder-slate-400 focus:outline-none focus:border-rose-600"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center space-x-2 shadow-sm"
-              >
-                <XCircle className="w-4 h-4" />
-                <span>Calculate Dwell Duration & Release Slot</span>
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

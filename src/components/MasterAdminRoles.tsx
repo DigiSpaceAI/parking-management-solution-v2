@@ -14,7 +14,7 @@ import React, { useEffect, useMemo, useState, useCallback } from 'react';
 
 const MODULES: [string, string][] = [
   ['HOME', 'Role Home Dashboard'], ['FLOOR_PLAN', 'Live Parking Status'], ['MASTER_CONFIG', 'Master Site Config'],
-  ['USER_MANAGEMENT', 'User & RBAC'], ['INVENTORY', 'Inventory Master'], ['MOBILE_APP', 'ParkFlow Field'],
+  ['USER_MANAGEMENT', 'User & RBAC'], ['INVENTORY', 'Inventory Master'], ['MOBILE_APP', 'ParkFlows Field'],
   ['VALET_SERVICE', 'ValetX Suite'], ['EMPLOYEE_MOBILE_APP', 'Employee Smart Pass'], ['REGISTRATION', 'Employee Registration'],
   ['APPROVALS', 'Vehicle Approval Queue'], ['LOGS', 'Entry / Exit Logs'], ['ANALYTICS', 'Predictive Analytics'],
   ['REPORTS', 'Site Reports'],

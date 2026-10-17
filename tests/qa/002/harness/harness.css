@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@import "../../../../src/design-system/theme.css";
+@import "../../../../src/design-system/tokens.css";
+@import "../../../../src/design-system/fonts.css";
+@import "../../../../src/design-system/components.css";
+body { margin: 0; background: var(--surface-25); }

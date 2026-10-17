@@ -171,7 +171,7 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
   >([
     {
       id: 'notif-1',
-      title: 'Welcome to ParkOrbit Employee Mobile',
+      title: 'Welcome to ParkFlows Employee Mobile',
       body: 'Your corporate domain company.com is verified. Track real-time parking & manage your vehicle pass.',
       time: 'Just now',
       type: 'INFO',
@@ -660,7 +660,7 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <h2 className="text-lg font-black text-white">ParkOrbit Employee Mobile App</h2>
+              <h2 className="text-lg font-black text-white">ParkFlows Employee Mobile App</h2>
               <span className="px-2.5 py-0.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] font-bold rounded-full uppercase tracking-wider">
                 Live Companion
               </span>
@@ -765,7 +765,7 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
                     <div className="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center mx-auto shadow-lg shadow-blue-600/30">
                       <ShieldCheck className="w-8 h-8" />
                     </div>
-                    <h3 className="text-lg font-black text-slate-900">ParkOrbit Corporate</h3>
+                    <h3 className="text-lg font-black text-slate-900">ParkFlows</h3>
                     <p className="text-xs text-slate-500 max-w-xs mx-auto">
                       Employee Vehicle Registration & Live Parking Terminal
                     </p>
@@ -1207,7 +1207,7 @@ export const EmployeeMobileApp: React.FC<EmployeeMobileAppProps> = ({
                               <div className="flex items-center space-x-2">
                                 <ShieldCheck className="w-5 h-5 text-indigo-400" />
                                 <span className="text-xs font-black tracking-wider uppercase text-indigo-300">
-                                  ParkOrbit ANPR Smart Pass
+                                  ParkFlows Smart Pass
                                 </span>
                               </div>
                               <span className="px-2 py-0.5 bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-bold rounded-full">

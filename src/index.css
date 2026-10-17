@@ -1,32 +1,13 @@
 @import "tailwindcss";
+@import "./design-system/theme.css";
+@import "./design-system/tokens.css";
+@import "./design-system/fonts.css";
+@import "./design-system/components.css";
 
-/* Custom Scrollbar for Sidebar & Dark Windows */
-.custom-sidebar-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: #334155 #0f172a;
-}
-
-.custom-sidebar-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-
-.custom-sidebar-scrollbar::-webkit-scrollbar-track {
-  background: #0f172a;
-  border-radius: 9999px;
-}
-
-.custom-sidebar-scrollbar::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 9999px;
-  border: 1px solid #1e293b;
-}
-
-.custom-sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #3b82f6;
-}
-
-/* Write actions disabled in All sites mode or while viewing as another user (001 F4/F7). */
-[data-write-guard]:disabled {
+/* Write actions disabled in All sites mode or while viewing as another user (001 F4/F7).
+   Kept for the R1.1 screens' own buttons until they move onto design-system components;
+   pf-* buttons draw their disabled state themselves. */
+[data-write-guard]:disabled:not(.pf-btn):not(.pf-icon-btn):not(.pf-menu-item) {
   opacity: 0.45;
   cursor: not-allowed;
   filter: grayscale(0.4);

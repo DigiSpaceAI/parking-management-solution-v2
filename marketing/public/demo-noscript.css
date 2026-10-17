@@ -1,0 +1,4 @@
+/* /demo/ with JavaScript off (AC-32c, QA BUG-3): no form at all, only the email/phone banner.
+   Loaded from <noscript> in the page head as a same-origin stylesheet, so the D1 CSP
+   (style-src 'self', no inline styles) allows it. */
+#demo-form { display: none; }

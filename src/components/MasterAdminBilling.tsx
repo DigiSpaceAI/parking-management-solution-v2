@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { ALL_SITES, useSiteContext, withSite } from '../utils/withSite';
 
 /**
  * Master Admin — Billing page
@@ -42,23 +43,30 @@ export const MasterAdminBilling: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
+  // True once invoices have loaded at least once: until then the KPIs show "—", never 0 (AC-05).
+  const [loaded, setLoaded] = useState(false);
+  // 002 R1b review m-1: Billing is a platform page, so a Master may have no site chosen. Invoices are
+  // site-resolved: ask for the chosen site, or for every site ('ALL', which the route allows).
+  const { siteId } = useSiteContext();
+  const scope = siteId || ALL_SITES;
 
   const load = useCallback(async () => {
     setLoadError('');
     try {
-      const res = await fetch('/api/v1/invoices');
+      const res = await fetch(withSite('/api/v1/invoices', scope));
       if (!res.ok) {
         setLoadError(res.status === 429 ? "Too many requests right now — wait a moment and it'll refresh automatically." : 'Could not load invoices. Try refreshing the page.');
         return;
       }
       const data = await res.json();
       setInvoices(Array.isArray(data?.invoices) ? data.invoices : []);
+      setLoaded(true);
     } catch {
       setLoadError('Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     load();
@@ -94,9 +102,9 @@ export const MasterAdminBilling: React.FC = () => {
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 20 }}>
         {[
-          { label: 'Outstanding', value: `₹${totals.totalDue.toLocaleString('en-IN')}` },
-          { label: 'Overdue invoices', value: String(totals.overdueCount) },
-          { label: 'Total invoices', value: String(totals.count) },
+          { label: 'Outstanding', value: loaded ? `₹${totals.totalDue.toLocaleString('en-IN')}` : '—' },
+          { label: 'Overdue invoices', value: loaded ? String(totals.overdueCount) : '—' },
+          { label: 'Total invoices', value: loaded ? String(totals.count) : '—' },
         ].map((s) => (
           <div key={s.label} style={{ border: '1px solid #e2e6ee', borderRadius: 8, padding: 16 }}>
             <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.06em', color: '#64748b' }}>{s.label}</div>
@@ -117,6 +125,8 @@ export const MasterAdminBilling: React.FC = () => {
           <tbody>
             {loading ? (
               <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>Loading…</td></tr>
+            ) : !loaded ? (
+              <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>Invoices couldn't be loaded.</td></tr>
             ) : invoices.length === 0 ? (
               <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>No invoices yet.</td></tr>
             ) : (

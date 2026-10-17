@@ -27,7 +27,6 @@ import {
 interface InventoryMasterProps {
   slots: ParkingSlot[];
   onUpdateSlotStatus: (slotId: string, newStatus: SlotStatus) => void;
-  onVehicleExit?: (vehicleNumberOrSlot: string) => void;
   onRefresh: () => void;
   currentSiteId: string;
 }
@@ -35,7 +34,6 @@ interface InventoryMasterProps {
 export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   slots,
   onUpdateSlotStatus,
-  onVehicleExit,
   onRefresh,
   currentSiteId,
 }) => {
@@ -52,6 +50,10 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const [editingSlot, setEditingSlot] = useState<Partial<ParkingSlot> | null>(null);
   const [slotFormSaving, setSlotFormSaving] = useState(false);
   const [slotFormError, setSlotFormError] = useState<string | null>(null);
+  // 002 F5 (B1): optional slot length (m) and pallet level, typed as text so the server's own
+  // validation message comes back for a bad value. Empty = not set.
+  const [dimText, setDimText] = useState<{ lengthM: string; palletLevel: string }>({ lengthM: '', palletLevel: '' });
+  const [dimErrors, setDimErrors] = useState<{ lengthM?: string; palletLevel?: string }>({});
 
   // Bulk Upload Slots Modal State
   const [isSlotBulkModalOpen, setIsSlotBulkModalOpen] = useState(false);
@@ -91,6 +93,8 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
 
   // Slot Management Handlers
   const handleOpenSlotEditModal = (slot?: ParkingSlot) => {
+    setDimText({ lengthM: slot?.lengthM != null ? String(slot.lengthM) : '', palletLevel: slot?.palletLevel != null ? String(slot.palletLevel) : '' });
+    setDimErrors({});
     if (slot) {
       setEditingSlot({ ...slot });
     } else {
@@ -167,7 +171,10 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
         ...editingSlot,
         id: editingSlot.id || cleanSlotNumber.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
         slotNumber: cleanSlotNumber,
+        lengthM: dimText.lengthM.trim() === '' ? null : dimText.lengthM.trim(),
+        palletLevel: dimText.palletLevel.trim() === '' ? null : dimText.palletLevel.trim(),
       };
+      setDimErrors({});
 
       const res = await fetch('/api/v1/slots/save', {
         method: 'POST',
@@ -185,6 +192,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
         setEditingSlot(null);
         onRefresh();
       } else {
+        if (data.errors && typeof data.errors === 'object') setDimErrors(data.errors);
         setSlotFormError(data.message || 'Failed to save slot');
       }
     } catch (err: any) {
@@ -226,6 +234,10 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
       else if (rawStatus.includes('RESERVED')) status = 'RESERVED';
       else if (rawStatus.includes('MAINT')) status = 'MAINTENANCE';
 
+      // 002 F5: optional 9th/10th columns LengthM, PalletLevel (8-column files are unchanged).
+      const extra: { lengthM?: string; palletLevel?: string } = {};
+      if (cols[8] !== undefined && cols[8] !== '') extra.lengthM = cols[8];
+      if (cols[9] !== undefined && cols[9] !== '') extra.palletLevel = cols[9];
       results.push({
         slotNumber: slotNum,
         basement,
@@ -235,6 +247,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
         parkingType,
         allocation,
         status,
+        ...(extra as unknown as Partial<ParkingSlot>),
       });
     }
     return results;
@@ -261,11 +274,12 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   };
 
   const handleDownloadSlotSampleCSV = () => {
-    const csvContent = `SlotNumber,Basement,FloorLocation,SlotType,Height,ParkingType,Allocation,Status
-B1-P01-S01,B1,North Wing Level 1 Stacker,SEDAN,Standard (2.0m),Puzzle 2-Tier,General Employee,Vacant
-B1-P01-S05,B1,North Wing High Clearance,SUV,High Clearance (2.5m),Puzzle 2-Tier,Executive & VIP,Vacant
-B2-EV-001,B2,South Bay EV Charging Station,EV,Standard (2.0m),Ground Open,EV Charging Only,Vacant
-B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,General Employee,Vacant`;
+    // LengthM (metres, 0–20) and PalletLevel (1–10, puzzle stackers) are optional (002 B1).
+    const csvContent = `SlotNumber,Basement,FloorLocation,SlotType,Height,ParkingType,Allocation,Status,LengthM,PalletLevel
+B1-P01-S1,B1,North Wing Level 1 Stacker,SEDAN,Standard (2.0m),PUZZLE,EMPLOYEE,Vacant,5.0,1
+B1-P01-S2,B1,North Wing Level 2 Stacker,SUV,High Clearance (2.5m),PUZZLE,VIP,Vacant,5.2,2
+B2-EV-001,B2,South Bay EV Charging Station,EV,Standard (2.0m),GROUND,EMPLOYEE,Vacant,5.5,
+B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYEE,Vacant,2.2,`;
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -294,12 +308,20 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
       });
       const data = await res.json();
 
+      // 002 B1: rows with a bad length or pallet level come back as "Row n (SLOT): message".
+      const rowErrors: string[] = Array.isArray(data.errors) ? data.errors : [];
+      const errorNote = rowErrors.length ? ` Not saved: ${rowErrors.slice(0, 5).join(' ')}${rowErrors.length > 5 ? ` (+${rowErrors.length - 5} more)` : ''}` : '';
       if (data.success) {
-        setSlotBulkSuccessMsg(data.message || `Successfully uploaded ${parsedBulkSlots.length} slots.`);
+        setSlotBulkSuccessMsg((data.message || `Successfully uploaded ${parsedBulkSlots.length} slots.`) + errorNote);
       } else {
-        setSlotBulkSuccessMsg(`Upload note: ${data.message || 'Processed'}`);
+        setSlotBulkSuccessMsg(`Upload note: ${data.message || 'Processed'}${errorNote}`);
       }
 
+      // Keep the dialog open when some rows were refused, so the reasons can be read.
+      if (rowErrors.length) {
+        onRefresh();
+        return;
+      }
       setTimeout(() => {
         setIsSlotBulkModalOpen(false);
         setSlotBulkSuccessMsg(null);
@@ -500,16 +522,6 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                       )}
                     </td>
                     <td className="p-3.5 text-right space-x-1">
-                      {slot.status === 'OCCUPIED' && onVehicleExit && (
-                        <button
-                          {...guard('Mark Vehicle Exit from Pallet / Slot')}
-                          onClick={() => onVehicleExit(slot.currentVehicle || slot.slotNumber)}
-                          className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded border border-rose-300 text-[10px] font-bold transition-colors inline-flex items-center space-x-1"
-                        >
-                          <XCircle className="w-3 h-3 text-rose-600" />
-                          <span>Mark Exit</span>
-                        </button>
-                      )}
 
                       <button
                         {...guard()}
@@ -710,6 +722,41 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="slot-length" className="block text-slate-700 font-bold mb-1">Length (m)</label>
+                  <input
+                    id="slot-length"
+                    inputMode="decimal"
+                    value={dimText.lengthM}
+                    onChange={(e) => setDimText({ ...dimText, lengthM: e.target.value })}
+                    aria-invalid={dimErrors.lengthM ? true : undefined}
+                    aria-describedby="slot-length-help"
+                    placeholder="e.g. 5.0"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
+                  />
+                  <p id="slot-length-help" className={dimErrors.lengthM ? 'mt-1 text-xs text-red-700' : 'mt-1 text-xs text-slate-600'}>
+                    {dimErrors.lengthM || 'Optional. More than 0, at most 20.'}
+                  </p>
+                </div>
+                <div>
+                  <label htmlFor="slot-pallet" className="block text-slate-700 font-bold mb-1">Pallet level</label>
+                  <input
+                    id="slot-pallet"
+                    inputMode="numeric"
+                    value={dimText.palletLevel}
+                    onChange={(e) => setDimText({ ...dimText, palletLevel: e.target.value })}
+                    aria-invalid={dimErrors.palletLevel ? true : undefined}
+                    aria-describedby="slot-pallet-help"
+                    placeholder="1 = ground"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
+                  />
+                  <p id="slot-pallet-help" className={dimErrors.palletLevel ? 'mt-1 text-xs text-red-700' : 'mt-1 text-xs text-slate-600'}>
+                    {dimErrors.palletLevel || 'Optional, puzzle stackers only: 1 to 10.'}
+                  </p>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-slate-700 font-bold mb-1">Slot Operational Status *</label>
                 <select
@@ -774,7 +821,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),Ground Open,Ge
               <div className="flex items-center justify-between p-3 bg-blue-50/80 border border-blue-200 rounded-2xl">
                 <div>
                   <span className="font-bold text-blue-900 block">Download Template Sample CSV:</span>
-                  <span className="text-[11px] text-blue-700">Format: SlotNumber, Basement, Location, Type, Height, Mechanism, Allocation, Status</span>
+                  <span className="text-[11px] text-blue-700">Format: SlotNumber, Basement, Location, Type, Height, Mechanism, Allocation, Status, LengthM (optional), PalletLevel (optional)</span>
                 </div>
                 <button
                   onClick={handleDownloadSlotSampleCSV}

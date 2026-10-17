@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
+import { istHour, istDayStartMs } from './time';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -52,6 +53,10 @@ import {
   AppUser,
   OvernightRequest,
   OvernightRequestStatus,
+  OverviewToday,
+  DemoRequest,
+  DemoRequestStatus,
+  SiteSummaryRow,
   PublicAppUser,
   ModuleAccessRights
 } from '../types';
@@ -73,6 +78,7 @@ interface StoreData {
   appRoles: RolePermissionConfig[];
   appUsers: AppUser[];
   overnightRequests: OvernightRequest[];
+  demoRequests: DemoRequest[]; // 002 B6
   lastUpdated: string;
 }
 
@@ -90,6 +96,7 @@ let store: StoreData = {
   appRoles: [],
   appUsers: [],
   overnightRequests: [],
+  demoRequests: [],
   lastUpdated: new Date().toISOString(),
 };
 
@@ -908,6 +915,7 @@ function generate1080Inventory(): StoreData {
     appRoles: defaultRoles,
     appUsers: defaultUsers,
     overnightRequests: [],
+    demoRequests: [],
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -1177,6 +1185,7 @@ export function initDB(): StoreData {
         appRoles: finalAppRoles,
         appUsers: finalAppUsers,
         overnightRequests: loadedStore.overnightRequests || [],
+        demoRequests: loadedStore.demoRequests || [],
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
@@ -1213,6 +1222,7 @@ export function initDB(): StoreData {
         appRoles: defaultRoles,
         appUsers: defaultUsers,
         overnightRequests: [],
+        demoRequests: [],
         lastUpdated: new Date().toISOString(),
       };
       // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
@@ -1243,7 +1253,7 @@ export function initDB(): StoreData {
 const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
   'slots', 'employees', 'logs', 'alerts', 'registrationRequests',
   'whitelistedDomains', 'sites', 'invoices', 'slotChangeNotifications',
-  'valetTickets', 'appRoles', 'appUsers', 'overnightRequests',
+  'valetTickets', 'appRoles', 'appUsers', 'overnightRequests', 'demoRequests',
 ];
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
@@ -1537,7 +1547,7 @@ function scheduleDebouncedFullSync() {
   }, FULL_SYNC_DEBOUNCE_MS);
 }
 
-export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+function writeLocalCopy() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1547,6 +1557,29 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
   } catch (err) {
     console.error('Error saving PMS database:', err);
   }
+}
+
+// 002 B6: targeted Firestore delete (a full sync never deletes, so a removed
+// record would otherwise come back on the next cold start). Same "no write
+// before the store is loaded" rule as every sync (2 Oct hotfix).
+async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): Promise<void> {
+  if (!storeReady || ids.length === 0) return;
+  const db = getFirestoreDb();
+  if (!db) return;
+  try {
+    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
+      const batch = db.batch();
+      for (const id of ids.slice(i, i + FIRESTORE_BATCH_CHUNK)) batch.delete(db.collection(collection).doc(id));
+      await batch.commit();
+    }
+  } catch (err) {
+    if (isFatalFirestoreConfigError(err)) markFirestoreUnavailable(String((err as any)?.message || err));
+    else console.error('[firestore] Targeted delete failed:', err);
+  }
+}
+
+export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+  writeLocalCopy();
 
   // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
   // loaded. The local JSON copy above is still written.
@@ -2202,10 +2235,59 @@ export function updateEmployeeVehicle(params: {
 
 // Single Slot Save/Update
 
+// 002 B1: optional slot dimensions. A value that is present but invalid is an
+// error (never a silent default); null or '' clears the stored value.
+export type SlotDimensionInput = { lengthM?: unknown; palletLevel?: unknown };
+export type SlotDimensions = { lengthM?: number | null; palletLevel?: number | null };
+
+export function parseSlotDimensions(input: SlotDimensionInput): { values: SlotDimensions; errors: Record<string, string> } {
+  const values: SlotDimensions = {};
+  const errors: Record<string, string> = {};
+
+  if (input.lengthM !== undefined) {
+    const raw = input.lengthM;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      values.lengthM = null;
+    } else {
+      // Accepts 5, 5.0, "5", "5.0", "5.0m", "5.0 m".
+      const m = typeof raw === 'number' ? [String(raw), String(raw)] : typeof raw === 'string' ? raw.trim().match(/^(\d+(?:\.\d+)?)\s*m?$/i) : null;
+      const n = m ? Number(m[1]) : NaN;
+      if (!Number.isFinite(n)) errors.lengthM = 'Length must be a number of metres.';
+      else if (!(n > 0 && n <= 20)) errors.lengthM = 'Length must be more than 0 and at most 20 metres.';
+      else values.lengthM = n;
+    }
+  }
+
+  if (input.palletLevel !== undefined) {
+    const raw = input.palletLevel;
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      values.palletLevel = null;
+    } else {
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+      if (!Number.isInteger(n) || n < 1 || n > 10) errors.palletLevel = 'Pallet level must be a whole number from 1 to 10.';
+      else values.palletLevel = n;
+    }
+  }
+
+  return { values, errors };
+}
+
+function applyDimensions(slot: ParkingSlot, dims: SlotDimensions) {
+  if (dims.lengthM === null) delete slot.lengthM;
+  else if (dims.lengthM !== undefined) slot.lengthM = dims.lengthM;
+  if (dims.palletLevel === null) delete slot.palletLevel;
+  else if (dims.palletLevel !== undefined) slot.palletLevel = dims.palletLevel;
+}
+
+// 002 B1: the client-settable slot fields. Everything else (currentVehicle,
+// cameraNumber, updatedAt, …) comes from the stored record or the server,
+// never from the request body (closes the mass-assignment gap of the old
+// `...slotData` spread). siteId is decided by the route (siteForSave).
 export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: boolean = false): ParkingSlot {
   const storeData = getStore();
   const now = new Date().toISOString();
   let existingIndex = -1;
+  const dims = parseSlotDimensions(slotData).values; // routes validate first; invalid values are ignored here
 
   if (slotData.id) {
     existingIndex = storeData.slots.findIndex(s => s.id === slotData.id);
@@ -2225,19 +2307,25 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
 
   if (existingIndex >= 0) {
     const existing = storeData.slots[existingIndex];
+    const status = slotData.status || existing.status;
     const updated: ParkingSlot = {
       ...existing,
-      ...slotData,
+      siteId: slotData.siteId || existing.siteId,
       slotNumber: (slotData.slotNumber || existing.slotNumber).trim().toUpperCase(),
       basement: slotData.basement || existing.basement,
       floorLocation: slotData.floorLocation || existing.floorLocation,
+      puzzleNumber: slotData.puzzleNumber !== undefined ? (slotData.puzzleNumber || undefined) : existing.puzzleNumber,
       slotType: slotData.slotType || existing.slotType,
       height: slotData.height || existing.height,
       parkingType: slotData.parkingType || existing.parkingType,
       allocation: slotData.allocation || existing.allocation,
-      status: slotData.status || existing.status,
-      currentVehicle: slotData.status === 'VACANT' ? undefined : (slotData.currentVehicle ?? existing.currentVehicle),
+      status,
+      // Only the stored vehicle is kept (a vehicle is set by entry/exit, never
+      // by a slot save); a VACANT slot has none.
+      currentVehicle: status === 'VACANT' ? undefined : existing.currentVehicle,
+      updatedAt: now,
     };
+    applyDimensions(updated, dims);
     storeData.slots[existingIndex] = updated;
     // deferSync lets a caller doing many updates in a loop (bulkUploadSlots)
     // batch them into one sync at the end, instead of each iteration
@@ -2252,13 +2340,15 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
       slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
       basement: slotData.basement || 'B1',
       floorLocation: slotData.floorLocation || 'Level 1 Stacker',
+      ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
       slotType: slotData.slotType || 'SEDAN',
       height: slotData.height || 'Standard (2.0m)',
       parkingType: slotData.parkingType || 'PUZZLE',
       allocation: slotData.allocation || 'EMPLOYEE',
       status: slotData.status || 'VACANT',
-      currentVehicle: slotData.currentVehicle,
+      updatedAt: now,
     };
+    applyDimensions(newSlot, dims);
     storeData.slots.unshift(newSlot);
     if (!deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
     return newSlot;
@@ -2289,13 +2379,20 @@ export function deleteSlot(slotId: string, force: boolean = false): { success: b
 }
 
 // Bulk Upload Slot Inventory
-export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number } {
+export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[] } {
   let added = 0;
   let updated = 0;
   const changedIds: string[] = [];
+  const errors: string[] = [];
 
-  for (const item of list) {
+  for (const [index, item] of list.entries()) {
     if (!item.slotNumber) continue;
+    // 002 B1: a bad Length / Pallet level is a row error; the row is skipped.
+    const dimErrors = parseSlotDimensions(item).errors;
+    if (Object.keys(dimErrors).length > 0) {
+      errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${Object.values(dimErrors).join(' ')}`);
+      continue;
+    }
     const storeData = getStore();
     const cleanSlotNum = item.slotNumber.trim().toUpperCase();
 
@@ -2322,7 +2419,165 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
     saveDB([{ collection: 'slots', ids: changedIds }]);
   }
 
-  return { added, updated, total: getStore().slots.length };
+  return { added, updated, total: getStore().slots.length, errors };
+}
+
+// ==========================================
+// 002 B6: DEMO REQUESTS (parkflows.in "Book a demo", US-18 / AC-32a-d)
+// ==========================================
+export const DEMO_FACILITY_TYPES = ['Office park', 'Tech campus', 'Mall', 'Hospital', 'Residential', 'Other'] as const;
+export const DEMO_REQUEST_STATUSES: DemoRequestStatus[] = ['NEW', 'CONTACTED', 'CLOSED'];
+const DEMO_NUMBER_MAX = 100_000;
+const DEMO_MESSAGE_MAX = 1000;
+
+export type DemoRequestInput = Pick<DemoRequest, 'name' | 'company' | 'workEmail' | 'phone' | 'city' | 'facilityType' | 'slotsApprox' | 'sitesApprox' | 'preferredContact' | 'message'>;
+
+// Server-side check of the public form (same rules and wording as
+// marketing/demo/demo.js). Unknown fields are ignored; strings are trimmed
+// and stored as plain text.
+export function validateDemoRequest(body: Record<string, unknown>): { values?: DemoRequestInput; errors: Record<string, string> } {
+  const errors: Record<string, string> = {};
+  const str = (k: string) => (typeof body[k] === 'string' ? (body[k] as string).trim() : null);
+
+  const name = str('name');
+  if (name === null || name.length < 2 || name.length > 80) errors.name = 'Enter your name (2 to 80 characters).';
+  const company = str('company');
+  if (company === null || company.length < 2 || company.length > 120) errors.company = 'Enter your company name (2 to 120 characters).';
+  const workEmail = str('workEmail');
+  if (workEmail === null || workEmail.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(workEmail)) errors.workEmail = 'Enter a work email, like name@company.com.';
+  const phoneRaw = str('phone');
+  const phoneMatch = phoneRaw === null ? null : phoneRaw.replace(/[\s\-()]/g, '').match(/^(?:\+91|91|0)?(\d{10})$/);
+  if (!phoneMatch) errors.phone = 'Enter a 10-digit Indian phone number, like 98206 03518.';
+  const city = str('city');
+  if (city === null || city.length < 2 || city.length > 80) errors.city = 'Enter your city.';
+  const facilityType = str('facilityType');
+  if (!facilityType || !(DEMO_FACILITY_TYPES as readonly string[]).includes(facilityType)) errors.facilityType = 'Choose a facility type.';
+
+  const count = (k: 'slotsApprox' | 'sitesApprox'): number | undefined => {
+    const raw = body[k];
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^[\d,\s]+$/.test(raw.trim()) ? Number(raw.replace(/[,\s]/g, '')) : NaN;
+    if (!Number.isInteger(n) || n < 1 || n > DEMO_NUMBER_MAX) {
+      errors[k] = 'Enter a whole number from 1 to 100,000, or leave it empty.';
+      return undefined;
+    }
+    return n;
+  };
+  const slotsApprox = count('slotsApprox');
+  const sitesApprox = count('sitesApprox');
+
+  const preferredContact = str('preferredContact');
+  if (preferredContact !== 'Email' && preferredContact !== 'Phone') errors.preferredContact = 'Choose how we should contact you.';
+  let message: string | undefined;
+  if (body.message !== undefined && body.message !== null) {
+    const m = str('message');
+    if (m === null || m.length > DEMO_MESSAGE_MAX) errors.message = 'Keep the message to 1,000 characters or fewer.';
+    else if (m) message = m;
+  }
+  if (body.consent !== true) errors.consent = 'Tick the box so we can contact you about the demo.';
+
+  if (Object.keys(errors).length > 0) return { errors };
+  return {
+    errors,
+    values: {
+      name: name!, company: company!, workEmail: workEmail!, phone: `+91${phoneMatch![1]}`, city: city!,
+      facilityType: facilityType as DemoRequest['facilityType'],
+      ...(slotsApprox !== undefined ? { slotsApprox } : {}),
+      ...(sitesApprox !== undefined ? { sitesApprox } : {}),
+      preferredContact: preferredContact as 'Email' | 'Phone',
+      ...(message ? { message } : {}),
+    },
+  };
+}
+
+// TEST SEAM ONLY (AC-32b "500 path tested with a forced store failure"):
+// the cold-start harness calls this; nothing in the app does.
+let failNextDemoSave = false;
+export function __failNextDemoRequestSaveForTests() {
+  failNextDemoSave = true;
+}
+
+export function createDemoRequest(values: DemoRequestInput, now: Date = new Date()): DemoRequest {
+  if (failNextDemoSave) {
+    failNextDemoSave = false;
+    throw new Error('forced demo request store failure (test seam)');
+  }
+  const storeData = getStore();
+  if (!storeData.demoRequests) storeData.demoRequests = [];
+  const createdAt = now.toISOString();
+  const request: DemoRequest = {
+    id: `demo-${crypto.randomBytes(9).toString('hex')}`,
+    createdAt,
+    ...values,
+    consentAt: createdAt,
+    source: 'parkflows.in',
+    status: 'NEW',
+  };
+  storeData.demoRequests.unshift(request);
+  saveDB([{ collection: 'demoRequests', ids: [request.id] }]);
+  return request;
+}
+
+export function getDemoRequests(status?: string): DemoRequest[] {
+  const list = [...(getStore().demoRequests || [])];
+  list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return status && (DEMO_REQUEST_STATUSES as string[]).includes(status) ? list.filter((r) => r.status === status) : list;
+}
+
+export function updateDemoRequestStatus(id: string, status: DemoRequestStatus, note: string | undefined, handledBy: string): DemoRequest | null {
+  const request = (getStore().demoRequests || []).find((r) => r.id === id);
+  if (!request) return null;
+  request.status = status;
+  request.handledBy = handledBy;
+  request.handledAt = new Date().toISOString();
+  if (note !== undefined) request.note = note;
+  saveDB([{ collection: 'demoRequests', ids: [request.id] }]);
+  return request;
+}
+
+// Hard delete (AC-32d "delete on request"): the Firestore document first,
+// awaited (review 05 m-1), then memory and the local copy. If Firestore is
+// configured but the delete fails (or Firestore is unavailable this run), the
+// record is KEPT and 'failed' is returned, so the Master is told to try again
+// instead of being told it is gone while the document would come back on the
+// next cold start. With no Firestore configured (local dev) memory + local
+// copy are the only copies.
+export async function deleteDemoRequest(id: string): Promise<'deleted' | 'not-found' | 'failed'> {
+  const storeData = getStore();
+  if (!(storeData.demoRequests || []).some((r) => r.id === id)) return 'not-found';
+  if (isFirestoreConfigured()) {
+    const db = getFirestoreDb();
+    if (!db || !storeReady) return 'failed';
+    try {
+      const batch = db.batch();
+      batch.delete(db.collection('demoRequests').doc(id));
+      await batch.commit();
+    } catch (err) {
+      console.error('[firestore] Demo request delete failed; record kept:', (err as Error)?.message || err);
+      return 'failed';
+    }
+  }
+  // Re-read: the list may have changed while the delete was awaited.
+  const current = getStore();
+  current.demoRequests = (current.demoRequests || []).filter((r) => r.id !== id);
+  writeLocalCopy();
+  return 'deleted';
+}
+
+// 12-month retention (AC-32d): removes requests created more than 12 months
+// before `now`, from memory, the local copy and Firestore. Returns the count.
+export function expireDemoRequests(now: Date = new Date()): number {
+  const storeData = getStore();
+  const cutoff = new Date(now);
+  cutoff.setMonth(cutoff.getMonth() - 12);
+  const cutoffISO = cutoff.toISOString();
+  const expired = (storeData.demoRequests || []).filter((r) => r.createdAt < cutoffISO).map((r) => r.id);
+  if (expired.length === 0) return 0;
+  const gone = new Set(expired);
+  storeData.demoRequests = storeData.demoRequests.filter((r) => !gone.has(r.id));
+  writeLocalCopy();
+  void deleteFirestoreDocs('demoRequests', expired);
+  return expired.length;
 }
 
 // Domain Whitelist Management
@@ -2901,6 +3156,112 @@ export function getOccupancyTrend(siteId: string, fromISO: string, toISO: string
  * in range. Shows which hours are consistently busiest, not fabricated
  * forecasting.
  */
+// 002 B3: today's overview for one site. "Today" is the IST calendar day of
+// `now`; hours are IST. Counts are real counts (0 only when the data says 0);
+// hasHistory tells a brand-new site (no logs ever) apart from a quiet day.
+// `latest` is returned unmasked: the route masks plates by the caller's role.
+export function getSiteOverview(siteId: string, now: number = Date.now()): OverviewToday {
+  const storeData = getStore();
+  const atSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === siteId;
+  const slots = storeData.slots.filter(atSite);
+  const logs = storeData.logs.filter(atSite);
+  const todayStart = istDayStartMs(now);
+  const isToday = (t?: string | null) => {
+    if (!t) return false;
+    const ms = new Date(t).getTime();
+    return ms >= todayStart && ms < todayStart + 86_400_000;
+  };
+
+  const levelOf = (b: string) => (b === 'Driveway' ? 'Ground' : b);
+  const LEVEL_ORDER = ['B1', 'B2', 'B3', 'Ground'];
+  const levels = new Map<string, { level: string; occupied: number; total: number }>();
+  for (const sl of slots) {
+    const level = levelOf(sl.basement);
+    const row = levels.get(level) || { level, occupied: 0, total: 0 };
+    row.total++;
+    if (sl.status === 'OCCUPIED') row.occupied++;
+    levels.set(level, row);
+  }
+  const byLevel = [...levels.values()].sort((a, b) => {
+    const ia = LEVEL_ORDER.indexOf(a.level), ib = LEVEL_ORDER.indexOf(b.level);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.level.localeCompare(b.level);
+  });
+
+  const entriesByHour = new Array(24).fill(0);
+  let entriesToday = 0;
+  let exitsToday = 0;
+  for (const l of logs) {
+    if (isToday(l.entryTime)) { entriesToday++; entriesByHour[istHour(l.entryTime)]++; }
+    if (isToday(l.exitTime)) exitsToday++;
+  }
+
+  const pending = (storeData.registrationRequests || []).filter(r => atSite(r) && r.status === 'PENDING');
+  const oldestPendingMs = pending.reduce((min, r) => Math.min(min, new Date(r.createdAt).getTime()), Infinity);
+  const twelveHoursAgo = now - 12 * 3_600_000;
+  const lastEvent = (l: ParkingLog) => Math.max(new Date(l.entryTime).getTime(), l.exitTime ? new Date(l.exitTime).getTime() : 0);
+
+  return {
+    siteId,
+    asOf: new Date(now).toISOString(),
+    timezone: 'Asia/Kolkata',
+    occupied: slots.filter(sl => sl.status === 'OCCUPIED').length,
+    total: slots.length,
+    free: slots.filter(sl => sl.status === 'VACANT').length,
+    byLevel,
+    entriesToday,
+    exitsToday,
+    entriesByHour,
+    pendingRequests: pending.length,
+    oldestPendingDays: Number.isFinite(oldestPendingMs) ? Math.floor((now - oldestPendingMs) / 86_400_000) : null,
+    // Open entries older than 12 hours (the 001 default; per-site limits are 001 P2-3).
+    parkedOver12h: logs.filter(l => l.status === 'ACTIVE' && new Date(l.entryTime).getTime() < twelveHoursAgo).length,
+    nonParkedAlerts: (storeData.alerts || []).filter(atSite).length,
+    latest: [...logs].sort((a, b) => lastEvent(b) - lastEvent(a)).slice(0, 4).map(l => ({
+      vehicleNumber: l.vehicleNumber,
+      slotNumber: l.slotNumber,
+      entryTime: l.entryTime,
+      exitTime: l.exitTime || null,
+      status: l.status,
+    })),
+    hasHistory: logs.length > 0,
+  };
+}
+
+// 002 B4: one row per site for the Master Sites table.
+export function getSiteSummaries(): SiteSummaryRow[] {
+  const storeData = getStore();
+  const siteOf = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
+  const rows = new Map<string, { occupied: number; total: number; pending: number; last: number }>();
+  const row = (id: string) => {
+    let r = rows.get(id);
+    if (!r) { r = { occupied: 0, total: 0, pending: 0, last: 0 }; rows.set(id, r); }
+    return r;
+  };
+  for (const sl of storeData.slots) { const r = row(siteOf(sl)); r.total++; if (sl.status === 'OCCUPIED') r.occupied++; }
+  for (const rq of storeData.registrationRequests || []) if (rq.status === 'PENDING') row(siteOf(rq)).pending++;
+  for (const l of storeData.logs) {
+    const r = row(siteOf(l));
+    const t = Math.max(new Date(l.entryTime).getTime() || 0, l.exitTime ? new Date(l.exitTime).getTime() || 0 : 0);
+    if (t > r.last) r.last = t;
+  }
+  return getSites().map((site) => {
+    const r = rows.get(site.id) || { occupied: 0, total: 0, pending: 0, last: 0 };
+    return {
+      id: site.id,
+      siteName: site.siteName,
+      city: site.city,
+      siteCode: site.siteCode,
+      status: site.status,
+      ...(site.holdReason ? { holdReason: site.holdReason } : {}),
+      onboardedAt: site.onboardedAt,
+      occupied: r.occupied,
+      total: r.total,
+      pendingRequests: r.pending,
+      lastActivityAt: r.last > 0 ? new Date(r.last).toISOString() : null,
+    };
+  });
+}
+
 export function getPeakHours(siteId: string, fromISO: string, toISO: string): {
   hour: number;
   avgEntries: number;
@@ -2920,7 +3281,8 @@ export function getPeakHours(siteId: string, fromISO: string, toISO: string): {
 
   const hourCounts = new Array(24).fill(0);
   for (const log of inRangeEntries) {
-    const hour = new Date(log.entryTime).getHours();
+    // 002 B2: bucket by IST hour, not server time (UTC on Cloud Run).
+    const hour = istHour(log.entryTime);
     hourCounts[hour]++;
   }
 
@@ -3250,6 +3612,8 @@ export function getSites(): SiteConfig[] {
   return storeData.sites;
 }
 
+const enteredText = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
 export function onboardSite(siteInput: Partial<SiteConfig>): { success: boolean; message: string; site?: SiteConfig } {
   const storeData = getStore();
 
@@ -3275,10 +3639,14 @@ export function onboardSite(siteInput: Partial<SiteConfig>): { success: boolean;
     siteCode,
     siteName,
     city,
-    address: siteInput.address || `${city} Parking Complex`,
-    contactPerson: siteInput.contactPerson || 'Site Facility Manager',
-    contactEmail: siteInput.contactEmail || `admin@${siteCode.toLowerCase()}.com`,
-    contactPhone: siteInput.contactPhone || '+91 9800000000',
+    // 002 BUG-R1B-7 (AC-04/AC-05): only what the Master entered. A missing
+    // address or contact stays empty ("—" in the console); no made-up
+    // "<city> Parking Complex", "Site Facility Manager", admin@<code>.com or
+    // +91 9800000000 is stored any more.
+    address: enteredText(siteInput.address),
+    contactPerson: enteredText(siteInput.contactPerson),
+    contactEmail: enteredText(siteInput.contactEmail),
+    contactPhone: enteredText(siteInput.contactPhone),
     totalSlots: siteInput.totalSlots || 500,
     basementLevels: siteInput.basementLevels || 2,
     hasPuzzleParking: siteInput.hasPuzzleParking ?? true,
@@ -3370,6 +3738,56 @@ export function deleteSite(siteId: string): { success: boolean; message: string 
     success: true,
     message: `Site '${removed.siteName}' (${removed.siteCode}) deleted permanently from Platform Configuration Master.`,
   };
+}
+
+// 002 B5: Master edits a site's name, city, address and contacts. Only these
+// fields; siteCode, status, pricing and capacity keep their own routes.
+export const SITE_DETAIL_FIELDS = ['siteName', 'city', 'address', 'contactPerson', 'contactEmail', 'contactPhone'] as const;
+export type SiteDetailField = typeof SITE_DETAIL_FIELDS[number];
+
+export function validateSiteDetails(input: Record<string, unknown>): { values: Partial<Record<SiteDetailField, string>>; errors: Record<string, string> } {
+  const values: Partial<Record<SiteDetailField, string>> = {};
+  const errors: Record<string, string> = {};
+  for (const field of SITE_DETAIL_FIELDS) {
+    const raw = input[field];
+    if (raw === undefined) continue;
+    if (typeof raw !== 'string') { errors[field] = 'Must be text.'; continue; }
+    const v = raw.trim();
+    if (v.length > 200) { errors[field] = 'Keep this to 200 characters or fewer.'; continue; }
+    if (field === 'siteName') {
+      if (!v) { errors.siteName = 'Enter the site name.'; continue; }
+      if (v.length > 80) { errors.siteName = 'Keep the site name to 80 characters or fewer.'; continue; }
+    }
+    if (field === 'contactEmail' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) {
+      errors.contactEmail = 'Enter a valid email address, like name@company.com.'; continue;
+    }
+    if (field === 'contactPhone' && v) {
+      const m = v.replace(/[\s\-()]/g, '').match(/^(?:\+91|91|0)?(\d{10})$/);
+      if (!m) { errors.contactPhone = 'Enter a 10-digit Indian phone number, like +91 98206 03518.'; continue; }
+      values.contactPhone = `+91 ${m[1].slice(0, 5)} ${m[1].slice(5)}`;
+      continue;
+    }
+    values[field] = v;
+  }
+  return { values, errors };
+}
+
+export function updateSiteDetails(siteId: string, values: Partial<Record<SiteDetailField, string>>): { success: boolean; message: string; site?: SiteConfig; changed: SiteDetailField[] } {
+  const storeData = getStore();
+  const site = (storeData.sites || []).find((s) => s.id === siteId);
+  if (!site) return { success: false, message: 'Site not found.', changed: [] };
+  const changed: SiteDetailField[] = [];
+  for (const field of SITE_DETAIL_FIELDS) {
+    const v = values[field];
+    if (v === undefined || site[field] === v) continue;
+    site[field] = v;
+    changed.push(field);
+  }
+  if (changed.length > 0) {
+    site.updatedAt = new Date().toISOString();
+    saveDB([{ collection: 'sites', ids: [site.id] }]);
+  }
+  return { success: true, message: changed.length ? `Site ${site.siteName} updated.` : 'Nothing changed.', site, changed };
 }
 
 export function updateSitePricing(siteId: string, pricing: SitePricing): { success: boolean; message: string; site?: SiteConfig } {

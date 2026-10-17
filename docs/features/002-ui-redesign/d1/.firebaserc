@@ -1,0 +1,17 @@
+{
+  "projects": {
+    "default": "gen-lang-client-0904006743"
+  },
+  "targets": {
+    "gen-lang-client-0904006743": {
+      "hosting": {
+        "marketing": [
+          "parkflows-marketing"
+        ],
+        "admin": [
+          "gen-lang-client-0904006743"
+        ]
+      }
+    }
+  }
+}

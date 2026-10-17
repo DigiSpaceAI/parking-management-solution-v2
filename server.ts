@@ -20,6 +20,7 @@ import {
   getEmployeeByEmailOrId,
   updateEmployeeVehicle,
   saveOrUpdateSlot,
+  parseSlotDimensions,
   bulkUploadSlots,
   deleteSlot,
   getWhitelistedDomains,
@@ -36,6 +37,8 @@ import {
   getSlotDailyVehicleCounts,
   getOccupancyTrend,
   getPeakHours,
+  getSiteOverview,
+  getSiteSummaries,
   migrateSiteData,
   approveRegistrationRequest,
   rejectRegistrationRequest,
@@ -47,6 +50,8 @@ import {
   updateSiteStatus,
   deleteSite,
   updateSitePricing,
+  validateSiteDetails,
+  updateSiteDetails,
   getInvoices,
   generateSiteInvoice,
   updateInvoiceStatus,
@@ -67,12 +72,21 @@ import {
   hashPassword,
   setUserPassword,
   clearHistoricalRecords,
-  type ClearableCollection
+  type ClearableCollection,
+  validateDemoRequest,
+  createDemoRequest,
+  getDemoRequests,
+  updateDemoRequestStatus,
+  deleteDemoRequest,
+  expireDemoRequests,
+  DEMO_REQUEST_STATUSES,
 } from './src/server/db';
+import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
 import {
   securityHeadersMiddleware,
   rateLimiterMiddleware,
+  resolveSessionUserId,
   loginRateLimiterMiddleware,
   checkLoginRateLimit,
   recordFailedLoginAttempt,
@@ -96,6 +110,7 @@ import {
   requireAnyPermission,
   hasModulePermission,
   maskPhone,
+  maskLicensePlate,
   createSession,
   generatePasswordResetToken,
   consumePasswordResetToken,
@@ -103,7 +118,7 @@ import {
   extractSessionToken,
   loadAuditLogsFromFirestore
 } from './src/server/security';
-import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
 import { isMasterAdmin } from './src/utils/rbac';
 
@@ -199,6 +214,59 @@ app.use((req, res, next) => {
   }
   next();
 });
+// 002 B6 / B6b (03 v1.3): the public demo form's front door, in this order,
+// before the global body parser:
+//   1. visitor IP by the route-only rule in src/server/clientIp.ts. On Cloud
+//      Run a request that didn't come through the parkflows.in Hosting rewrite
+//      gets 403 ERR_VIA_HOSTING_ONLY (nothing stored, no limiter bucket used);
+//   2. 5 per 10 min per visitor, key "demo:<ip or IPv6 /64>", audit redacted;
+//   3. its own 8 KB body cap (the global parser then skips the parsed body).
+// A body that is too large or not valid JSON gets a plain error: no stack,
+// nothing echoed. 413/415/400 count toward the visitor's own bucket only.
+// Until the store has loaded, all of this is skipped and the cold-start guard
+// below answers 503 ERR_STARTING, as for every API route.
+const DEMO_REQUESTS_PATH = '/api/v1/demo-requests';
+const DEMO_ON_CLOUD_RUN = Boolean(process.env.K_SERVICE);
+const demoHosting = parseHostingCidrs(process.env.DEMO_HOSTING_EGRESS_CIDRS);
+if (demoHosting.invalid.length > 0) {
+  console.warn(`[demo-requests] DEMO_HOSTING_EGRESS_CIDRS: ignored ${demoHosting.invalid.length} invalid entr${demoHosting.invalid.length === 1 ? 'y' : 'ies'}: ${demoHosting.invalid.join(', ')}`);
+}
+if (DEMO_ON_CLOUD_RUN && demoHosting.cidrs.count === 0) {
+  console.warn('[demo-requests] DEMO_HOSTING_EGRESS_CIDRS is not set: every demo request is refused (403) until it is.');
+}
+app.post(
+  DEMO_REQUESTS_PATH,
+  (req, res, next) => {
+    if (!isStoreReady()) return next('route');
+    const picked = pickDemoClientIp({
+      xff: req.headersDistinct['x-forwarded-for'],
+      socketIp: req.socket.remoteAddress,
+      onCloudRun: DEMO_ON_CLOUD_RUN,
+      hostingCidrs: demoHosting.cidrs,
+    });
+    if ('reason' in picked) {
+      logSecurityEvent({
+        action: 'DEMO_REQUEST_NOT_VIA_HOSTING',
+        actor: 'anonymous',
+        actorRole: 'ANONYMOUS',
+        redactClient: true,
+        targetResource: DEMO_REQUESTS_PATH,
+        status: 'BLOCKED_UNAUTHORIZED',
+        details: `Demo request refused: ${picked.reason}.`,
+      });
+      return res.status(403).json({ success: false, errorCode: 'ERR_VIA_HOSTING_ONLY', message: 'Please use the form on parkflows.in.' });
+    }
+    res.locals.demoClientKey = (picked as { key: string }).key;
+    next();
+  },
+  rateLimiterMiddleware(5, 10 * 60 * 1000, { key: (_req, res) => `demo:${res.locals.demoClientKey}`, redactAudit: true }),
+  express.json({ limit: '8kb' }),
+  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!err) return next();
+    if (err.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'The request is too large.' });
+    return res.status(400).json({ success: false, message: 'The request could not be read.' });
+  },
+);
 app.use(express.json({ limit: '10mb' }));
 
 // Set explicit Cache-Control headers on all API responses to prevent 304 cached data
@@ -224,7 +292,19 @@ app.use((req, res, next) => {
 });
 
 // Global API Rate Limiter (Anti-DDoS & Brute Force Protection - 600 req/min for high-volume ANPR & Gate Ops)
-app.use('/api/', rateLimiterMiddleware(600, 60000));
+// 002 R1B-S2 (PRD v1.7/v1.8 m-3): no unredacted event from the public demo
+// route. A demo POST that passed the demo front door (Hosting check + its own
+// per-visitor limit, res.locals.demoClientKey set) skips this limiter: it is
+// keyed on req.ip, which there is the Hosting egress address, and it would log
+// the visitor's user-agent. Any other spelling of the demo path (it doesn't
+// route) still counts here, with a redacted audit. Same buckets either way.
+const globalApiLimiter = rateLimiterMiddleware(600, 60000);
+const globalApiLimiterRedacted = rateLimiterMiddleware(600, 60000, { redactAudit: true });
+app.use('/api/', (req, res, next) => {
+  if (res.locals.demoClientKey !== undefined) return next();
+  if (gatePath(req.baseUrl + req.path) === DEMO_REQUESTS_PATH) return globalApiLimiterRedacted(req, res, next);
+  return globalApiLimiter(req, res, next);
+});
 
 // Require a valid session for all API routes except the ones listed here.
 // Public: health check, login, set-password, employee self-registration
@@ -250,6 +330,16 @@ app.use((req, res, next) => {
   const p = gatePath(req.path); // R1B-S1: same decision for every spelling of a path
   if (!p.startsWith('/api/v1/') && p !== '/login') return next();
   if (PUBLIC_API_PATHS.has(p)) return next();
+  // 002 B6: POST /demo-requests is public (the parkflows.in form). Its other
+  // methods are the Master console's; without a session they answer 405
+  // (AC-32c: a GET with query-string fields is not a way to submit).
+  if (p === DEMO_REQUESTS_PATH) {
+    if (req.method === 'POST') return next();
+    if (!resolveSessionUserId(extractSessionToken(req))) {
+      res.setHeader('Allow', 'POST');
+      return res.status(405).json({ success: false, message: 'Send the form with POST.' });
+    }
+  }
   return requireAuth(req, res, (err?: any) =>
     err ? next(err) : applyViewAs(req, res, () => enforceSiteScope(req, res, next))
   );
@@ -487,6 +577,14 @@ function requireMasterAdmin(req: express.Request, res: express.Response, next: e
   return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can do this.');
 }
 
+// 002 B4: Master Admin only AND not while viewing as a non-Master, so a Master
+// in the Role View Simulator sees what the viewed user would (403), as 03
+// requires for the Master-only reads (/sites/summary, demo requests).
+function requireMasterAdminView(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.user && isMasterAdmin(req.user) && (!req.viewAs || isMasterAdmin(req.viewAs))) return next();
+  return sendApiError(res, 403, 'ERR_MASTER_ONLY', 'Only a Platform Master Admin can do this.');
+}
+
 // List filter for a resolved site ('ALL' = no filter).
 function filterBySite<T extends SiteRef>(items: T[], site: string): T[] {
   return site === 'ALL' ? items : items.filter((x) => recordSite(x) === site);
@@ -697,12 +795,45 @@ app.get('/api/v1/slots', (req, res) => {
     },
   };
 
+  const inSinceBySlot = activeEntryIndex(filterBySite(store.logs, siteId));
   res.json({
     summary,
     totalReturned: slots.length,
-    slots,
+    slots: slots.map((s) => withSlotExtras(s, inSinceBySlot)),
   });
 });
+
+// 002 B2: entryTime of the ACTIVE log per occupied slot, keyed by
+// "<site>|<slotId>". A log only joins a slot of its OWN site, so a log at
+// another site can never lend its time to this site's slot.
+function activeEntryIndex(logs: { status: string; slotId?: string; siteId?: string; entryTime: string }[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const l of logs) {
+    if (l.status !== 'ACTIVE' || !l.slotId) continue;
+    const key = `${recordSite(l)}|${l.slotId}`;
+    const prev = index.get(key);
+    if (!prev || new Date(l.entryTime).getTime() > new Date(prev).getTime()) index.set(key, l.entryTime);
+  }
+  return index;
+}
+
+// 002 B1/B2: response-only fields (nothing stored). heightM = the first
+// number in the stored height string ("Standard (2.0m)" -> 2), so cards show
+// "2.0 m". inSince = entry time of the slot's ACTIVE log at the same site
+// (OCCUPIED slots only; absent when none is found, e.g. legacy data).
+function withSlotExtras<T extends { id: string; siteId?: string; status?: string; height?: string }>(
+  slot: T,
+  inSinceBySlot?: Map<string, string>
+): T & { heightM?: number; inSince?: string } {
+  const out: T & { heightM?: number; inSince?: string } = { ...slot };
+  const m = String(slot.height || '').match(/\d+(?:\.\d+)?/);
+  if (m) out.heightM = parseFloat(m[0]);
+  if (slot.status === 'OCCUPIED' && inSinceBySlot) {
+    const since = inSinceBySlot.get(`${recordSite(slot)}|${slot.id}`);
+    if (since) out.inSince = since;
+  }
+  return out;
+}
 
 // 3. Employee Master Data Endpoint (with PII Privacy Masking & Audit)
 // Field-level PII exposure by role. vehicleNumber is deliberately treated
@@ -1345,6 +1476,178 @@ app.post('/api/v1/sites/status', requirePermission('MASTER_CONFIG', 'canEdit'), 
   res.json(result);
 });
 
+// 002 B5: Master edits name, city, address and contacts of a site. Only
+// those fields (anything else in the body is ignored); view-as is refused for
+// every POST by applyViewAs. Audit lists the changed field NAMES, not values.
+app.post('/api/v1/sites/update', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  if (!body.siteId || typeof body.siteId !== 'string') {
+    return res.status(400).json({ success: false, message: 'siteId is required.', errors: { siteId: 'siteId is required.' } });
+  }
+  const { values, errors } = validateSiteDetails(body);
+  if (Object.keys(errors).length > 0) {
+    return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  }
+  const siteId = canonicalSiteId(body.siteId);
+  const result = updateSiteDetails(siteId, values);
+  if (!result.success) return res.status(404).json({ success: false, message: result.message });
+  if (result.changed.length > 0) {
+    logSecurityEvent({
+      action: 'SITE_UPDATED',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `site/${siteId}`,
+      status: 'SUCCESS',
+      details: `Site ${siteId} updated by ${req.user!.fullName}: ${result.changed.join(', ')}.`,
+      siteId,
+    });
+  }
+  res.json({ success: true, site: result.site });
+});
+
+// ---------------------------------------------------------------------------
+// 002 B6: DEMO REQUESTS (US-18, AC-32a-d). Platform-level, not site-scoped:
+// a prospect is not a site yet. This is the documented exception to the
+// siteId rule, made safe by making every read Master Admin only.
+// ---------------------------------------------------------------------------
+const DEMO_GLOBAL_MAX_PER_HOUR = 30;
+const demoStoredAt: number[] = []; // in memory only, like the 001 limiter
+
+// Per-visitor limit, Hosting check and body cap: see the front door above.
+app.post(DEMO_REQUESTS_PATH, (req, res) => {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ success: false, message: 'Send the form as JSON.' });
+  }
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+  // Honeypot: a filled hidden field gets a silent success and nothing stored.
+  const hp = body.pf_hp_field;
+  if (hp !== undefined && hp !== null && String(hp).trim() !== '') {
+    return res.json({ success: true });
+  }
+  const { values, errors } = validateDemoRequest(body);
+  if (!values) {
+    return res.status(400).json({ success: false, message: 'Check the highlighted fields.', errors });
+  }
+  const now = Date.now();
+  while (demoStoredAt.length > 0 && demoStoredAt[0] <= now - 60 * 60 * 1000) demoStoredAt.shift();
+  if (demoStoredAt.length >= DEMO_GLOBAL_MAX_PER_HOUR) {
+    res.setHeader('Retry-After', String(Math.ceil((demoStoredAt[0] + 60 * 60 * 1000 - now) / 1000)));
+    return res.status(429).json({ success: false, message: 'Too many requests. Try again later.', errorCode: 'ERR_RATE_LIMITED' });
+  }
+  try {
+    createDemoRequest(values);
+  } catch (err) {
+    console.error('[demo-requests] Could not store a demo request:', (err as Error)?.message);
+    return res.status(500).json({ success: false, message: 'We could not send your request. Try again, or email sales@parkflows.in.' });
+  }
+  demoStoredAt.push(now);
+  // Nothing about the request is echoed back (no id, no fields).
+  res.json({ success: true });
+});
+
+app.get(DEMO_REQUESTS_PATH, requireMasterAdminView, (req, res) => {
+  const raw = req.query.status;
+  const status = typeof raw === 'string' && raw !== '' ? raw : undefined;
+  // Review 05 n-2: an unknown status is a 400, not "all requests".
+  if ((raw !== undefined && typeof raw !== 'string') || (status !== undefined && !(DEMO_REQUEST_STATUSES as string[]).includes(status))) {
+    return res.status(400).json({ success: false, message: 'Choose New, Contacted or Closed.', errors: { status: 'Choose New, Contacted or Closed.' } });
+  }
+  res.json({ requests: getDemoRequests(status) });
+});
+
+app.get(`${DEMO_REQUESTS_PATH}/export`, requireMasterAdminView, (req, res) => {
+  const rows = getDemoRequests();
+  let csv = 'Received,Name,Company,Work Email,Phone,City,Facility Type,Slots (approx),Sites (approx),Preferred Contact,Message,Status,Handled By,Handled At,Note\n';
+  for (const r of rows) {
+    csv += [r.createdAt, r.name, r.company, r.workEmail, r.phone, r.city, r.facilityType, r.slotsApprox ?? '', r.sitesApprox ?? '', r.preferredContact, r.message || '', r.status, r.handledBy || '', r.handledAt || '', r.note || '']
+      .map(csvCell).join(',') + '\n';
+  }
+  logSecurityEvent({
+    action: 'DEMO_REQUESTS_EXPORTED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: 'demo-requests/export',
+    status: 'SUCCESS',
+    details: `${rows.length} demo request(s) exported.`,
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="demo-requests.csv"');
+  res.send(csv);
+});
+
+app.post(`${DEMO_REQUESTS_PATH}/status`, requireMasterAdmin, (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const errors: Record<string, string> = {};
+  if (!body.id || typeof body.id !== 'string') errors.id = 'id is required.';
+  if (!(DEMO_REQUEST_STATUSES as unknown[]).includes(body.status)) errors.status = 'Choose New, Contacted or Closed.';
+  if (body.note !== undefined && body.note !== null && (typeof body.note !== 'string' || body.note.length > 1000)) errors.note = 'Keep the note to 1,000 characters or fewer.';
+  if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  const note = typeof body.note === 'string' ? body.note.trim() : undefined;
+  const request = updateDemoRequestStatus(body.id, body.status, note, req.user!.email);
+  if (!request) return res.status(404).json({ success: false, message: 'Demo request not found.' });
+  logSecurityEvent({
+    action: 'DEMO_REQUEST_UPDATED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `demo-request/${request.id}`,
+    status: 'SUCCESS',
+    details: `Demo request ${request.id} set to ${request.status}.`,
+  });
+  res.json({ success: true, request });
+});
+
+app.delete(`${DEMO_REQUESTS_PATH}/:id`, requireMasterAdmin, async (req, res) => {
+  const id = String(req.params.id || '');
+  const result = await deleteDemoRequest(id);
+  if (result === 'not-found') return res.status(404).json({ success: false, message: 'Demo request not found.' });
+  // Review 05 m-1: the Firestore delete is awaited; on failure the record is
+  // kept and the Master is told to try again (no audit: nothing was deleted).
+  if (result === 'failed') {
+    return res.status(503).json({ success: false, errorCode: 'ERR_DELETE_FAILED', message: "Couldn't delete the request. Try again." });
+  }
+  logSecurityEvent({
+    action: 'DEMO_REQUEST_DELETED',
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    ipAddress: req.ip,
+    targetResource: `demo-request/${id}`,
+    status: 'SUCCESS',
+    details: `Demo request ${id} deleted on request by ${req.user!.email}.`,
+  });
+  res.json({ success: true });
+});
+
+// 12-month retention (AC-32d). There is no shared housekeeping scheduler in
+// server.ts, so this follows the security module's timer style: once the
+// store has loaded (never before: hotfix rule), then every 24 hours.
+function runDemoRequestExpiry() {
+  try {
+    const count = expireDemoRequests();
+    if (count > 0) {
+      logSecurityEvent({
+        action: 'DEMO_REQUESTS_EXPIRED',
+        actor: 'SYSTEM',
+        actorRole: 'SYSTEM',
+        targetResource: 'demo-requests',
+        status: 'SUCCESS',
+        details: `${count} demo request(s) older than 12 months deleted.`,
+      });
+    }
+  } catch (err) {
+    console.error('[demo-requests] Expiry run failed:', (err as Error)?.message);
+  }
+}
+const demoExpiryStartTimer = setInterval(() => {
+  if (!isStoreReady()) return;
+  clearInterval(demoExpiryStartTimer);
+  runDemoRequestExpiry();
+  setInterval(runDemoRequestExpiry, 24 * 60 * 60 * 1000).unref();
+}, 1000);
+demoExpiryStartTimer.unref();
+
 app.post('/api/v1/sites/delete', requirePermission('MASTER_CONFIG', 'canDelete'), (req, res) => {
   const { siteId } = req.body;
   if (!siteId) {
@@ -1530,6 +1833,12 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
     const writeSite = siteForSave(req, res, site, storedSlot, rawData.siteId, `slot/${rawData.id || slotNumber}`);
     if (writeSite === null) return;
 
+    // 002 B1: validate the optional dimensions (400 per field).
+    const dimErrors = parseSlotDimensions(rawData).errors;
+    if (Object.keys(dimErrors).length > 0) {
+      return res.status(400).json({ success: false, message: Object.values(dimErrors)[0], errors: dimErrors });
+    }
+
     const slotData = {
       ...rawData,
       siteId: writeSite,
@@ -1588,7 +1897,8 @@ app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'
     const result = bulkUploadSlots(list);
     res.json({
       success: true,
-      message: `Bulk slot upload successful! Added ${result.added} new slots, updated ${result.updated} existing slots. Total slot inventory: ${result.total}`,
+      message: `Bulk slot upload successful! Added ${result.added} new slots, updated ${result.updated} existing slots. Total slot inventory: ${result.total}`
+        + (result.errors.length ? ` ${result.errors.length} row(s) skipped with errors.` : ''),
       result,
     });
   } catch (err: any) {
@@ -1811,12 +2121,35 @@ app.get('/api/v1/logs', requirePermission('LOGS', 'view'), (req, res) => {
   });
 });
 
+// 002 B4: one row per site for the Master Sites table. Unscoped by design
+// (every site), so Master Admin only, and not while viewing as a non-Master.
+app.get('/api/v1/sites/summary', requireMasterAdminView, (req, res) => {
+  const rows: SiteSummaryRow[] = getSiteSummaries();
+  res.json(rows); // 03: the response is SiteSummaryRow[]
+});
+
+// 002 B3: today's overview for ONE site (no ALL). FLOOR_PLAN view.
+// "Today" and hours are IST. Plates in `latest` are masked by the caller's
+// role exactly as /logs does.
+app.get('/api/v1/overview', requirePermission('FLOOR_PLAN', 'view'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const overview = getSiteOverview(siteId);
+  const { platesUnmasked } = piiAccess(req);
+  if (!platesUnmasked) {
+    overview.latest = overview.latest.map((l) => ({ ...l, vehicleNumber: maskLicensePlate(l.vehicleNumber, false) }));
+  }
+  res.json(overview);
+});
+
 // 8. Predictive Analytics 24-Hour Forecast Endpoint
 app.get('/api/v1/analytics/prediction', (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: false });
   if (siteId === null) return;
   const forecast = generate24HourPredictiveForecast(siteId);
-  res.json(forecast);
+  // 002 B4: these figures are modelled, not live; the UI labels them
+  // "Sample data — not live" (AC-04/06).
+  res.json({ ...forecast, sample: true });
 });
 
 // 9. Non-Parked Employee Alerts Endpoint

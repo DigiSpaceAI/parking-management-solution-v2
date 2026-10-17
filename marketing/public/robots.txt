@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://parkflows.in/sitemap.xml

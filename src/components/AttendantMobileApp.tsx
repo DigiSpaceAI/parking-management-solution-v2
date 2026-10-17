@@ -614,7 +614,7 @@ export const AttendantMobileApp: React.FC<AttendantMobileAppProps> = ({
                 </div>
                 <div>
                   <h3 className={`text-sm font-bold leading-tight font-sans ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                    ParkOrbit<span className="text-blue-500 font-mono"> Field</span>
+                    ParkFlows<span className="text-blue-500 font-mono"> Field</span>
                   </h3>
                   <span className="text-[10px] text-emerald-500 font-mono font-bold flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]"></span>

@@ -358,6 +358,22 @@ test('B4 /analytics/prediction is labelled sample:true', async () => {
 });
 
 // ------------------------------------------------------------------ B5
+test('BUG-R1B-7 onboarding stores no made-up address or contact; entered values are kept (trimmed)', async () => {
+  const bare = await c.post('master', '/sites/onboard', { siteName: 'R1b Bare Site', siteCode: 'RBN', city: 'Nagpur', totalSlots: 4 });
+  assert.equal(bare.status, 200, JSON.stringify(bare.body));
+  for (const k of ['address', 'contactPerson', 'contactEmail', 'contactPhone']) assert.equal(bare.body.site[k], '', `${k} left empty`);
+  const listed = (await c.get('master', '/sites')).body.sites.find((x) => x.id === bare.body.site.id);
+  const text = JSON.stringify(listed);
+  for (const madeUp of ['Nagpur Parking Complex', 'Site Facility Manager', 'admin@rbn.com', '+91 9800000000']) assert.ok(!text.includes(madeUp), `no "${madeUp}"`);
+  const full = await c.post('master', '/sites/onboard', { siteName: 'R1b Full Site', siteCode: 'RBF', city: 'Pune', totalSlots: 4,
+    address: '  12 MG Road ', contactPerson: ' Meera Iyer ', contactEmail: 'meera@rbf.in', contactPhone: '+91 98200 11111', });
+  assert.equal(full.status, 200);
+  assert.equal(full.body.site.address, '12 MG Road'); assert.equal(full.body.site.contactPerson, 'Meera Iyer');
+  assert.equal(full.body.site.contactEmail, 'meera@rbf.in'); assert.equal(full.body.site.contactPhone, '+91 98200 11111');
+  const odd = await c.post('master', '/sites/onboard', { siteName: 'R1b Odd Site', siteCode: 'RBO', city: 'Pune', contactPerson: { x: 1 }, address: 42 });
+  assert.equal(odd.status, 200); assert.equal(odd.body.site.contactPerson, ''); assert.equal(odd.body.site.address, '', 'non-text input is not stored');
+});
+
 test('B5 /sites/update: Master 200 and the fields change; unknown fields ignored; audit has field names only', async () => {
   const before = (await c.get('master', '/sites')).body.sites.find((s) => s.id === F.A.id);
   const r = await c.post('master', '/sites/update', { siteId: F.A.id, siteName: '  R1b Site A Renamed ', city: 'Mumbai', address: 'Plot 7, MIDC',

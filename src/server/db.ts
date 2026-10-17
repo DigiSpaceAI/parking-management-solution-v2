@@ -3612,6 +3612,8 @@ export function getSites(): SiteConfig[] {
   return storeData.sites;
 }
 
+const enteredText = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
 export function onboardSite(siteInput: Partial<SiteConfig>): { success: boolean; message: string; site?: SiteConfig } {
   const storeData = getStore();
 
@@ -3637,10 +3639,14 @@ export function onboardSite(siteInput: Partial<SiteConfig>): { success: boolean;
     siteCode,
     siteName,
     city,
-    address: siteInput.address || `${city} Parking Complex`,
-    contactPerson: siteInput.contactPerson || 'Site Facility Manager',
-    contactEmail: siteInput.contactEmail || `admin@${siteCode.toLowerCase()}.com`,
-    contactPhone: siteInput.contactPhone || '+91 9800000000',
+    // 002 BUG-R1B-7 (AC-04/AC-05): only what the Master entered. A missing
+    // address or contact stays empty ("—" in the console); no made-up
+    // "<city> Parking Complex", "Site Facility Manager", admin@<code>.com or
+    // +91 9800000000 is stored any more.
+    address: enteredText(siteInput.address),
+    contactPerson: enteredText(siteInput.contactPerson),
+    contactEmail: enteredText(siteInput.contactEmail),
+    contactPhone: enteredText(siteInput.contactPhone),
     totalSlots: siteInput.totalSlots || 500,
     basementLevels: siteInput.basementLevels || 2,
     hasPuzzleParking: siteInput.hasPuzzleParking ?? true,

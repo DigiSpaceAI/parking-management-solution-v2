@@ -1,0 +1,15 @@
+/* ParkFlows TV page (003). Old TV browsers (Chromium 53): no @layer, no CSS grid, no flex gap,
+   no clamp(), no inset. Every size comes from the tv-* tokens' vw twins, so 720p, 1080p and 4K
+   look the same (03 "tv-* type tokens"). Colours are the 002 tokens. */
+@import "../design-system/tokens.css";
+@import "../design-system/fonts.css";
+
+html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: var(--ink); color: var(--on-navy); }
+body { font-family: var(--font-text); -webkit-font-smoothing: antialiased; }
+#tv { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+
+.tv-head { display: flex; align-items: center; justify-content: space-between; height: var(--tv-header-h-vw); padding: 0 var(--tv-gutter-vw); }
+.tv-place { font-family: var(--font-display); font-weight: 600; font-size: var(--tv-title-size); line-height: var(--tv-title-line); }
+.tv-updated { font-family: var(--font-mono); font-weight: 600; font-size: var(--tv-dim-size); line-height: var(--tv-dim-line); color: var(--navy-100); }
+.tv-body { display: flex; align-items: center; justify-content: center; height: 70vh; padding: 0 var(--tv-gutter-vw); }
+.tv-line { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: var(--tv-count-size); line-height: var(--tv-count-line); text-align: center; }

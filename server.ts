@@ -3656,6 +3656,20 @@ async function startServer() {
     // registered first: Express matches routes in the order they're
     // added, and the admin dashboard's '*' fallback would otherwise
     // intercept every /attendant request before this ever ran.
+    // 003 F2: the TV page (tv.html from `npm run build:display`), at /tv with the alias /display
+    // (03 "Outside the session gate", item 6). Static files only: it reads no session and no API
+    // data here; the page itself polls GET /api/v1/screen/feed with its display credential.
+    // Registered before the dashboard's '*' fallback. No referrer ever leaves the page (the
+    // display link's #k= fragment is never sent anyway), and the HTML is always revalidated.
+    const distDisplayPath = path.join(process.cwd(), 'dist-display');
+    const noReferrer = (res: express.Response) => res.setHeader('Referrer-Policy', 'no-referrer');
+    app.use('/tv/assets', express.static(path.join(distDisplayPath, 'assets'), { index: false, fallthrough: false, setHeaders: noReferrer }));
+    app.get(['/tv', '/tv/', '/display', '/display/'], (req, res) => {
+      noReferrer(res);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.sendFile(path.join(distDisplayPath, 'tv.html'));
+    });
+
     const distMobilePath = path.join(process.cwd(), 'dist-mobile');
     app.use('/attendant', express.static(distMobilePath));
     app.get('/attendant*', (req, res) => {

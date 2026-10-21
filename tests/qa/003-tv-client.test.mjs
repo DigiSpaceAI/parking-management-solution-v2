@@ -1,0 +1,336 @@
+// 003 TV client (03 F2/F5/F7 "003-tv-client unit tests"). Node built-ins plus the repo's own
+// esbuild and vite (already dev dependencies) to compile src/display; nothing is installed.
+//   node --test tests/qa/003-tv-client.test.mjs
+import { test, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const require = createRequire(join(ROOT, 'package.json'));
+const esbuild = require('esbuild');
+
+const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload'];
+const mod = {};
+
+before(async () => {
+  const out = mkdtempSync(join(tmpdir(), 'pf-tv-'));
+  await esbuild.build({
+    entryPoints: MODULES.map((m) => join(ROOT, 'src/display', `${m}.ts`)),
+    bundle: true,
+    format: 'esm',
+    platform: 'neutral',
+    outdir: out,
+    logLevel: 'silent',
+  });
+  for (const m of MODULES) mod[m] = await import(pathToFileURL(join(out, `${m}.js`)).href);
+});
+
+// ---- fakes ------------------------------------------------------------------------------
+/** IST wall time → ISO (UTC). */
+const ist = (y, mo, d, h, mi, s = 0) => new Date(Date.UTC(y, mo - 1, d, h, mi, s) - 330 * 60000).toISOString();
+
+function fakeEnv({ wall = Date.UTC(2000, 0, 1), hash = '' } = {}) {
+  let mono = 1000;
+  const timers = [];
+  let seq = 0;
+  const data = new Map();
+  const env = {
+    requests: [],
+    reloads: 0,
+    respond: null, // (req) => { status, body }
+    mono: () => mono,
+    wall: () => wall,
+    random: () => 0.5,
+    setTimeout: (fn, ms) => {
+      const t = { id: ++seq, at: mono + ms, fn, ms };
+      timers.push(t);
+      return t.id;
+    },
+    clearTimeout: (id) => {
+      const i = timers.findIndex((t) => t.id === id);
+      if (i >= 0) timers.splice(i, 1);
+    },
+    request: (method, url, headers, body, timeoutMs, done) => {
+      const req = { method, url, headers, body, timeoutMs };
+      env.requests.push(req);
+      const r = env.respond ? env.respond(req) : { status: 0, body: null };
+      done(r);
+    },
+    store: { get: (k) => (data.has(k) ? data.get(k) : null), set: (k, v) => data.set(k, v), remove: (k) => data.delete(k) },
+    data,
+    hash: () => hash,
+    reload: () => {
+      env.reloads += 1;
+    },
+    /** Move the monotonic clock, running due timers in order. */
+    advance(ms) {
+      const end = mono + ms;
+      for (;;) {
+        timers.sort((a, b) => a.at - b.at);
+        const t = timers[0];
+        if (!t || t.at > end) break;
+        timers.shift();
+        mono = t.at;
+        t.fn();
+      }
+      mono = end;
+    },
+    pending: () => timers.map((t) => t.ms),
+    setWall: (w) => {
+      wall = w;
+    },
+  };
+  return env;
+}
+
+const TOKEN = 'A'.repeat(43);
+const feed = (over = {}) => ({
+  v: 'v1',
+  serverTime: ist(2026, 10, 21, 9, 14, 32),
+  state: 'OPEN',
+  place: 'Main entrance',
+  hours: { mode: 'ALWAYS' },
+  pageSeconds: 8,
+  counts: { free: 1, total: 2, groups: [{ label: 'Basement B1', free: 1, total: 2 }] },
+  slots: [
+    { code: 'B1-001', level: 'B1', area: 'B1 · Open bays', type: 'SEDAN', ev: false, parkingType: 'GROUND', status: 'VACANT' },
+    { code: 'B1-002', level: 'B1', area: 'B1 · Open bays', type: 'SEDAN', ev: false, parkingType: 'GROUND', status: 'OCCUPIED', plate: 'MH12AB1234' },
+  ],
+  ...over,
+});
+const renders = () => {
+  const frames = [];
+  return { frames, render: (m) => frames.push(m) };
+};
+function start(env, respond) {
+  env.respond = respond;
+  const r = renders();
+  const app = new mod.app.TvApp(env, r);
+  app.start();
+  return { app, r, last: () => r.frames[r.frames.length - 1] };
+}
+
+// ---- polling rules ------------------------------------------------------------------------
+test('poll interval: 3 s ± 300 ms while open, 30 s while closed', () => {
+  const { nextDelayMs } = mod.poll;
+  assert.equal(nextDelayMs({ kind: 'ok', closed: false }, 0, 0), 2700);
+  assert.equal(nextDelayMs({ kind: 'ok', closed: false }, 0, 0.5), 3000);
+  assert.equal(nextDelayMs({ kind: 'ok', closed: false }, 0, 0.9999), 3300);
+  assert.equal(nextDelayMs({ kind: 'ok', closed: true }, 0, 0.5), 30000);
+});
+
+test('backoff: 3 s doubling, capped at 15 s; 401/410 stop', () => {
+  const { nextDelayMs, outcomeOf } = mod.poll;
+  const r = { kind: 'retry' };
+  assert.deepEqual([1, 2, 3, 4, 5, 9].map((n) => nextDelayMs(r, n, 0.5)), [3000, 6000, 12000, 15000, 15000, 15000]);
+  assert.deepEqual(outcomeOf(401, false), { kind: 'stop', reason: 'INVALID' });
+  assert.deepEqual(outcomeOf(410, false), { kind: 'stop', reason: 'OFF' });
+  for (const s of [0, 429, 500, 502, 503]) assert.equal(outcomeOf(s, false).kind, 'retry', String(s));
+  assert.equal(nextDelayMs(outcomeOf(410, false), 0, 0.5), null);
+});
+
+test('stale thresholds: > 30 s stale, > 120 s unavailable', () => {
+  const { freshness } = mod.poll;
+  assert.equal(freshness(30000), 'LIVE');
+  assert.equal(freshness(30001), 'STALE');
+  assert.equal(freshness(120000), 'STALE');
+  assert.equal(freshness(120001), 'UNAVAILABLE');
+});
+
+// ---- the app ------------------------------------------------------------------------------
+test('credential: #k= wins and is remembered; a reload uses the remembered one; junk is ignored', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  const { app } = start(env, () => ({ status: 200, body: feed() }));
+  assert.equal(app.credential, 'OK');
+  assert.equal(env.requests[0].headers['x-display-token'], TOKEN);
+  assert.doesNotMatch(env.requests[0].url, new RegExp(TOKEN), 'the token never goes in a URL');
+  assert.equal(env.data.get(mod.credential.TOKEN_KEY), TOKEN);
+  assert.equal(mod.credential.readCredential('', env.store), TOKEN);
+  assert.equal(mod.credential.tokenFromHash('#k=<script>'), null);
+  assert.equal(mod.credential.tokenFromHash('#x=1&k=' + TOKEN), TOKEN);
+  const none = fakeEnv();
+  const s = start(none, () => ({ status: 200, body: feed() }));
+  assert.equal(s.last().view, 'PAIRING');
+  assert.equal(none.requests.length, 0);
+});
+
+test('live → stale after 30 s → unavailable after 120 s, on the monotonic clock only', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let up = true;
+  const { app } = start(env, () => (up ? { status: 200, body: feed() } : { status: 0, body: null }));
+  assert.equal(app.model().view, 'LIVE');
+  up = false;
+  env.setWall(Date.UTC(2031, 5, 1)); // the TV clock jumps years: no effect
+  env.advance(30000);
+  assert.equal(app.model().view, 'LIVE');
+  assert.equal(app.model().stale, false);
+  env.advance(1500);
+  assert.equal(app.model().view, 'LIVE');
+  assert.equal(app.model().stale, true);
+  env.advance(90000);
+  assert.equal(app.model().view, 'UNAVAILABLE');
+  assert.ok(app.model().feed, 'data is kept, only hidden');
+  up = true;
+  env.advance(15000); // the next retry is at most 15 s away
+  assert.equal(app.model().view, 'LIVE', 'recovers by itself (AC-16)');
+  assert.equal(app.model().stale, false);
+});
+
+test('network failures back off 3, 6, 12, 15, 15 s; success resets to 3 s', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let up = false;
+  start(env, () => (up ? { status: 200, body: feed() } : { status: 503, body: { errorCode: 'ERR_STARTING' } }));
+  const gaps = [];
+  for (let i = 0; i < 5; i++) {
+    gaps.push(env.pending()[0]);
+    env.advance(env.pending()[0]);
+  }
+  assert.deepEqual(gaps, [3000, 6000, 12000, 15000, 15000]);
+  up = true;
+  env.advance(env.pending()[0]);
+  assert.equal(env.pending()[0], 3000);
+});
+
+test('410 stops polling and drops slot data (switched off); 401 = link not valid', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let status = 200;
+  const { app } = start(env, () => (status === 200 ? { status, body: feed() } : { status, body: { errorCode: 'ERR_SCREEN_OFF' } }));
+  status = 410;
+  env.advance(3000);
+  assert.equal(app.model().view, 'OFF');
+  assert.equal(app.model().feed, null);
+  const n = env.requests.length;
+  env.advance(10 * 60000);
+  assert.equal(env.requests.length, n, 'no more polls');
+  assert.deepEqual(env.pending(), []);
+  const e2 = fakeEnv({ hash: `#k=${TOKEN}` });
+  const s2 = start(e2, () => ({ status: 401, body: { errorCode: 'ERR_SCREEN_TOKEN' } }));
+  assert.equal(s2.last().view, 'INVALID');
+  assert.deepEqual(e2.pending(), []);
+});
+
+test('?v= is sent; an unchanged answer keeps the slots and refreshes the time', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let n = 0;
+  const { app } = start(env, () => {
+    n += 1;
+    return n === 1 ? { status: 200, body: feed() } : { status: 200, body: { unchanged: true, v: 'v1', serverTime: ist(2026, 10, 21, 9, 14, 35), state: 'OPEN' } };
+  });
+  env.advance(3000);
+  assert.match(env.requests[1].url, /\?v=v1$/);
+  assert.equal(app.model().feed.slots.length, 2);
+  assert.equal(app.model().feed.serverTime, ist(2026, 10, 21, 9, 14, 35));
+});
+
+test('closed: polls every 30 s; the TV closes and opens by itself from the server offset when unreachable', () => {
+  const hours = { mode: 'DAILY', on: '07:00', off: '23:00' };
+  // Open at 22:59:30 IST, then the network goes; the TV's own clock says the year 2000.
+  const env = fakeEnv({ hash: `#k=${TOKEN}`, wall: Date.UTC(2000, 0, 1) });
+  let up = true;
+  const { app } = start(env, () => (up ? { status: 200, body: feed({ hours, serverTime: ist(2026, 10, 21, 22, 59, 30) }) } : { status: 0, body: null }));
+  assert.equal(app.model().view, 'LIVE');
+  up = false;
+  env.advance(29000); // 22:59:59
+  assert.equal(app.model().view, 'LIVE');
+  env.advance(7000); // 23:00:06, last answer 36 s old: the TV's own rule
+  assert.equal(app.model().view, 'CLOSED');
+  // A CLOSED answer is trusted while current, and polling slows to 30 s.
+  const e2 = fakeEnv({ hash: `#k=${TOKEN}` });
+  const s2 = start(e2, () => ({ status: 200, body: feed({ hours, state: 'CLOSED', slots: undefined, counts: { free: 0, total: 0, groups: [] }, serverTime: ist(2026, 10, 22, 6, 59, 0) }) }));
+  assert.equal(s2.app.model().view, 'CLOSED');
+  assert.deepEqual(e2.pending(), [30000]);
+  // Opening time passes with no network: the TV opens by itself and, with no slot data yet, waits.
+  e2.respond = () => ({ status: 0, body: null });
+  e2.advance(70000); // 07:00:10
+  assert.notEqual(s2.app.model().view, 'CLOSED');
+});
+
+test('hours rule: daytime and overnight windows, IST', () => {
+  const { isOpenAt } = mod.hours;
+  const at = (h, m) => Date.parse(ist(2026, 10, 21, h, m));
+  const day = { mode: 'DAILY', on: '07:00', off: '23:00' };
+  assert.equal(isOpenAt(day, at(6, 59)), false);
+  assert.equal(isOpenAt(day, at(7, 0)), true);
+  assert.equal(isOpenAt(day, at(22, 59)), true);
+  assert.equal(isOpenAt(day, at(23, 0)), false);
+  const night = { mode: 'DAILY', on: '18:00', off: '02:00' };
+  assert.equal(isOpenAt(night, at(17, 59)), false);
+  assert.equal(isOpenAt(night, at(23, 30)), true);
+  assert.equal(isOpenAt(night, at(1, 59)), true);
+  assert.equal(isOpenAt(night, at(2, 0)), false);
+  assert.equal(isOpenAt({ mode: 'ALWAYS' }, at(3, 0)), true);
+  assert.equal(mod.time.fmtTime(at(9, 5)), '09:05');
+});
+
+test('daily reload: once, 04:00–04:30 IST, only when closed or up more than 20 h', () => {
+  const { shouldReload, pickReloadMinute } = mod.reload;
+  const m = pickReloadMinute(0.5); // 04:15
+  assert.equal(m, 255);
+  const at = (h, mi) => Date.parse(ist(2026, 10, 21, h, mi));
+  const base = { reloadMinute: m, uptimeMs: 0, closed: true, lastReloadDay: null };
+  assert.equal(shouldReload({ ...base, nowMs: at(4, 14) }), false);
+  assert.equal(shouldReload({ ...base, nowMs: at(4, 15) }), true);
+  assert.equal(shouldReload({ ...base, nowMs: at(4, 30) }), false);
+  assert.equal(shouldReload({ ...base, nowMs: at(4, 20), closed: false }), false);
+  assert.equal(shouldReload({ ...base, nowMs: at(4, 20), closed: false, uptimeMs: 21 * 3600e3 }), true);
+  assert.equal(shouldReload({ ...base, nowMs: at(4, 20), lastReloadDay: '2026-10-21' }), false);
+});
+
+// ---- the built bundle -----------------------------------------------------------------------
+function walk(node, visit) {
+  if (!node || typeof node.type !== 'string') return;
+  visit(node);
+  for (const key of Object.keys(node)) {
+    if (key === 'loc' || key === 'start' || key === 'end') continue;
+    const v = node[key];
+    if (Array.isArray(v)) v.forEach((c) => c && typeof c === 'object' && walk(c, visit));
+    else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, visit);
+  }
+}
+
+test('build:display output is ES2015 for Chromium 53 (syntax, runtime APIs, CSS, classic script)', () => {
+  const r = spawnSync(process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'vite.display.config.ts', '--outDir', join(tmpdir(), 'pf-tv-dist'), '--emptyOutDir'], { cwd: ROOT, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const dist = join(tmpdir(), 'pf-tv-dist');
+  const html = readFileSync(join(dist, 'tv.html'), 'utf8');
+  assert.doesNotMatch(html, /type="module"|modulepreload/, 'a classic script, no ES modules');
+  const assets = readdirSync(join(dist, 'assets'));
+  const js = assets.filter((f) => f.endsWith('.js'));
+  const css = assets.filter((f) => f.endsWith('.css'));
+  assert.equal(js.length, 1, 'one script, no chunks');
+  const code = readFileSync(join(dist, 'assets', js[0]), 'utf8');
+  // Syntax newer than ES2015, found on the AST (the parser itself has no ES-version switch).
+  const { parse } = require('@babel/parser');
+  const ast = parse(code, { sourceType: 'script', errorRecovery: false });
+  const found = new Set();
+  walk(ast.program, (n) => {
+    if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' || n.type === 'ObjectMethod' || n.type === 'ClassMethod') && n.async) found.add('async function');
+    if (n.type === 'AwaitExpression') found.add('await');
+    if (n.type === 'BinaryExpression' && n.operator === '**') found.add('**');
+    if (n.type === 'AssignmentExpression' && ['**=', '&&=', '||=', '??='].includes(n.operator)) found.add(n.operator);
+    if (n.type === 'LogicalExpression' && n.operator === '??') found.add('??');
+    if (n.type === 'OptionalMemberExpression' || n.type === 'OptionalCallExpression') found.add('?.');
+    if (n.type === 'ObjectExpression' && n.properties.some((p) => p.type === 'SpreadElement')) found.add('object spread');
+    if (n.type === 'ObjectPattern' && n.properties.some((p) => p.type === 'RestElement')) found.add('object rest');
+    if (n.type === 'CatchClause' && !n.param) found.add('optional catch binding');
+    if (n.type === 'ClassProperty' || n.type === 'ClassPrivateProperty' || n.type === 'ClassPrivateMethod') found.add('class fields');
+    if (n.type === 'BigIntLiteral') found.add('BigInt');
+    if (n.type === 'ForOfStatement' && n.await) found.add('for await');
+    if (n.type === 'RegExpLiteral' && (/[sd]/.test(n.flags) || /\(\?<[=!]?/.test(n.pattern))) found.add(`regex /${n.pattern}/${n.flags}`);
+  });
+  assert.deepEqual([...found], [], 'post-ES2015 syntax in the TV bundle');
+  // Runtime APIs Chromium 53 doesn't have (esbuild lowers syntax, not APIs).
+  for (const api of ['getOwnPropertyDescriptors', 'padStart', 'padEnd', 'Object.values', 'Object.entries', 'fromEntries', '.flatMap(', '.flat(', 'replaceAll', 'structuredClone', 'ResizeObserver', 'IntersectionObserver', 'fetch(', 'AbortController', '.finally(', 'globalThis', 'queueMicrotask']) {
+    assert.ok(!code.includes(api), `${api} in the TV bundle`);
+  }
+  const sheet = readFileSync(join(dist, 'assets', css[0]), 'utf8');
+  for (const bad of [/display:\s*grid/, /(?<![-\w])gap:/, /@layer/, /clamp\(/, /(?<![-\w])inset:/, /aspect-ratio/, /:is\(/, /:where\(/, /color-mix\(/]) {
+    assert.doesNotMatch(sheet, bad, `${bad} in the TV stylesheet`);
+  }
+  rmSync(dist, { recursive: true, force: true });
+});

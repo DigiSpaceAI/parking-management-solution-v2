@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
+import { selectedSlots } from './displayFeed';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -56,6 +57,10 @@ import {
   OverviewToday,
   DemoRequest,
   DemoRequestStatus,
+  LiveDisplay,
+  DisplaySelection,
+  DisplayHours,
+  DisplayArea,
   SiteSummaryRow,
   PublicAppUser,
   ModuleAccessRights
@@ -79,6 +84,7 @@ interface StoreData {
   appUsers: AppUser[];
   overnightRequests: OvernightRequest[];
   demoRequests: DemoRequest[]; // 002 B6
+  displays: LiveDisplay[]; // 003 B1
   lastUpdated: string;
 }
 
@@ -97,6 +103,7 @@ let store: StoreData = {
   appUsers: [],
   overnightRequests: [],
   demoRequests: [],
+  displays: [],
   lastUpdated: new Date().toISOString(),
 };
 
@@ -194,6 +201,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       MASTER_CONFIG: fullAccessRights,
       USER_MANAGEMENT: fullAccessRights,
       SECURITY_AUDIT: fullAccessRights,
+      DISPLAYS: fullAccessRights, // 003
     },
   };
 
@@ -221,6 +229,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       MASTER_CONFIG: disabledRights,
       USER_MANAGEMENT: disabledRights,
       SECURITY_AUDIT: readOnlyRights,
+      DISPLAYS: fullAccessRights, // 003
     },
   };
 
@@ -248,6 +257,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       MASTER_CONFIG: disabledRights,
       USER_MANAGEMENT: disabledRights,
       SECURITY_AUDIT: disabledRights,
+      DISPLAYS: disabledRights, // 003
     },
   };
 
@@ -275,6 +285,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       MASTER_CONFIG: disabledRights,
       USER_MANAGEMENT: disabledRights,
       SECURITY_AUDIT: readOnlyRights,
+      DISPLAYS: disabledRights, // 003
     },
   };
 
@@ -302,6 +313,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
       MASTER_CONFIG: disabledRights,
       USER_MANAGEMENT: disabledRights,
       SECURITY_AUDIT: disabledRights,
+      DISPLAYS: disabledRights, // 003
     },
   };
 
@@ -916,6 +928,7 @@ function generate1080Inventory(): StoreData {
     appUsers: defaultUsers,
     overnightRequests: [],
     demoRequests: [],
+    displays: [],
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -1186,6 +1199,7 @@ export function initDB(): StoreData {
         appUsers: finalAppUsers,
         overnightRequests: loadedStore.overnightRequests || [],
         demoRequests: loadedStore.demoRequests || [],
+        displays: loadedStore.displays || [],
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
@@ -1223,6 +1237,7 @@ export function initDB(): StoreData {
         appUsers: defaultUsers,
         overnightRequests: [],
         demoRequests: [],
+        displays: [],
         lastUpdated: new Date().toISOString(),
       };
       // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
@@ -1254,6 +1269,7 @@ const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
   'slots', 'employees', 'logs', 'alerts', 'registrationRequests',
   'whitelistedDomains', 'sites', 'invoices', 'slotChangeNotifications',
   'valetTickets', 'appRoles', 'appUsers', 'overnightRequests', 'demoRequests',
+  'displays', // 003 B1 (targeted writes only)
 ];
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
@@ -4089,6 +4105,7 @@ export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { succes
       MASTER_CONFIG: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },
       USER_MANAGEMENT: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },
       SECURITY_AUDIT: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false },
+      DISPLAYS: { enabled: false, canCreate: false, canEdit: false, canDelete: false, canExport: false }, // 003: off for custom roles
     },
     createdAt: new Date().toISOString(),
   };
@@ -4482,4 +4499,164 @@ export function toggleUserModuleOverride(userId: string, moduleId: AppModuleId, 
     message: `Module '${moduleId}' access for ${user.fullName} updated to ${enabled ? 'ENABLED' : 'DISABLED'}.`,
     user,
   };
+}
+
+// ==========================================
+// 003 B1: LIVE PARKING DISPLAYS (03-tech-design v1.2)
+// Site-scoped records, written with targeted syncs only. The TV credential is
+// never stored (displayAuth.ts keeps only its SHA-256).
+// ==========================================
+const DISPLAY_LEVELS: ParkingSlot['basement'][] = ['B1', 'B2', 'B3', 'Ground', 'Driveway'];
+const DISPLAY_PARKING_TYPES = ['PUZZLE', 'STACK', 'GROUND'] as const;
+const DISPLAY_MAX_SLOT_IDS = 2000;
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Bumped on every display write, so caches keyed on it (token index, feed
+// selection) rebuild. A store reload replaces the array, which they also notice.
+let displaysVersion = 0;
+export const getDisplaysVersion = () => displaysVersion;
+export function touchDisplays() {
+  displaysVersion++;
+}
+
+export function getDisplays(siteId: string | 'ALL'): LiveDisplay[] {
+  const list = getStore().displays || [];
+  return siteId === 'ALL' ? [...list] : list.filter((d) => d.siteId === siteId);
+}
+
+export function siteSlotsOf(siteId: string): ParkingSlot[] {
+  return getStore().slots.filter((sl) => (sl.siteId || DEFAULT_SITE_ID) === siteId);
+}
+
+export function getDisplay(id: string): LiveDisplay | undefined {
+  return (getStore().displays || []).find((d) => d.id === id);
+}
+
+export function saveDisplay(display: LiveDisplay) {
+  touchDisplays();
+  saveDB([{ collection: 'displays', ids: [display.id] }]);
+}
+
+export type DisplayInput = Partial<Pick<LiveDisplay, 'name' | 'location' | 'selection' | 'pageSeconds' | 'hours'>>;
+
+// Validates the editable fields present in `body` (all of them when
+// `requireAll`). Every level, area and slot must exist at `siteId`, so a Site A
+// display can never name a Site B slot. Returns per-field messages.
+export function validateDisplayInput(
+  body: Record<string, unknown>,
+  siteId: string,
+  requireAll: boolean
+): { values: DisplayInput; errors: Record<string, string> } {
+  const errors: Record<string, string> = {};
+  const values: DisplayInput = {};
+  const has = (k: string) => requireAll || body[k] !== undefined;
+
+  if (has('name')) {
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (name.length < 1 || name.length > 60) errors.name = 'Enter a name (1 to 60 characters).';
+    else values.name = name;
+  }
+  if (has('location')) {
+    const raw = body.location === undefined || body.location === null ? '' : body.location;
+    if (typeof raw !== 'string' || raw.trim().length > 80) errors.location = 'Keep the location to 80 characters or fewer.';
+    else values.location = raw.trim();
+  }
+  if (has('pageSeconds')) {
+    const raw = body.pageSeconds === undefined || body.pageSeconds === null ? 8 : body.pageSeconds;
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 5 || raw > 30) errors.pageSeconds = 'Choose a page time from 5 to 30 seconds.';
+    else values.pageSeconds = raw;
+  }
+  if (has('hours')) {
+    const h = (body.hours === undefined || body.hours === null ? { mode: 'ALWAYS' } : body.hours) as Record<string, unknown>;
+    if (h && h.mode === 'ALWAYS') values.hours = { mode: 'ALWAYS' };
+    else if (h && h.mode === 'DAILY' && typeof h.on === 'string' && typeof h.off === 'string' && HHMM.test(h.on) && HHMM.test(h.off) && h.on !== h.off) {
+      values.hours = { mode: 'DAILY', on: h.on, off: h.off };
+    } else errors.hours = 'Choose "Always on", or on and off times (HH:mm, IST) that are different.';
+  }
+  if (has('selection')) {
+    const sel = (body.selection && typeof body.selection === 'object' ? body.selection : {}) as Record<string, unknown>;
+    const siteSlots = siteSlotsOf(siteId);
+    const arr = (v: unknown) => (Array.isArray(v) ? v : v === undefined || v === null ? [] : null);
+    const levelsIn = arr(sel.levels);
+    const areasIn = arr(sel.areas);
+    const idsIn = arr(sel.slotIds);
+    const vehicleClass = sel.vehicleClass === undefined || sel.vehicleClass === null ? 'ALL' : sel.vehicleClass;
+    let problem: string | null = null;
+    if (!levelsIn || !areasIn || !idsIn) problem = 'The selection is not in the expected format.';
+    else if (!['ALL', '4W', '2W'].includes(vehicleClass as string)) problem = 'Choose a vehicle type: all, 4-wheelers or 2-wheelers.';
+    else if (idsIn.length > DISPLAY_MAX_SLOT_IDS) problem = `Choose at most ${DISPLAY_MAX_SLOT_IDS} single slots, or select whole levels or areas.`;
+    let selection: DisplaySelection | null = null;
+    if (!problem) {
+      const levels = Array.from(new Set(levelsIn!.map(String))) as ParkingSlot['basement'][];
+      const areaKeys = new Set<string>();
+      const areas: DisplayArea[] = [];
+      for (const a of areasIn!) {
+        const o = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+        const key = `${o.level}|${o.parkingType}`;
+        if (areaKeys.has(key)) continue;
+        areaKeys.add(key);
+        areas.push({ level: String(o.level) as ParkingSlot['basement'], parkingType: String(o.parkingType) as DisplayArea['parkingType'] });
+      }
+      const slotIds = Array.from(new Set(idsIn!.map(String)));
+      const siteLevels = new Set(siteSlots.map((s) => s.basement));
+      const siteAreas = new Set(siteSlots.map((s) => `${s.basement}|${s.parkingType}`));
+      const siteIds = new Set(siteSlots.map((s) => s.id));
+      if (levels.length + areas.length + slotIds.length === 0) problem = 'Choose at least one level, area or slot.';
+      else if (levels.some((l) => !DISPLAY_LEVELS.includes(l) || !siteLevels.has(l))) problem = "One of the chosen levels isn't at this site.";
+      else if (areas.some((a) => !DISPLAY_LEVELS.includes(a.level) || !(DISPLAY_PARKING_TYPES as readonly string[]).includes(a.parkingType) || !siteAreas.has(`${a.level}|${a.parkingType}`))) problem = "One of the chosen areas isn't at this site.";
+      else if (slotIds.some((id) => !siteIds.has(id))) problem = "One of the chosen slots isn't at this site.";
+      else {
+        selection = { levels, areas, slotIds, vehicleClass: vehicleClass as DisplaySelection['vehicleClass'] };
+        if (selectedSlots({ siteId, selection }, siteSlots).length === 0) problem = 'No slots of this vehicle type are in the selection.';
+      }
+    }
+    if (problem) errors.selection = problem;
+    else values.selection = selection!;
+  }
+  return { values, errors };
+}
+
+export function createDisplay(siteId: string, values: Required<DisplayInput>, actor: string): LiveDisplay {
+  const storeData = getStore();
+  if (!storeData.displays) storeData.displays = [];
+  const now = new Date().toISOString();
+  const display: LiveDisplay = {
+    id: `dsp-${crypto.randomBytes(8).toString('hex')}`,
+    siteId,
+    name: values.name,
+    location: values.location,
+    selection: values.selection,
+    pageSeconds: values.pageSeconds,
+    hours: values.hours,
+    status: 'ACTIVE',
+    tokenHash: null,
+    tokenIssuedAt: null,
+    tokenIssuedBy: null,
+    retiredTokenHashes: [],
+    createdAt: now,
+    createdBy: actor,
+    updatedAt: now,
+    updatedBy: actor,
+  };
+  storeData.displays.push(display);
+  saveDisplay(display);
+  return display;
+}
+
+// Applies already-validated values; returns the names of the fields that changed.
+export function updateDisplay(display: LiveDisplay, values: DisplayInput, actor: string): string[] {
+  const changed: string[] = [];
+  for (const k of ['name', 'location', 'selection', 'pageSeconds', 'hours'] as const) {
+    if (values[k] === undefined) continue;
+    if (JSON.stringify(values[k]) !== JSON.stringify(display[k])) {
+      (display as any)[k] = values[k];
+      changed.push(k);
+    }
+  }
+  if (changed.length > 0) {
+    display.updatedAt = new Date().toISOString();
+    display.updatedBy = actor;
+    saveDisplay(display);
+  }
+  return changed;
 }

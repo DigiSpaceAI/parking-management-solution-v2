@@ -1,3 +1,4 @@
+import { DEFAULT_ROLE_PERMISSIONS } from '../utils/rbac';
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { SecurityAuditLog, SecurityComplianceSummary, Employee, ParkingLog, AppUser, AppModuleId } from '../types';
@@ -889,7 +890,11 @@ export function modulePermissionDenial(user: AppUser, moduleId: AppModuleId, act
   const role = store.appRoles.find((r) => r.id === user.roleId || r.roleCode === user.roleId);
   if (!role) return 'No role assigned to this account.';
 
-  const rights = role.modulePermissions?.[moduleId];
+  // 003 (AC-19): roles stored before the DISPLAYS module existed have no
+  // entry for it; they take the built-in default of their role id (full for
+  // Master Admin and Site Facility Manager, off for every other role, and off
+  // for custom roles, which have no default). Stored roles are not rewritten.
+  const rights = role.modulePermissions?.[moduleId] ?? (moduleId === 'DISPLAYS' ? DEFAULT_ROLE_PERMISSIONS[role.id]?.DISPLAYS : undefined);
   const override = user.customModuleOverrides?.[moduleId];
   const moduleEnabled = override !== undefined ? override : rights?.enabled;
 

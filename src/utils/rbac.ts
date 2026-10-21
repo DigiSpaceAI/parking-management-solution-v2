@@ -47,6 +47,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
     MASTER_CONFIG: FULL_ACCESS_RIGHTS,
     USER_MANAGEMENT: FULL_ACCESS_RIGHTS,
     SECURITY_AUDIT: FULL_ACCESS_RIGHTS,
+    DISPLAYS: FULL_ACCESS_RIGHTS,
   },
   'role-site-manager': {
     HOME: FULL_ACCESS_RIGHTS,
@@ -63,6 +64,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
     MASTER_CONFIG: DISABLED_RIGHTS,
     USER_MANAGEMENT: DISABLED_RIGHTS,
     SECURITY_AUDIT: READ_ONLY_RIGHTS,
+    DISPLAYS: FULL_ACCESS_RIGHTS,
   },
   'role-valet-supervisor': {
     HOME: FULL_ACCESS_RIGHTS,
@@ -79,6 +81,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
     MASTER_CONFIG: DISABLED_RIGHTS,
     USER_MANAGEMENT: DISABLED_RIGHTS,
     SECURITY_AUDIT: DISABLED_RIGHTS,
+    DISPLAYS: DISABLED_RIGHTS,
   },
   'role-mis-auditor': {
     HOME: FULL_ACCESS_RIGHTS,
@@ -95,6 +98,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
     MASTER_CONFIG: DISABLED_RIGHTS,
     USER_MANAGEMENT: DISABLED_RIGHTS,
     SECURITY_AUDIT: READ_ONLY_RIGHTS,
+    DISPLAYS: DISABLED_RIGHTS,
   },
   'role-gate-attendant': {
     HOME: FULL_ACCESS_RIGHTS,
@@ -111,6 +115,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
     MASTER_CONFIG: DISABLED_RIGHTS,
     USER_MANAGEMENT: DISABLED_RIGHTS,
     SECURITY_AUDIT: DISABLED_RIGHTS,
+    DISPLAYS: DISABLED_RIGHTS,
   },
   'role-employee-pass': {
     HOME: FULL_ACCESS_RIGHTS,
@@ -127,6 +132,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
     MASTER_CONFIG: DISABLED_RIGHTS,
     USER_MANAGEMENT: DISABLED_RIGHTS,
     SECURITY_AUDIT: DISABLED_RIGHTS,
+    DISPLAYS: DISABLED_RIGHTS,
   },
 };
 
@@ -140,6 +146,17 @@ export function isModulePermitted(
 ): boolean {
   if (!user) return false;
   if (tabId === 'HOME') return true;
+
+  // 003: Displays is off unless granted. A stored role without a DISPLAYS entry
+  // (every role saved before 003) takes the built-in default for its role id;
+  // a custom role has none, so it stays off (AC-19). No name-based fallback.
+  if (tabId === 'DISPLAYS') {
+    const override = user.customModuleOverrides?.DISPLAYS;
+    if (typeof override === 'boolean') return override;
+    const stored = roleConfig?.modulePermissions?.DISPLAYS;
+    if (stored) return !!stored.enabled;
+    return !!DEFAULT_ROLE_PERMISSIONS[user.roleId || '']?.DISPLAYS?.enabled;
+  }
 
   // Check user-level custom override first
   if (user.customModuleOverrides && typeof user.customModuleOverrides[tabId as AppModuleId] === 'boolean') {
@@ -199,6 +216,7 @@ export function getModuleRights(
   if (DEFAULT_ROLE_PERMISSIONS[roleKey] && DEFAULT_ROLE_PERMISSIONS[roleKey][tabId]) {
     return DEFAULT_ROLE_PERMISSIONS[roleKey][tabId];
   }
+  if (tabId === 'DISPLAYS') return DISABLED_RIGHTS; // 003: never "full" by fallback
 
   return isPermitted ? FULL_ACCESS_RIGHTS : DISABLED_RIGHTS;
 }

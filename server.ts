@@ -80,7 +80,15 @@ import {
   deleteDemoRequest,
   expireDemoRequests,
   DEMO_REQUEST_STATUSES,
+  getDisplays,
+  getDisplay,
+  siteSlotsOf,
+  validateDisplayInput,
+  createDisplay,
+  updateDisplay,
+  type DisplayInput,
 } from './src/server/db';
+import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
 import {
@@ -2140,6 +2148,111 @@ app.get('/api/v1/overview', requirePermission('FLOOR_PLAN', 'view'), (req, res) 
     overview.latest = overview.latest.map((l) => ({ ...l, vehicleNumber: maskLicensePlate(l.vehicleNumber, false) }));
   }
   res.json(overview);
+});
+
+// ---------------------------------------------------------------------------
+// 003 LIVE PARKING DISPLAYS: console routes (03-tech-design v1.2).
+// Inside the session gate: requireAuth -> applyViewAs (every non-GET refused
+// under view-as) -> enforceSiteScope, then requirePermission('DISPLAYS', ...)
+// and resolveSite(). Every :id route checks the STORED siteId. Responses and
+// audits never carry the TV credential, its hash, a pairing code or secret,
+// or anyone's IP / user-agent (audits are written with redactClient).
+// ---------------------------------------------------------------------------
+const DISPLAY_ID_PARAM = ':id(dsp-[0-9a-f]{16})';
+
+function auditDisplay(req: express.Request, action: string, display: { id: string; siteId: string }, details: string) {
+  logSecurityEvent({
+    action,
+    actor: req.user!.email,
+    actorRole: req.user!.roleName,
+    redactClient: true,
+    targetResource: `display/${display.id}`,
+    status: 'SUCCESS',
+    details,
+    siteId: display.siteId,
+  });
+}
+
+// Loads a display of the resolved site, or sends 404 / 403 (+ audit) and returns null.
+function loadDisplayForSite(req: express.Request, res: express.Response, siteId: string) {
+  const display = getDisplay(String(req.params.id));
+  if (!display) {
+    res.status(404).json({ success: false, message: 'Display not found.' });
+    return null;
+  }
+  if (!assertRecordSite(req, res, display, siteId)) return null;
+  return display;
+}
+
+function refuseIfSwitchedOff(res: express.Response, display: { status: string }): boolean {
+  if (display.status !== 'SWITCHED_OFF') return false;
+  sendApiError(res, 409, 'ERR_DISPLAY_SWITCHED_OFF', 'This display is switched off. Duplicate it to make a new one.');
+  return true;
+}
+
+// One row of GET /displays: settings, coverage and online state; no credential data.
+function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now()) {
+  const siteSlots = siteSlotsOf(d.siteId);
+  const covered = selectedSlots(d, siteSlots);
+  const lastSeenAt = displayLastSeen(d);
+  return {
+    id: d.id,
+    siteId: d.siteId,
+    name: d.name,
+    location: d.location,
+    selection: d.selection,
+    selectionSummary: selectionSummary(d),
+    slotCount: covered.length,
+    missingSlots: missingSlotIds(d, siteSlots).length,
+    freeNow: covered.filter((s) => s.status === 'VACANT').length,
+    pageSeconds: d.pageSeconds,
+    hours: d.hours,
+    status: d.status,
+    setUp: d.tokenHash !== null,
+    online: d.status === 'ACTIVE' && !!lastSeenAt && now - Date.parse(lastSeenAt) <= ONLINE_WINDOW_MS,
+    lastSeenAt: lastSeenAt || null,
+    pairedAt: d.pairedAt || null,
+    screenAgent: d.screenAgent || null,
+  };
+}
+// B3 replaces this with the live (in-memory) last seen.
+let displayLastSeen = (d: { lastSeenAt?: string }): string | undefined => d.lastSeenAt;
+
+app.get('/api/v1/displays', requirePermission('DISPLAYS', 'view'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  const list = siteId === NO_SITE_ACCESS ? [] : getDisplays(siteId);
+  res.json({ displays: list.map((d) => displayRow(d)) });
+});
+
+app.get('/api/v1/displays/options', requirePermission('DISPLAYS', 'view'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  res.json(displayOptions(siteSlotsOf(siteId)));
+});
+
+app.post('/api/v1/displays', requirePermission('DISPLAYS', 'canCreate'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const { values, errors } = validateDisplayInput(body, siteId, true);
+  if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  const display = createDisplay(siteId, values as Required<DisplayInput>, req.user!.email);
+  auditDisplay(req, 'DISPLAY_CREATED', display, `Display ${display.id} "${display.name}" created by ${req.user!.email}.`);
+  res.json({ success: true, display: displayRow(display) });
+});
+
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display || refuseIfSwitchedOff(res, display)) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const { values, errors } = validateDisplayInput(body, siteId, false);
+  if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  const changed = updateDisplay(display, values, req.user!.email);
+  if (changed.length > 0) auditDisplay(req, 'DISPLAY_UPDATED', display, `Display ${display.id} updated by ${req.user!.email}: ${changed.join(', ')}.`);
+  res.json({ success: true, display: displayRow(display) });
 });
 
 // 8. Predictive Analytics 24-Hour Forecast Endpoint

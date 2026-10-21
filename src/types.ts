@@ -272,7 +272,8 @@ export type AppModuleId =
   | 'ALERTS'
   | 'MASTER_CONFIG'
   | 'USER_MANAGEMENT'
-  | 'SECURITY_AUDIT';
+  | 'SECURITY_AUDIT'
+  | 'DISPLAYS'; // 003: Live Parking Display (TV screens)
 
 export type SystemRoleType =
   | 'MASTER_ADMIN'
@@ -350,7 +351,13 @@ export type ApiErrorCode =
   | 'ERR_MASTER_ONLY'
   | 'ERR_SESSION_EXPIRED'
   | 'ERR_ACCOUNT_INACTIVE'
-  | 'ERR_STARTING';
+  | 'ERR_STARTING'
+  // 003 Live Parking Display
+  | 'ERR_SCREEN_TOKEN'
+  | 'ERR_SCREEN_OFF'
+  | 'ERR_PAIR_EXPIRED'
+  | 'ERR_DISPLAY_SWITCHED_OFF'
+  | 'ERR_RATE_LIMITED';
 
 export interface SecurityComplianceSummary {
   encryptionAtRest: boolean;
@@ -423,3 +430,96 @@ export interface DemoRequest {
   handledAt?: string;
   note?: string;
 }
+
+// ==========================================
+// 003 Live Parking Display (03-tech-design v1.2)
+// ==========================================
+/** A level + parking type, e.g. { B1, PUZZLE } = "B1 puzzles" (03 "Zones" decision B). */
+export interface DisplayArea {
+  level: ParkingSlot['basement'];
+  parkingType: ParkingType;
+}
+
+export type DisplayHours = { mode: 'ALWAYS' } | { mode: 'DAILY'; on: string; off: string }; // IST 'HH:mm'; off < on = overnight
+
+export interface DisplaySelection {
+  levels: ParkingSlot['basement'][];
+  areas: DisplayArea[];
+  slotIds: string[];
+  vehicleClass: 'ALL' | '4W' | '2W'; // 2W = TWO_WHEELER slots; 4W = every other type
+}
+
+/** A TV / signage screen of one site. The TV credential is never stored, only its SHA-256. */
+export interface LiveDisplay {
+  id: string; // 'dsp-' + random
+  siteId: string; // from resolveSite() at create; never from a body
+  name: string; // 1-60
+  location: string; // 0-80
+  selection: DisplaySelection;
+  pageSeconds: number; // 5-30
+  hours: DisplayHours;
+  status: 'ACTIVE' | 'SWITCHED_OFF';
+  tokenHash: string | null;
+  tokenIssuedAt: string | null;
+  tokenIssuedBy: string | null;
+  retiredTokenHashes: { hash: string; until: string }[];
+  pairedAt?: string;
+  screenAgent?: string; // <= 120 chars; no IP is ever stored
+  lastSeenAt?: string; // persisted at most every 10 min
+  forcedFull?: { setAt: string; setBy: string; endsAt: string | null } | null; // US-16
+  slotRules?: { hidden: string[]; pinned: string[] }; // US-17 (separable)
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** A site-level takeover message (US-15). */
+export interface DisplayMessage {
+  id: string; // 'dmsg-' + random
+  siteId: string;
+  text: string; // 1-140, plain text
+  mode: 'BANNER' | 'FULL';
+  target: { all: true } | { displayIds: string[] };
+  clearedFor: string[];
+  endsAt: string | null;
+  createdAt: string;
+  createdBy: string;
+  endedAt?: string;
+  endedBy?: string;
+  endReason?: 'CLEARED' | 'EXPIRED' | 'REPLACED';
+}
+
+/** One card on a TV. NFR-5: the only slot data a screen can ever receive. */
+export interface FeedSlot {
+  code: string;
+  level: string;
+  area: string;
+  type: SlotType;
+  ev: boolean;
+  parkingType: ParkingType;
+  puzzleNumber?: string;
+  palletLevel?: number;
+  status: SlotStatus;
+  heightM?: number;
+  lengthM?: number;
+  plate?: string; // ONLY when status === 'OCCUPIED'
+  pinned?: true; // US-17
+}
+
+export interface DisplayFeed {
+  v: string; // content hash of everything except serverTime
+  serverTime: string;
+  state: 'OPEN' | 'CLOSED' | 'EMPTY';
+  place: string;
+  siteName: string;
+  hours: DisplayHours;
+  pageSeconds: number;
+  counts: { free: number; total: number; groups: { label: string; free: number; total: number }[] };
+  override: {
+    message: { id: string; text: string; mode: 'BANNER' | 'FULL'; endsAt: string | null } | null;
+    forcedFull: { endsAt: string | null } | null;
+  };
+  slots?: FeedSlot[];
+}
+

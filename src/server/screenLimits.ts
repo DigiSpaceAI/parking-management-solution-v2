@@ -1,0 +1,37 @@
+// 003 B4/B5: the screen routes' own rate limits (03 "Rate limits for the public
+// routes", "Abuse limits"). Fixed windows, in memory (max-instances=1, K4),
+// separate key spaces from 001's ip:/u: limiter and 002's demo: keys.
+// Constants, no env vars.
+export class WindowLimiter {
+  private buckets = new Map<string, { count: number; resetAt: number; logged: boolean }>();
+  constructor(readonly max: number, readonly windowMs: number) {
+    const sweep = setInterval(() => {
+      const now = Date.now();
+      for (const [k, b] of this.buckets) if (now >= b.resetAt) this.buckets.delete(k);
+    }, Math.max(windowMs, 10_000));
+    sweep.unref();
+  }
+  /**
+   * Counts one request for `key`. `firstRefusal` is true only for the first
+   * refusal in a window, so a flood writes one audit row, not thousands.
+   */
+  hit(key: string, now = Date.now()): { ok: boolean; retryAfterSec: number; firstRefusal: boolean } {
+    let b = this.buckets.get(key);
+    if (!b || now >= b.resetAt) {
+      b = { count: 0, resetAt: now + this.windowMs, logged: false };
+      this.buckets.set(key, b);
+    }
+    b.count++;
+    if (b.count <= this.max) return { ok: true, retryAfterSec: 0, firstRefusal: false };
+    const firstRefusal = !b.logged;
+    b.logged = true;
+    return { ok: false, retryAfterSec: Math.max(1, Math.ceil((b.resetAt - now) / 1000)), firstRefusal };
+  }
+  /** Current count for a key (tests and diagnostics). */
+  peek(key: string): number {
+    return this.buckets.get(key)?.count || 0;
+  }
+}
+
+export const FEED_PER_CREDENTIAL = new WindowLimiter(40, 60_000); // normal is 20/min
+export const FEED_ALL_SCREENS = new WindowLimiter(3000, 60_000); // ~150 TVs together

@@ -91,6 +91,7 @@ import {
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, markSeen, lastSeenIso } from './src/server/displayScreen';
+import { WindowLimiter, FEED_PER_CREDENTIAL, FEED_ALL_SCREENS } from './src/server/screenLimits';
 import { displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
@@ -313,6 +314,10 @@ const globalApiLimiter = rateLimiterMiddleware(600, 60000);
 const globalApiLimiterRedacted = rateLimiterMiddleware(600, 60000, { redactAudit: true });
 app.use('/api/', (req, res, next) => {
   if (res.locals.demoClientKey !== undefined) return next();
+  // 003 B4: the TV routes skip this limiter (keyed on req.ip, which behind the
+  // Hosting rewrite is shared by every TV and visitor) and use their own key
+  // spaces. Same exact path + method check as the sign-in gate.
+  if (isScreenPublic(req.method, req.baseUrl + req.path)) return next();
   if (gatePath(req.baseUrl + req.path) === DEMO_REQUESTS_PATH) return globalApiLimiterRedacted(req, res, next);
   return globalApiLimiter(req, res, next);
 });
@@ -322,7 +327,10 @@ app.use('/api/', (req, res, next) => {
 // gate"); anything else under /api/v1/screen/ goes to requireAuth -> 401.
 const SCREEN_PUBLIC = new Set<string>([
   'GET /api/v1/screen/feed',
+  'POST /api/v1/screen/pair/start',
+  'GET /api/v1/screen/pair/status',
 ]);
+const isScreenPublic = (method: string, path: string) => SCREEN_PUBLIC.has(`${method} ${gatePath(path)}`);
 
 // Require a valid session for all API routes except the ones listed here.
 // Public: health check, login, set-password, employee self-registration
@@ -349,7 +357,7 @@ app.use((req, res, next) => {
   if (!p.startsWith('/api/v1/') && p !== '/login') return next();
   if (PUBLIC_API_PATHS.has(p)) return next();
   // 003: the public TV routes, by exact gatePath + method (never startsWith).
-  if (SCREEN_PUBLIC.has(`${req.method} ${p}`)) return next();
+  if (isScreenPublic(req.method, req.path)) return next();
   // 002 B6: POST /demo-requests is public (the parkflows.in form). Its other
   // methods are the Master console's; without a session they answer 405
   // (AC-32c: a GET with query-string fields is not a way to submit).
@@ -2306,8 +2314,35 @@ app.get(`/api/v1/displays/${DISPLAY_ID_PARAM}/preview`, requirePermission('DISPL
 // alone. 401 unknown, 410 replaced / switched off. Polls are not audited,
 // except the first after a new credential (DISPLAY_CONNECTED, id + site).
 // ---------------------------------------------------------------------------
+// B4: a 429 on a screen route writes ONE redacted audit row per bucket and
+// window (display id or "unknown"; no IP, user-agent, token or query string).
+function refuseScreen(res: express.Response, route: string, who: string, siteId: string | undefined, hit: { retryAfterSec: number; firstRefusal: boolean }) {
+  if (hit.firstRefusal) {
+    logSecurityEvent({
+      action: 'RATE_LIMIT_EXCEEDED',
+      actor: 'anonymous',
+      actorRole: 'SCREEN',
+      redactClient: true,
+      targetResource: route,
+      status: 'RATE_LIMITED',
+      details: `Screen limit exceeded (${who}).`,
+      ...(siteId ? { siteId } : {}),
+    });
+  }
+  res.setHeader('Retry-After', String(hit.retryAfterSec));
+  return sendApiError(res, 429, 'ERR_RATE_LIMITED', 'Too many requests. Try again in a moment.');
+}
+
 app.get('/api/v1/screen/feed', (req, res) => {
   const auth = resolveScreenToken(req.headers['x-display-token']);
+  // Every request counts toward the all-screens bucket; only a known
+  // credential (live or retired) has a bucket of its own.
+  const all = FEED_ALL_SCREENS.hit('screen:feed:all');
+  if (!all.ok) return refuseScreen(res, '/api/v1/screen/feed', auth.kind === 'OK' ? `display ${auth.display.id}` : 'unknown', auth.kind === 'OK' ? auth.display.siteId : undefined, all);
+  if (auth.kind !== 'UNKNOWN') {
+    const own = FEED_PER_CREDENTIAL.hit(`screen:feed:${auth.hash}`);
+    if (!own.ok) return refuseScreen(res, '/api/v1/screen/feed', auth.kind === 'OK' ? `display ${auth.display.id}` : 'unknown', auth.kind === 'OK' ? auth.display.siteId : undefined, own);
+  }
   if (auth.kind === 'UNKNOWN') return sendApiError(res, 401, 'ERR_SCREEN_TOKEN', "This display link isn't valid. Ask your site admin.");
   if (auth.kind === 'OFF') return sendApiError(res, 410, 'ERR_SCREEN_OFF', 'This display has been switched off — ask your site admin.');
   const display = (auth as { display: ReturnType<typeof getDisplays>[number] }).display;

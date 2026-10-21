@@ -198,3 +198,80 @@ test('B3 last seen is persisted (targeted) on the first poll, not on every poll'
     assert.equal(fx.readData().displays.find((x) => x.id === r.body.display.id).lastSeenAt, first, 'not re-written within 10 min');
   } finally { fx.stop(); }
 });
+
+// ------------------------------------------------------------------ B4
+test('B4 R1B-S1 style: only GET /api/v1/screen/feed (and its trailing slash) is public; every other spelling or method is gated', async () => {
+  const d = await mkDisplay(sel({ levels: ['B1'] }));
+  const h = { 'x-display-token': d.token };
+  assert.equal((await c.call(null, 'GET', '/displays', { site: F.A.id })).status, 401, '/api/v1/displays with no session');
+  const slash = await c.call(null, 'GET', '/screen/feed/', { headers: h });
+  assert.equal(slash.status, 200, 'trailing slash = canonical path'); assert.equal(slash.body.state, 'OPEN');
+  for (const url of ['/API/V1/screen/feed', '/api/v1/Screen/feed', '/api/v1/screen/FEED', '//api/v1/screen/feed', '/api//v1/screen/feed']) {
+    const r = await c.call(null, 'GET', url, { headers: h, absolute: true });
+    assert.notEqual(r.status, 200, `${url} must not serve the feed`);
+    assert.ok(!r.text.includes('"slots"') && !r.text.includes('"counts"'), `${url} leaked feed data`);
+  }
+  for (const [m, url] of [['POST', '/screen/feed'], ['PUT', '/screen/feed'], ['DELETE', '/screen/feed'], ['GET', '/screen/feedx'], ['GET', '/screen/'], ['GET', '/screen'],
+    ['GET', '/screen/pair/start'], ['POST', '/screen/pair/status'], ['GET', '/screen/pair'], ['GET', '/screen/feed/extra']]) {
+    const r = await c.call(null, m, url, { headers: h });
+    assert.equal(r.status, 401, `${m} ${url} -> ${r.status}`); assert.equal(r.body.errorCode, 'ERR_SESSION_EXPIRED');
+  }
+});
+
+test('B4 the 41st poll in a minute from one credential -> 429, one redacted audit row; other displays unaffected', async () => {
+  const d = await mkDisplay(sel({ levels: ['B1'] }));
+  const other = await mkDisplay(sel({ levels: ['B2'] }));
+  for (let i = 1; i <= 40; i++) assert.equal((await feed(d.token)).status, 200, `poll ${i}`);
+  const r41 = await feed(d.token);
+  assert.equal(r41.status, 429); assert.equal(r41.body.errorCode, 'ERR_RATE_LIMITED'); assert.ok(Number(r41.headers.get('retry-after')) >= 1);
+  for (let i = 0; i < 5; i++) assert.equal((await feed(d.token)).status, 429);
+  assert.equal((await feed(other.token)).status, 200, 'its own bucket per credential');
+  const rows = (await c.audit('RATE_LIMIT_EXCEEDED')).filter((l) => l.details.includes(d.id));
+  assert.equal(rows.length, 1, 'one row per bucket and window, not one per refusal');
+  const row = rows[0];
+  assert.equal(row.ipAddress, 'redacted'); assert.ok(!('userAgent' in row)); assert.equal(row.actor, 'anonymous');
+  assert.equal(row.targetResource, '/api/v1/screen/feed'); assert.equal(row.siteId, F.A.id);
+  assert.ok(!JSON.stringify(row).includes(d.token));
+});
+
+test('B4 100 TVs x 20 polls skip the global /api/ limiter (and logins still work); unknown tokens hit only the all-screens bucket', async () => {
+  const s = await startServer();
+  try {
+    const cl = client(s);
+    await cl.login('master', MASTER_EMAIL);
+    const site = await cl.onboard('LOADT', 'Load site');
+    await cl.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    const tokens = [];
+    for (let i = 0; i < 100; i++) {
+      const r = await cl.post('master', '/displays', { name: `TV ${i}`, location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
+      tokens.push(tokenOf(r.body.link));
+    }
+    const statuses = {};
+    for (let round = 0; round < 20; round++) {
+      const rs = await Promise.all(tokens.map((t) => cl.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': t } })));
+      for (const r of rs) statuses[r.status] = (statuses[r.status] || 0) + 1;
+    }
+    assert.deepEqual(statuses, { 200: 2000 }, '2,000 polls in well under a minute: none refused (the global limiter is 600/min)');
+    const login = await cl.call(null, 'POST', '/auth/login', { body: { identifier: MASTER_EMAIL, password: 'Display003Password#2026' } });
+    assert.equal(login.status, 200, 'a login is still not 429');
+    // 1,000 more unknown-token polls fill the all-screens bucket (3,000/min) but no credential's own bucket.
+    const junk = await Promise.all(Array.from({ length: 1000 }, () => cl.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': 'Z'.repeat(43) } })));
+    assert.ok(junk.every((r) => r.status === 401));
+    const over = await cl.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': tokens[0] } });
+    assert.equal(over.status, 429, 'the 3,001st screen request in the minute is refused');
+    assert.equal(over.body.errorCode, 'ERR_RATE_LIMITED');
+    assert.equal((await cl.get('master', '/displays', { site: site.id })).status, 200, 'console unaffected');
+  } finally { s.stop(); }
+});
+
+test('B4 cold start: screen routes answer 503 ERR_STARTING until the store is loaded', async () => {
+  const s = await startServer({ fake: true, waitReady: false, env: { FAKE_LOAD_DELAY_MS: '8000' } });
+  try {
+    const cl = client(s);
+    assert.equal((await cl.get(null, '/health')).body.ready, false);
+    for (const [m, url] of [['GET', '/screen/feed'], ['POST', '/screen/pair/start'], ['GET', '/screen/pair/status'], ['GET', '/SCREEN/FEED'], ['GET', '/screen/feed/']]) {
+      const r = await cl.call(null, m, url, { headers: { 'x-display-token': 'A'.repeat(43), 'x-pair-secret': 'B'.repeat(43) } });
+      assert.equal(r.status, 503, `${m} ${url}`); assert.equal(r.body.errorCode, 'ERR_STARTING');
+    }
+  } finally { s.stop(); }
+});

@@ -21,6 +21,8 @@
  *       font weights (font-thin … font-black) and font-sans / font-serif; also inside CSS `@apply`
  *   - `font-mono` / `pf-mono` outside the data-text components (PlateText,
  *     SlotCode, IdText) — mono is for plates, slot codes, IDs and times only (AC-22)
+ *   - 003 F1: any tv-* token (--tv-*, --text-tv-*, --type-tv-*, tv-off, …) outside the TV page
+ *     (src/display/**, tv.html): the TV sizes are for screens read from 8 m, never the console
  *
  *   npm run lint:styles              check the R1 file list
  *   node scripts/check-styles.mjs --self-test   prove each rule catches a seeded sample
@@ -40,7 +42,11 @@ export const R1_FILES = [
   'src/utils/useAutoRefresh.ts',
   'src/utils/slots.ts',
   'marketing',             // parkflows.in (T6)
+  'src/display',           // 003 TV page (F2+)
+  'tv.html',               // 003 TV entry
 ];
+/** 003 F1: where tv-* tokens may be used. */
+const TV_SCOPE = (file) => file.startsWith('src/display/') || file === 'tv.html';
 /** Generated or third-party files inside those folders that may hold literal values. */
 const SKIP = new Set(['src/design-system/tokens.css', 'src/design-system/theme.css', 'src/design-system/tokens.json']);
 const SKIP_DIRS = new Set(['node_modules', 'fonts', 'brand']);
@@ -51,6 +57,16 @@ const MONO_OK = new Set(['PlateText.tsx', 'SlotCode.tsx', 'IdText.tsx']);
 
 const tokens = JSON.parse(readFileSync(join(ROOT, 'src/design-system/tokens.json'), 'utf8'));
 const TOKEN_COLOURS = new Set(tokens.color.tokens.map((c) => c.name));
+/** 003 F1: every tv-* token name (type styles, sizes, colours), longest first so tv-card-h wins over tv-card. */
+const TV_NAMES = [
+  ...tokens.type.groups.flatMap((g) => g.styles.map((st) => st.name)),
+  ...tokens.size.tokens.map((t) => t.name),
+  ...tokens.color.tokens.map((c) => c.name),
+].filter((n) => /^tv-/.test(n)).sort((a, b) => b.length - a.length);
+/** A tv-* token in any spelling: var(--tv-code-size), --text-tv-code-size, --type-tv-code, --tv-card-h-vw, bg-tv-off, text-tv-code. */
+const TV_TOKEN = TV_NAMES.length
+  ? new RegExp(String.raw`(?<![\w])(?:--)?(?:[a-z]+-)*?(?:tv-(?:${TV_NAMES.map((n) => n.slice(3)).join('|')})-(?:size|line|vw)|${TV_NAMES.join('|')})(?![\w])`, 'g')
+  : null;
 /** Tailwind radius / shadow values that exist because tokens.json defines them (theme.css), plus "none". */
 const RADIUS_OK = new Set([...tokens.radius.tokens.map((t) => t.name.replace(/^radius-/, '')), 'none']);
 const SHADOW_OK = new Set([...tokens.shadow.tokens.map((t) => t.name.replace(/^shadow-/, '')), 'focus-ring', 'none']);
@@ -221,6 +237,9 @@ export function checkText(file, text) {
     }
     if (!MONO_OK.has(basename(file))) for (const m of t.matchAll(MONO)) add(m.index, `${m[0]} outside PlateText/SlotCode/IdText (mono is for data only)`);
   }
+
+  // 003 F1: tv-* tokens only on the TV page
+  if (TV_TOKEN && !TV_SCOPE(file)) for (const m of t.matchAll(TV_TOKEN)) add(m.index, `TV token ${m[0]} outside src/display (tv-* is for the TV page only)`);
   return problems;
 }
 
@@ -319,6 +338,14 @@ function selfTest() {
     ['x/Ok.tsx', 'const a = 1; // a comment may mention text-rose-600 and style={{ color: "red" }}', null],
     ['x/Ok.tsx', 'const a = 1; /* block comment: #ff0000 rounded-3xl */ const b = 2;', null],
     ['x/Ok.tsx', 'const a = <a href="https://example.com/x">Docs</a>;', null],
+    // 003 F1: tv-* tokens stay on the TV page
+    ['src/screens/Bad.tsx', 'const a = <p className="text-tv-code" />;', /TV token text-tv-code/],
+    ['src/design-system/bad.css', '.a { font-size: var(--tv-code-size); }', /TV token --tv-code-size/],
+    ['src/screens/bad.css', '.a { height: var(--tv-card-h-vw); background: var(--tv-off); }', /TV token --tv-card-h-vw/],
+    ['marketing/bad.css', '.a { font: var(--type-tv-message); }', /TV token --type-tv-message/],
+    ['src/display/ok.css', '.a { font-size: var(--tv-code-size); height: var(--tv-card-h-vw); background: var(--tv-off); }', null],
+    ['tv.html', '<div class="tv-x"></div>', null],
+    ['src/screens/Ok.tsx', 'const a = <p>A TV at the entrance; tv-like and ctv-code are not tokens.</p>;', null],
   ];
   let failed = 0;
   for (const [file, text, expect] of cases) {

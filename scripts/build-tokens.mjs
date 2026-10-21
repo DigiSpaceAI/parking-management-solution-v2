@@ -11,6 +11,11 @@
  *               R1: no reset of Tailwind's default palette/sizes yet (K3);
  *               lint:styles forbids the defaults in R1 files instead.
  *
+ * 003 F1: the "Display (TV)" type group, the tv-* sizes and tv-off are for the TV page only
+ * (src/display). They go into tokens.css with a viewport-relative twin (value ÷ 1920 × 100vw,
+ * e.g. --tv-code-size: 2.7083vw), because old TV browsers can't divide lengths in calc().
+ * They stay out of theme.css, so no Tailwind utility exists for them in the console.
+ *
  *   npm run tokens            regenerate both files
  *   npm run tokens -- --check fail (exit 1) if either file is stale
  */
@@ -37,7 +42,12 @@ function refTo(value, prefix) {
   return `var(${prefix}${m[1]})`;
 }
 const families = t.type.families; // display/text/mono
-const typeStyles = t.type.groups.flatMap((g) => g.styles.map((s) => ({ ...s, family: g.family })));
+// A style may name its own family (the TV group mixes Sora, Plex and Mono); otherwise the group's.
+const typeStyles = t.type.groups.flatMap((g) => g.styles.map((s) => ({ ...s, family: s.family || g.family })));
+const isTv = (name) => /^tv-/.test(name);
+/** 003: px at the 1920 px TV canvas → vw, 4 decimals (52px → 2.7083vw). */
+const TV_CANVAS = 1920;
+const tvVw = (v) => `${Number(((parseFloat(px(v)) / TV_CANVAS) * 100).toFixed(4))}vw`;
 const px = (v) => {
   if (!/^\d+(\.\d+)?px$/.test(v)) throw new Error(`Expected a px value, got ${v}`);
   return v;
@@ -58,6 +68,17 @@ function tokensCss() {
     out.push(`  --text-${s.name}-line: ${s.lineHeight};`);
     out.push(`  --text-${s.name}-tracking: ${s.letterSpacing || 'normal'};`);
   }
+  const tvType = typeStyles.filter((s) => isTv(s.name));
+  const tvSizes = list('size').filter((s) => isTv(s.name));
+  if (tvType.length || tvSizes.length) {
+    out.push('', '  /* TV page (003): viewport-relative twins of the tv-* tokens, value / 1920 x 100vw. src/display only. */');
+    for (const s of tvType) {
+      const n = s.name.replace(/^tv-/, '');
+      out.push(`  --tv-${n}-size: ${tvVw(s.fontSize)};`);
+      out.push(`  --tv-${n}-line: ${tvVw(s.lineHeight)};`);
+    }
+    for (const tok of tvSizes) out.push(`  --${tok.name}-vw: ${tvVw(tok.value)};`);
+  }
   for (const [label, key] of [['Spacing', 'spacing'], ['Radius', 'radius'], ['Elevation', 'shadow'], ['Duration', 'duration'], ['Easing', 'easing'], ['Sizes', 'size'], ['Breakpoints (reference only; media queries use the px values)', 'breakpoint'], ['Layers', 'zIndex']]) {
     out.push('', `  /* ${label} */`);
     for (const tok of list(key)) out.push(`  --${tok.name}: ${tok.value};`);
@@ -73,18 +94,18 @@ function tokensCss() {
 // ---- theme.css (Tailwind 4) ----
 function themeCss() {
   const out = [HEADER, '/* Tailwind 4 theme from the same tokens. R1: Tailwind\'s default palette and sizes are NOT reset yet (K3). */', '@theme {'];
-  for (const c of colors) out.push(`  --color-${c.name}: ${refTo(c.value, '--color-')};`);
+  for (const c of colors) if (!isTv(c.name)) out.push(`  --color-${c.name}: ${refTo(c.value, '--color-')};`);
   out.push('');
   for (const [k, v] of Object.entries(families)) out.push(`  --font-${k}: ${v};`);
   out.push('');
-  for (const s of typeStyles) {
+  for (const s of typeStyles.filter((x) => !isTv(x.name))) {
     out.push(`  --text-${s.name}: ${s.fontSize};`);
     out.push(`  --text-${s.name}--line-height: ${s.lineHeight};`);
     out.push(`  --text-${s.name}--font-weight: ${s.fontWeight};`);
     if (s.letterSpacing) out.push(`  --text-${s.name}--letter-spacing: ${s.letterSpacing};`);
   }
   out.push('', '  /* 4px grid: p-4 = 16px = space-4 */', '  --spacing: 4px;');
-  for (const tok of list('size')) out.push(`  --spacing-${tok.name}: ${tok.value};`);
+  for (const tok of list('size')) if (!isTv(tok.name)) out.push(`  --spacing-${tok.name}: ${tok.value};`);
   out.push('');
   for (const tok of list('radius')) out.push(`  --radius-${tok.name.replace(/^radius-/, '')}: ${tok.value};`);
   out.push('');

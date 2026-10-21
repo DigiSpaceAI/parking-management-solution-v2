@@ -33,6 +33,7 @@
   --warning-50: #fdf3e7;
   --neutral-600: var(--text-secondary);
   --overlay: rgba(18, 33, 63, 0.48);
+  --tv-off: #000000;
 
   /* Type families */
   --font-display: "Sora", "Sora Fallback", "IBM Plex Sans", system-ui, sans-serif;
@@ -112,6 +113,68 @@
   --text-mono-lg-size: 32px;
   --text-mono-lg-line: 38px;
   --text-mono-lg-tracking: normal;
+  --type-tv-total: 700 96px/104px var(--font-display);
+  --text-tv-total-size: 96px;
+  --text-tv-total-line: 104px;
+  --text-tv-total-tracking: normal;
+  --type-tv-count: 700 56px/64px var(--font-display);
+  --text-tv-count-size: 56px;
+  --text-tv-count-line: 64px;
+  --text-tv-count-tracking: normal;
+  --type-tv-title: 600 40px/48px var(--font-display);
+  --text-tv-title-size: 40px;
+  --text-tv-title-line: 48px;
+  --text-tv-title-tracking: normal;
+  --type-tv-status: 600 36px/44px var(--font-text);
+  --text-tv-status-size: 36px;
+  --text-tv-status-line: 44px;
+  --text-tv-status-tracking: normal;
+  --type-tv-code: 600 52px/60px var(--font-mono);
+  --text-tv-code-size: 52px;
+  --text-tv-code-line: 60px;
+  --text-tv-code-tracking: normal;
+  --type-tv-plate: 600 40px/48px var(--font-mono);
+  --text-tv-plate-size: 40px;
+  --text-tv-plate-line: 48px;
+  --text-tv-plate-tracking: 0.04em;
+  --type-tv-text: 500 28px/36px var(--font-text);
+  --text-tv-text-size: 28px;
+  --text-tv-text-line: 36px;
+  --text-tv-text-tracking: normal;
+  --type-tv-dim: 600 28px/36px var(--font-mono);
+  --text-tv-dim-size: 28px;
+  --text-tv-dim-line: 36px;
+  --text-tv-dim-tracking: normal;
+  --type-tv-message: 700 72px/84px var(--font-display);
+  --text-tv-message-size: 72px;
+  --text-tv-message-line: 84px;
+  --text-tv-message-tracking: normal;
+
+  /* TV page (003): viewport-relative twins of the tv-* tokens, value / 1920 x 100vw. src/display only. */
+  --tv-total-size: 5vw;
+  --tv-total-line: 5.4167vw;
+  --tv-count-size: 2.9167vw;
+  --tv-count-line: 3.3333vw;
+  --tv-title-size: 2.0833vw;
+  --tv-title-line: 2.5vw;
+  --tv-status-size: 1.875vw;
+  --tv-status-line: 2.2917vw;
+  --tv-code-size: 2.7083vw;
+  --tv-code-line: 3.125vw;
+  --tv-plate-size: 2.0833vw;
+  --tv-plate-line: 2.5vw;
+  --tv-text-size: 1.4583vw;
+  --tv-text-line: 1.875vw;
+  --tv-dim-size: 1.4583vw;
+  --tv-dim-line: 1.875vw;
+  --tv-message-size: 3.75vw;
+  --tv-message-line: 4.375vw;
+  --tv-card-h-vw: 13.6458vw;
+  --tv-card-w-vw: 23.1771vw;
+  --tv-gutter-vw: 2.0833vw;
+  --tv-gap-vw: 1.0417vw;
+  --tv-header-h-vw: 6.6667vw;
+  --tv-footer-h-vw: 2.7083vw;
 
   /* Spacing */
   --space-1: 4px;
@@ -163,6 +226,12 @@
   --modal-w: 480px;
   --measure: 46rem;
   --underline-offset: 3px;
+  --tv-card-h: 262px;
+  --tv-card-w: 445px;
+  --tv-gutter: 40px;
+  --tv-gap: 20px;
+  --tv-header-h: 128px;
+  --tv-footer-h: 52px;
 
   /* Breakpoints (reference only; media queries use the px values) */
   --bp-sm: 360px;

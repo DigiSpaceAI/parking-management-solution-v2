@@ -21,7 +21,7 @@ function boot(): void {
     hash: () => window.location.hash,
     reload: () => window.location.reload(),
   };
-  const app = new TvApp(env, createRenderer(root));
+  const app = new TvApp(env, createRenderer(root, window.location.host));
   app.start();
   window.setInterval(() => app.tick(), 1000);
 }

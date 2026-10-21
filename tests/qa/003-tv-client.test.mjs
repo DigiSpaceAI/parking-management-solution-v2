@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(join(ROOT, 'package.json'));
 const esbuild = require('esbuild');
 
-const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload'];
+const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload', 'layout'];
 const mod = {};
 
 before(async () => {
@@ -156,7 +156,7 @@ test('credential: #k= wins and is remembered; a reload uses the remembered one; 
   const none = fakeEnv();
   const s = start(none, () => ({ status: 200, body: feed() }));
   assert.equal(s.last().view, 'PAIRING');
-  assert.equal(none.requests.length, 0);
+  assert.equal(none.requests.filter((r) => r.url.indexOf('/screen/feed') >= 0).length, 0, 'no credential: no feed request, pairing instead');
 });
 
 test('live → stale after 30 s → unavailable after 120 s, on the monotonic clock only', () => {
@@ -279,6 +279,122 @@ test('daily reload: once, 04:00–04:30 IST, only when closed or up more than 20
   assert.equal(shouldReload({ ...base, nowMs: at(4, 20), closed: false }), false);
   assert.equal(shouldReload({ ...base, nowMs: at(4, 20), closed: false, uptimeMs: 21 * 3600e3 }), true);
   assert.equal(shouldReload({ ...base, nowMs: at(4, 20), lastReloadDay: '2026-10-21' }), false);
+});
+
+// ---- F3: which cards, paging, full, just freed, pairing ----------------------------------------
+const slot = (code, status, extra = {}) => ({ code, level: code.slice(0, 2), area: 'x', type: 'SEDAN', ev: false, parkingType: 'GROUND', status, ...(status === 'OCCUPIED' ? { plate: 'KA01AB1234' } : {}), ...extra });
+const many = (prefix, n, status) => Array.from({ length: n }, (_, i) => slot(`${prefix}-${String(i + 1).padStart(3, '0')}`, status));
+
+test('vacant first: one page → vacant then taken in feed order, as many as fit (AC-07)', () => {
+  const { gridLayout } = mod.layout;
+  const slots = [...many('B1', 5, 'VACANT'), ...many('B2', 6, 'OCCUPIED'), slot('B1-R', 'RESERVED'), slot('B1-M', 'MAINTENANCE')];
+  const g = gridLayout(slots, 12, 0, {});
+  assert.equal(g.mode, 'MIXED');
+  assert.equal(g.cards.length, 12);
+  assert.deepEqual(g.cards.map((c) => c.status), [...Array(5).fill('VACANT'), ...Array(6).fill('OCCUPIED'), 'RESERVED']);
+});
+
+test('more vacant than fit: vacant-only pages; the last page is filled with taken slots; a taken card never takes a vacant place (AC-12)', () => {
+  const { gridLayout } = mod.layout;
+  const slots = [...many('B1', 30, 'VACANT'), ...many('B2', 20, 'OCCUPIED')];
+  const p1 = gridLayout(slots, 12, 0, {});
+  assert.equal(p1.mode, 'PAGING');
+  assert.deepEqual([p1.page, p1.pages, p1.vacant], [1, 3, 30]);
+  assert.ok(p1.cards.every((c) => c.status === 'VACANT'));
+  const p3 = gridLayout(slots, 12, 2, {});
+  assert.equal(p3.cards.length, 12);
+  assert.deepEqual(p3.cards.slice(0, 6).map((c) => c.code), many('B1', 30, 'VACANT').slice(24).map((c) => c.code));
+  assert.ok(p3.cards.slice(6).every((c) => c.status === 'OCCUPIED'));
+  assert.equal(gridLayout(slots, 12, 3, {}).page, 1, 'wraps');
+  assert.equal(gridLayout(slots, 8, 0, {}).pages, 4, '8 per page under a banner');
+});
+
+test('Parking full: occupied cards only, no paging, reserved and maintenance left out (AC-10)', () => {
+  const { gridLayout, footerText } = mod.layout;
+  const slots = [...many('B1', 20, 'OCCUPIED'), slot('B1-R', 'RESERVED'), slot('B1-M', 'MAINTENANCE')];
+  const g = gridLayout(slots, 12, 5, {});
+  assert.equal(g.mode, 'FULL');
+  assert.equal(g.cards.length, 12);
+  assert.ok(g.cards.every((c) => c.status === 'OCCUPIED'));
+  assert.equal(footerText(g, 22, { banner: false, forced: false }), 'Every slot is taken · showing occupied slots only');
+  const one = gridLayout([...slots, slot('B9-001', 'VACANT')], 12, 0, {});
+  assert.equal(one.mode, 'MIXED');
+  assert.equal(one.cards[0].code, 'B9-001', 'a freed slot comes first, even from the full state (AC-09)');
+});
+
+test('footer copy', () => {
+  const { gridLayout, footerText, groupIndian, joinLabels } = mod.layout;
+  assert.equal(footerText(gridLayout([...many('B1', 46, 'VACANT')], 12, 1, {}), 1080, { banner: false, forced: false }), 'Vacant slots only · 46 vacant on 4 pages');
+  assert.equal(footerText(gridLayout([...many('B1', 3, 'VACANT'), ...many('B2', 20, 'OCCUPIED')], 12, 0, {}), 1080, { banner: false, forced: false }), 'Vacant first, then occupied, reserved, maintenance · showing 12 of 1,080 slots');
+  assert.equal(groupIndian(1234567), '12,34,567');
+  assert.equal(joinLabels(['Basement B1', 'Basement B2']), 'Basement B1 and B2');
+  assert.equal(joinLabels(['Basement B1', 'B2 · Puzzles'], 'or'), 'Basement B1 or B2 · Puzzles');
+});
+
+test('just freed: from two feeds only, first among the vacant cards for 10 s; nothing after a reload', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let body = feed({ v: 'a', slots: [slot('B1-001', 'VACANT'), slot('B1-002', 'VACANT'), slot('B1-009', 'OCCUPIED')] });
+  const { app } = start(env, () => ({ status: 200, body }));
+  assert.deepEqual(app.model().justFreed, {}, 'nothing is "just freed" on the first feed');
+  body = feed({ v: 'b', slots: [slot('B1-001', 'VACANT'), slot('B1-002', 'VACANT'), slot('B1-009', 'VACANT')] });
+  env.advance(3000);
+  const m = app.model();
+  assert.deepEqual(m.justFreed, { 'B1-009': true });
+  assert.equal(m.grid.cards[0].code, 'B1-009');
+  env.advance(9000);
+  assert.ok(app.model().justFreed['B1-009']);
+  env.advance(1500);
+  assert.deepEqual(app.model().justFreed, {});
+  assert.equal(app.model().grid.cards[0].code, 'B1-001', 'back to slot-code order');
+});
+
+test('paging advances every pageSeconds on the 1 s tick and shows the time to the next page', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  const { app } = start(env, () => ({ status: 200, body: feed({ pageSeconds: 5, slots: many('B1', 30, 'VACANT') }) }));
+  assert.equal(app.model().grid.page, 1);
+  for (let i = 0; i < 4; i++) { env.advance(1000); app.tick(); }
+  assert.equal(app.model().grid.page, 1);
+  assert.equal(app.model().nextPageS, 1);
+  env.advance(1000); app.tick();
+  assert.equal(app.model().grid.page, 2);
+});
+
+test('pairing: shows a code, polls with the secret only, takes the token once and starts polling the feed', () => {
+  const env = fakeEnv();
+  let n = 0;
+  const { app } = start(env, (req) => {
+    if (req.url.endsWith('/pair/start')) return { status: 200, body: { code: 'K7M4QP', pairSecret: 'S'.repeat(43), expiresIn: 600 } };
+    if (req.url.endsWith('/pair/status')) return ++n < 3 ? { status: 200, body: { state: 'WAITING' } } : { status: 200, body: { state: 'PAIRED', token: TOKEN } };
+    return { status: 200, body: feed() };
+  });
+  assert.equal(app.model().view, 'PAIRING');
+  assert.equal(app.model().pairCode, 'K7M4QP');
+  env.advance(3000);
+  assert.equal(env.requests[1].headers['x-pair-secret'], 'S'.repeat(43));
+  assert.doesNotMatch(env.requests[1].url, /S{43}/);
+  env.advance(6000);
+  assert.equal(app.credential, 'OK');
+  assert.equal(env.data.get(mod.credential.TOKEN_KEY), TOKEN, 'kept for a reload (AC-16)');
+  assert.equal(app.model().view, 'LIVE');
+  assert.equal(env.requests[env.requests.length - 1].headers['x-display-token'], TOKEN);
+});
+
+test('pairing: an expired code (410) or a code past its 10 minutes gets a new code', () => {
+  const env = fakeEnv();
+  let starts = 0;
+  let expire = false;
+  const { app } = start(env, (req) => {
+    if (req.url.endsWith('/pair/start')) { starts += 1; return { status: 200, body: { code: 'AAA' + starts + 'BB', pairSecret: 'S'.repeat(40) + starts, expiresIn: 600 } }; }
+    return expire ? { status: 410, body: {} } : { status: 200, body: { state: 'WAITING' } };
+  });
+  expire = true;
+  env.advance(3000);
+  assert.equal(starts, 2);
+  assert.equal(app.model().pairCode, 'AAA2BB');
+  expire = false;
+  env.advance(600000);
+  app.tick();
+  assert.equal(starts, 3, 'a new code after 10 minutes');
 });
 
 // ---- the built bundle -----------------------------------------------------------------------

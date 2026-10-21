@@ -6,6 +6,7 @@ import './display.css';
 import { TvApp, type TvEnv } from './app';
 import { monoNow, safeStorage, xhrJson } from './env';
 import { createRenderer } from './render';
+import type { DisplayFeed } from './types';
 
 function boot(): void {
   const root = document.getElementById('tv');
@@ -21,8 +22,21 @@ function boot(): void {
     hash: () => window.location.hash,
     reload: () => window.location.reload(),
   };
+  // ?preview=1: the console's live preview (an iframe on the same origin). It never reads or
+  // stores a credential and never polls; it shows the feeds the console posts to it.
+  const preview = /(^|[?&])preview=1(&|$)/.test(window.location.search.replace(/^\?/, ''));
+  if (preview) env.store = { get: () => null, set: () => undefined, remove: () => undefined };
   const app = new TvApp(env, createRenderer(root, window.location.host));
-  app.start();
+  if (preview) {
+    app.startPreview();
+    window.addEventListener('message', (e: MessageEvent) => {
+      const d = e.data as { type?: string; feed?: unknown } | null;
+      if (e.origin !== window.location.origin || !d || d.type !== 'pf-tv-preview') return;
+      app.showFeed((d.feed as DisplayFeed) || null);
+    });
+    // Tell the console the preview is ready for its first feed.
+    if (window.parent !== window) window.parent.postMessage({ type: 'pf-tv-preview-ready' }, window.location.origin);
+  } else app.start();
   window.setInterval(() => app.tick(), 1000);
 }
 

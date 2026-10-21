@@ -20,6 +20,7 @@ import { NonParkedAlerts } from './components/NonParkedAlerts';
 const DesignSystemPreview = lazy(() => import('./design-system/preview/DesignSystemPreview'));
 import { Employees } from './screens/Employees';
 import { Sites } from './screens/Sites';
+import { Displays } from './screens/Displays';
 import { DemoRequests } from './screens/DemoRequests';
 import { MasterAdminBilling } from './components/MasterAdminBilling';
 import { ValetXModule } from './components/ValetXModule';
@@ -673,6 +674,8 @@ export default function App() {
           ),
           { updatedAt: lists.updatedAt }
         );
+      case 'displays':
+        return <Displays siteId={siteId} rights={getModuleRights(viewer, currentRole, 'DISPLAYS')} />;
       case 'sites':
         return <Sites onViewAs={(u) => startViewAs(u)} />;
       case 'billing':

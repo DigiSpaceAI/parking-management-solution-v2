@@ -5,7 +5,7 @@
  */
 import type { LucideIcon } from 'lucide-react';
 import {
-  Building2, FileText, Gauge, Inbox, LayoutGrid, ListOrdered, ReceiptIndianRupee, Settings, ShieldCheck, Sparkles,
+  Building2, FileText, Gauge, Inbox, LayoutGrid, ListOrdered, Monitor, ReceiptIndianRupee, Settings, ShieldCheck, Sparkles,
   TriangleAlert, Users, UserRoundCheck, Warehouse,
 } from 'lucide-react';
 import type { AppModuleId, AppUser, RolePermissionConfig } from './types';
@@ -14,10 +14,16 @@ import { canOpenTab, isMasterAdmin } from './utils/rbac';
 export type RouteId =
   | 'overview' | 'live-parking' | 'logs' | 'alerts' | 'reports' | 'predictive' | 'valet'
   | 'employees' | 'users'
-  | 'inventory' | 'sites' | 'billing' | 'audit' | 'settings' | 'demo-requests'
+  | 'inventory' | 'displays' | 'sites' | 'billing' | 'audit' | 'settings' | 'demo-requests'
   | 'design-system';
 
 export type NavGroupId = 'Operations' | 'People' | 'Setup';
+
+/**
+ * 003: the new DISPLAYS module (03 "Data model", B1). The backend adds it to AppModuleId with the
+ * role defaults; until then the console names it here, and utils/rbac.ts gives it the 03 defaults.
+ */
+export type ConsoleModuleId = AppModuleId | 'DISPLAYS';
 
 export interface RouteDef {
   id: RouteId;
@@ -26,7 +32,7 @@ export interface RouteDef {
   /** One line under the H1 (AC-09). */
   description: string;
   /** The 001 module that grants it. `employees` accepts either REGISTRATION or APPROVALS. */
-  modules: AppModuleId[];
+  modules: ConsoleModuleId[];
   /** Master Admin only (the viewer, so view-as a Site Admin sees No access, 001 m-5). */
   masterOnly?: boolean;
   /** Platform page: works with no site chosen (Master's Sites, Billing, Audit log, …). */
@@ -45,6 +51,7 @@ export const ROUTES: RouteDef[] = [
   { id: 'employees', title: 'Employees & vehicles', description: 'Review pass requests and manage who can park at this site.', modules: ['REGISTRATION', 'APPROVALS'], nav: { group: 'People', icon: UserRoundCheck } },
   { id: 'users', title: 'Users & roles', description: 'Console users, their roles, module permissions and sites.', modules: ['USER_MANAGEMENT'], nav: { group: 'People', icon: Users } },
   { id: 'inventory', title: 'Inventory', description: 'Slots, levels and sizes. Add slots one by one or upload a CSV.', modules: ['INVENTORY'], nav: { group: 'Setup', icon: Warehouse } },
+  { id: 'displays', title: 'Displays', description: 'Screens at entrances and ramps that show drivers the free slots, live.', modules: ['DISPLAYS'], nav: { group: 'Setup', icon: Monitor } },
   { id: 'sites', title: 'Sites', description: 'Every customer site on ParkFlows. Click a site to see details or change it.', modules: ['MASTER_CONFIG'], masterOnly: true, platform: true, nav: { group: 'Setup', icon: Building2 } },
   { id: 'billing', title: 'Billing', description: 'Plans and invoices for each site.', modules: ['MASTER_CONFIG'], masterOnly: true, platform: true, nav: { group: 'Setup', icon: ReceiptIndianRupee } },
   { id: 'audit', title: 'Audit log', description: 'Who did what, when, on which site.', modules: ['SECURITY_AUDIT'], masterOnly: true, platform: true, nav: { group: 'Setup', icon: ShieldCheck } },

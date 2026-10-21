@@ -137,6 +137,19 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
 };
 
 /**
+ * 003 DISPLAYS (03 "Data model"): full for Master Admin and Site Facility Manager, off for every
+ * other system role and every custom role. Stored roles are not rewritten: a role with no
+ * DISPLAYS entry gets this default when it is read (server: requirePermission, B1).
+ */
+DEFAULT_ROLE_PERMISSIONS['role-master-admin'].DISPLAYS = FULL_ACCESS_RIGHTS;
+DEFAULT_ROLE_PERMISSIONS['role-site-manager'].DISPLAYS = FULL_ACCESS_RIGHTS;
+for (const roleId of Object.keys(DEFAULT_ROLE_PERMISSIONS)) {
+  if (!DEFAULT_ROLE_PERMISSIONS[roleId].DISPLAYS) DEFAULT_ROLE_PERMISSIONS[roleId].DISPLAYS = DISABLED_RIGHTS;
+}
+/** Modules that are off unless a role's stored or default permissions turn them on (no role-name guessing). */
+const OPT_IN_MODULES = new Set<string>(['DISPLAYS']);
+
+/**
  * Checks if a specific module / tab is permitted for the active user session.
  */
 export function isModulePermitted(
@@ -173,6 +186,7 @@ export function isModulePermitted(
   if (DEFAULT_ROLE_PERMISSIONS[roleKey] && DEFAULT_ROLE_PERMISSIONS[roleKey][tabId]) {
     return DEFAULT_ROLE_PERMISSIONS[roleKey][tabId].enabled;
   }
+  if (OPT_IN_MODULES.has(tabId)) return false; // 003: custom roles don't get DISPLAYS by default (AC-19)
 
   const roleNameLower = (user.roleName || '').toLowerCase();
   if (roleNameLower.includes('master admin') || roleNameLower.includes('super admin')) {

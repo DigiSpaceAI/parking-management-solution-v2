@@ -108,6 +108,26 @@ export class TvApp {
     this.render();
   }
 
+  /**
+   * Console live preview (UX C4/C6, AC-17/AC-29): no credential, no polling, no storage. The
+   * console page sends the feed it fetched with its own session (GET /displays/:id/preview, or a
+   * draft built in the editor); each one counts as a good response, so the preview shows exactly
+   * what the TV would. `null` = nothing to show yet (Connecting).
+   */
+  startPreview(): void {
+    this.credential = 'OK';
+    this.render();
+  }
+
+  showFeed(feed: DisplayFeed | null): void {
+    if (!feed) {
+      this.feed = null;
+      this.lastOkMono = null;
+      this.startedMono = this.env.mono();
+    } else this.accept(feed);
+    this.render();
+  }
+
   /** Use a credential obtained by pairing (remembered, so a reload keeps it). */
   useToken(token: string): void {
     this.token = token;

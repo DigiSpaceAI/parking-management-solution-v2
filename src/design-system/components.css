@@ -649,10 +649,45 @@
 
   .pf-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+  /* ---- Displays (003 F4, UX C1–C7) ---- */
+  .pf-text-warning { color: var(--warning-700); font-weight: 600; }
+  .pf-text-secondary { color: var(--text-secondary); }
+  .pf-display-status { align-items: flex-start; }
+  .pf-row-inline { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-6); }
+  .pf-back { display: inline-flex; align-items: center; gap: var(--space-1); align-self: flex-start; }
+  .pf-back svg { width: var(--icon-sm); height: var(--icon-sm); }
+  .pf-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); align-items: start; }
+  .pf-form-actions { display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--line-100); padding-top: var(--space-5); }
+  .pf-display-edit { display: flex; gap: var(--space-6); align-items: flex-start; }
+  .pf-display-form { flex: 1 1 0; min-width: 0; }
+  .pf-display-preview { flex: none; width: var(--panel-w); position: sticky; top: var(--space-4); }
+  .pf-check-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--slot-card-min), 1fr)); gap: var(--space-2); }
+  .pf-check-tile { border: 1px solid var(--line-300); border-radius: var(--radius-md); padding: 0 var(--space-3); }
+  .pf-pick-results, .pf-slot-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .pf-slot-chips .pf-chip { height: var(--control-sm); padding-right: var(--space-1); }
+  .pf-chip-remove { all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: var(--control-sm); height: var(--control-sm); border-radius: var(--radius-full); }
+  .pf-chip-remove:focus-visible { box-shadow: var(--focus-ring); }
+  .pf-chip-remove svg { width: var(--icon-sm); height: var(--icon-sm); }
+  /* The live preview: the real TV page in a 16:9 frame; the TV sizes itself from the frame's width. */
+  .pf-tv-preview { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--radius-lg); background: var(--ink); }
+  .pf-tv-preview iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; pointer-events: none; }
+  .pf-tv-preview-badge { position: absolute; top: var(--space-2); left: var(--space-2); z-index: 1; }
+  .pf-modal--wide { width: min(100%, calc(var(--modal-w) + var(--space-16) * 2 + var(--space-8))); }
+  .pf-push-start { margin-right: auto; }
+  .pf-panel--wide { width: min(100%, calc(var(--panel-w) + var(--space-12) * 2 + var(--space-6))); }
+  @media (max-width: 1279.98px) {
+    .pf-display-edit { flex-direction: column; align-items: stretch; }
+    .pf-display-preview { width: 100%; position: static; }
+  }
+  @media (max-width: 767.98px) {
+    .pf-form-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+
   /* Touch screens and phone widths: every control reaches the 44px touch-min target (tokens: control-md/sm are desktop sizes). */
   @media (pointer: coarse), (max-width: 767.98px) {
     .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }
     .pf-icon-btn { width: var(--touch-min); height: var(--touch-min); }
+    .pf-seg-btn { min-width: var(--touch-min); justify-content: center; } /* 003: a one-word segment ("All") is a 44×44 target too */
     .pf-pager-ellipsis { min-width: var(--touch-min); }
     .pf-page { min-width: var(--touch-min); height: var(--touch-min); }
     .pf-toast-close, .pf-banner-close { width: var(--touch-min); height: var(--touch-min); }

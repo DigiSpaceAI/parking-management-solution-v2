@@ -35,3 +35,14 @@ export class WindowLimiter {
 
 export const FEED_PER_CREDENTIAL = new WindowLimiter(40, 60_000); // normal is 20/min
 export const FEED_ALL_SCREENS = new WindowLimiter(3000, 60_000); // ~150 TVs together
+
+// B5 pairing limits (03 "Abuse limits").
+export const PAIR_START_ALL = new WindowLimiter(20, 60_000); // platform-wide
+export const PAIR_STATUS_PER_SECRET = new WindowLimiter(40, 60_000);
+export const PAIR_BIND_PER_USER = new WindowLimiter(10, 10 * 60_000);
+
+// TEST SEAM ONLY (harness PAIR_START_PER_MIN): raise the start limit so the
+// 200-pending cap can be exercised. Nothing in the app calls it.
+export function __setPairStartLimitForTests(max: number) {
+  (PAIR_START_ALL as unknown as { max: number }).max = max;
+}

@@ -103,4 +103,7 @@ if (mode === 'store') {
   await imp('server.ts');
   // 002 B6 (AC-32b): make the next demo-request store write fail.
   if (process.env.FAIL_NEXT_DEMO_SAVE === '1') (await imp('src/server/db.ts')).__failNextDemoRequestSaveForTests();
+  // 003 B5: shorter pairing TTL / higher start limit for the pairing tests.
+  if (process.env.PAIR_TTL_MS || process.env.PAIR_MAX_PENDING) (await imp('src/server/displayPairing.ts')).__setPairingForTests({ ttlMs: Number(process.env.PAIR_TTL_MS || 0), maxPending: Number(process.env.PAIR_MAX_PENDING || 0) });
+  if (process.env.PAIR_START_PER_MIN) (await imp('src/server/screenLimits.ts')).__setPairStartLimitForTests(Number(process.env.PAIR_START_PER_MIN));
 }

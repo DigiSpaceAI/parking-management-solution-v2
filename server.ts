@@ -91,8 +91,9 @@ import {
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, markSeen, lastSeenIso } from './src/server/displayScreen';
-import { WindowLimiter, FEED_PER_CREDENTIAL, FEED_ALL_SCREENS } from './src/server/screenLimits';
-import { displayLink } from './src/server/displayToken';
+import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER } from './src/server/screenLimits';
+import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
+import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
 import {
@@ -2288,6 +2289,33 @@ app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/replace`, requirePermission('DISP
   res.json({ success: true, link: displayLink(token) });
 });
 
+// B5: bind the code a waiting TV shows to this display. A new credential is
+// issued and handed to that TV once; the previous one retires (an old link
+// shows "switched off"). One generic message for any wrong, used or expired
+// code; 10 tries per user per 10 minutes.
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/pair`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display || refuseIfSwitchedOff(res, display)) return;
+  const tries = PAIR_BIND_PER_USER.hit(`screen:pair:bind:${req.user!.id}`);
+  if (!tries.ok) {
+    res.setHeader('Retry-After', String(tries.retryAfterSec));
+    return sendApiError(res, 429, 'ERR_RATE_LIMITED', 'Too many tries. Wait a few minutes, then try again.');
+  }
+  const code = normalizePairCode(req.body?.code);
+  const waiting = code ? findWaitingCode(code) : null;
+  if (!waiting) {
+    return res.status(400).json({ success: false, message: "That code doesn't match a screen waiting to pair. Check the code on the TV and try again.", errors: { code: "That code doesn't match a screen waiting to pair." } });
+  }
+  display.pairedAt = new Date().toISOString();
+  display.screenAgent = waiting.screenAgent;
+  const token = issueDisplayToken(display, req.user!.email); // saves the display (targeted)
+  waiting.bind(display.id, token);
+  auditDisplay(req, 'DISPLAY_PAIRED', display, `Display ${display.id} paired with a screen by ${req.user!.email}.`);
+  res.json({ success: true });
+});
+
 // B2: final (03 gap 6). The display stays listed; its credential retires.
 app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/switch-off`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: false });
@@ -2366,6 +2394,29 @@ app.get('/api/v1/screen/feed', (req, res) => {
     return res.json({ unchanged: true, v: feed.v, serverTime: feed.serverTime, state: feed.state });
   }
   res.json(feed);
+});
+
+// ---------------------------------------------------------------------------
+// 003 B5: PAIRING, public (SCREEN_PUBLIC). The TV shows the code; it never
+// types a secret. Nothing here is audited per request; a 429 writes one
+// redacted row per bucket and window.
+// ---------------------------------------------------------------------------
+app.post('/api/v1/screen/pair/start', (req, res) => {
+  const hit = PAIR_START_ALL.hit('screen:pair:start');
+  if (!hit.ok) return refuseScreen(res, '/api/v1/screen/pair/start', 'unknown', undefined, hit);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(startPairing(req.headers['user-agent']));
+});
+
+app.get('/api/v1/screen/pair/status', (req, res) => {
+  const secret = req.headers['x-pair-secret'];
+  const key = typeof secret === 'string' && secret.length <= 100 ? hashSecret(secret) : 'invalid';
+  const hit = PAIR_STATUS_PER_SECRET.hit(`screen:pair:status:${key}`);
+  if (!hit.ok) return refuseScreen(res, '/api/v1/screen/pair/status', 'unknown', undefined, hit);
+  const status = pairingStatus(secret);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!status) return sendApiError(res, 410, 'ERR_PAIR_EXPIRED', 'This code has expired. The screen will show a new one.');
+  res.json(status);
 });
 
 // 8. Predictive Analytics 24-Hour Forecast Endpoint

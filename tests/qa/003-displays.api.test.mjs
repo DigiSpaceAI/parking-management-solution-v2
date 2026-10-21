@@ -2,7 +2,9 @@
 // Runner: node:test + global fetch, no dependencies (npm run test:qa).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { startServer, client, twoSites, seededServer, MASTER_EMAIL } from './support/pf003.mjs';
+import { newDisplayToken, hashSecret, TOKEN_FORMAT, newPairCode, normalizePairCode, PAIR_ALPHABET, displayLink } from '../../src/server/displayToken.ts';
 
 let srv; let c; let F;
 before(async () => {
@@ -139,5 +141,76 @@ test('B1 AC-19: roles stored before 003 (no DISPLAYS entry) take the default for
     assert.equal((await fx.c.get('oldGate', '/displays', { site: site.id })).status, 403, 'Gate attendant default = off');
     assert.ok(fx.readData().appRoles.every((r) => !r.modulePermissions?.DISPLAYS), 'stored roles are not rewritten');
     assert.ok((fx.readData().displays || []).some((x) => x.id === ok.body.display.id), 'targeted sync wrote the display');
+  } finally { fx.stop(); }
+});
+
+// ------------------------------------------------------------------ B2
+const tokenOf = (link) => { const m = /^https:\/\/admin\.parkflows\.in\/tv#k=([A-Za-z0-9_-]{43})$/.exec(link || ''); assert.ok(m, `link shape: ${link}`); return m[1]; };
+const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+
+test('B2 unit: 10k tokens are unique 43-char base64url (256 bits); pairing codes avoid 0/O/1/I/L', () => {
+  const seen = new Set();
+  for (let i = 0; i < 10000; i++) { const t = newDisplayToken(); assert.match(t, TOKEN_FORMAT); seen.add(t); }
+  assert.equal(seen.size, 10000);
+  assert.equal(Buffer.from(newDisplayToken(), 'base64url').length, 32);
+  assert.equal(hashSecret('abc'), sha('abc'));
+  assert.equal(PAIR_ALPHABET.length, 31); assert.ok(!/[01OIL]/.test(PAIR_ALPHABET));
+  const counts = {};
+  for (let i = 0; i < 3000; i++) { const c = newPairCode(); assert.match(c, /^[2-9A-HJKMNP-Z]{6}$/); for (const ch of c) counts[ch] = (counts[ch] || 0) + 1; }
+  assert.equal(Object.keys(counts).length, 31, 'every symbol used');
+  assert.equal(normalizePairCode(' k7m-4qp '), 'K7M4QP'); assert.equal(normalizePairCode('K7M 4QP'), 'K7M4QP');
+  assert.equal(normalizePairCode('K7M4Q0'), null); assert.equal(normalizePairCode('K7M4'), null); assert.equal(normalizePairCode(42), null);
+  assert.equal(displayLink('x'.repeat(43)), `https://admin.parkflows.in/tv#k=${'x'.repeat(43)}`);
+});
+
+test('B2 create returns the link once; replace gives a new one; switch-off is final; no credential anywhere else', async () => {
+  const r = await create('adminA', F.A.id, { name: 'Lobby TV' });
+  assert.equal(r.status, 200);
+  const t1 = tokenOf(r.body.link);
+  const id = r.body.display.id;
+  assert.equal(r.body.display.setUp, true);
+  const rep = await c.post('adminA', `/displays/${id}/replace`, {}, { site: F.A.id });
+  assert.equal(rep.status, 200); const t2 = tokenOf(rep.body.link);
+  assert.notEqual(t1, t2);
+  const replB = await c.post('adminB', `/displays/${id}/replace`, {}, { site: F.B.id });
+  assert.equal(replB.status, 403, 'another site\'s admin cannot replace it');
+  const offB = await c.post('adminB', `/displays/${id}/switch-off`, {}, { site: F.B.id });
+  assert.equal(offB.status, 403);
+  assert.equal((await c.post('attA', `/displays/${id}/replace`, {}, { site: F.A.id })).status, 403, 'Attendant: no DISPLAYS');
+  const va = await c.post('master', `/displays/${id}/switch-off`, {}, { site: F.A.id, headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(va.status, 403); assert.equal(va.body.errorCode, 'ERR_VIEW_AS_READ_ONLY');
+  const off = await c.post('adminA', `/displays/${id}/switch-off`, {}, { site: F.A.id });
+  assert.equal(off.status, 200); assert.equal(off.body.display.status, 'SWITCHED_OFF'); assert.equal(off.body.display.setUp, false);
+  for (const [url, body] of [[`/displays/${id}/replace`, {}], [`/displays/${id}/switch-off`, {}], [`/displays/${id}`, { name: 'again' }]]) {
+    const again = await c.post('adminA', url, body, { site: F.A.id });
+    assert.equal(again.status, 409, url); assert.equal(again.body.errorCode, 'ERR_DISPLAY_SWITCHED_OFF');
+  }
+  assert.ok((await c.get('adminA', '/displays', { site: F.A.id })).body.displays.some((x) => x.id === id && x.status === 'SWITCHED_OFF'), 'stays listed');
+  assert.equal((await c.post('adminA', '/displays/dsp-0000000000000000/replace', {}, { site: F.A.id })).status, 404);
+  // Deep scan: neither token nor its hash in the list, options or any audit.
+  const everything = JSON.stringify([(await c.get('master', '/displays', { site: 'ALL' })).body, (await c.get('adminA', '/displays/options', { site: F.A.id })).body, await c.audit()]);
+  for (const t of [t1, t2]) { assert.ok(!everything.includes(t), 'token leaked'); assert.ok(!everything.includes(sha(t)), 'hash leaked'); }
+  for (const a of ['DISPLAY_LINK_REPLACED', 'DISPLAY_SWITCHED_OFF']) {
+    const l = (await c.audit(a)).find((x) => x.targetResource === `display/${id}`);
+    assert.ok(l, a); assert.equal(l.ipAddress, 'redacted'); assert.equal(l.siteId, F.A.id);
+  }
+});
+
+test('B2 at rest: only the SHA-256 is stored; replaced hashes are kept as retired for 30 days', async () => {
+  const fx = await seededServer(() => {});
+  try {
+    const site = await fx.c.onboard('DSPREST', 'Rest site');
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'R-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    const r = await fx.c.post('master', '/displays', { name: 'Rest', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
+    const t1 = tokenOf(r.body.link);
+    const t2 = tokenOf((await fx.c.post('master', `/displays/${r.body.display.id}/replace`, {}, { site: site.id })).body.link);
+    const raw = JSON.stringify(fx.readData());
+    assert.ok(!raw.includes(t1) && !raw.includes(t2), 'no token in "Firestore"');
+    const d = fx.readData().displays.find((x) => x.id === r.body.display.id);
+    assert.equal(d.tokenHash, sha(t2));
+    assert.equal(d.retiredTokenHashes.length, 1); assert.equal(d.retiredTokenHashes[0].hash, sha(t1));
+    const keepDays = (Date.parse(d.retiredTokenHashes[0].until) - Date.now()) / 86400000;
+    assert.ok(keepDays > 29.9 && keepDays <= 30, `kept ${keepDays} days`);
+    assert.equal(d.tokenIssuedBy, MASTER_EMAIL);
   } finally { fx.stop(); }
 });

@@ -89,6 +89,8 @@ import {
   type DisplayInput,
 } from './src/server/db';
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
+import { issueDisplayToken, switchOffDisplay } from './src/server/displayAuth';
+import { displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
 import {
@@ -2238,8 +2240,10 @@ app.post('/api/v1/displays', requirePermission('DISPLAYS', 'canCreate'), (req, r
   const { values, errors } = validateDisplayInput(body, siteId, true);
   if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
   const display = createDisplay(siteId, values as Required<DisplayInput>, req.user!.email);
+  // B2: the credential is issued with the display; the link is returned once (C5).
+  const token = issueDisplayToken(display, req.user!.email);
   auditDisplay(req, 'DISPLAY_CREATED', display, `Display ${display.id} "${display.name}" created by ${req.user!.email}.`);
-  res.json({ success: true, display: displayRow(display) });
+  res.json({ success: true, display: displayRow(display), link: displayLink(token) });
 });
 
 app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
@@ -2252,6 +2256,28 @@ app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}`, requirePermission('DISPLAYS', '
   if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
   const changed = updateDisplay(display, values, req.user!.email);
   if (changed.length > 0) auditDisplay(req, 'DISPLAY_UPDATED', display, `Display ${display.id} updated by ${req.user!.email}: ${changed.join(', ')}.`);
+  res.json({ success: true, display: displayRow(display) });
+});
+
+// B2: a new credential, settings kept (C7). The old link shows "switched off".
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/replace`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display || refuseIfSwitchedOff(res, display)) return;
+  const token = issueDisplayToken(display, req.user!.email);
+  auditDisplay(req, 'DISPLAY_LINK_REPLACED', display, `Display ${display.id}: link replaced by ${req.user!.email}.`);
+  res.json({ success: true, link: displayLink(token) });
+});
+
+// B2: final (03 gap 6). The display stays listed; its credential retires.
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/switch-off`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display || refuseIfSwitchedOff(res, display)) return;
+  switchOffDisplay(display, req.user!.email);
+  auditDisplay(req, 'DISPLAY_SWITCHED_OFF', display, `Display ${display.id} switched off by ${req.user!.email}.`);
   res.json({ success: true, display: displayRow(display) });
 });
 

@@ -10,7 +10,7 @@
 import type { Renderer, ScreenModel } from './app';
 import { CARDS_PER_PAGE } from './app';
 import type { FeedSlot } from './types';
-import { fmtTime, fmtTimeSeconds } from './time';
+import { fmtTime, fmtTimeSeconds, untilText } from './time';
 import { hoursLabel, opensAt } from './hours';
 import { footerText, groupIndian, joinLabels } from './layout';
 import { setIcon, svgIcon } from './icons';
@@ -189,6 +189,35 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
   add(updated, el('span', '', 'Updated'));
   const updatedTime = add(updated, el('b'));
 
+  // banner message (UX board 11/12): a teal strip between the header and the cards
+  const msgbar = add(root, el('section', 'tv-msgbar'));
+  msgbar.setAttribute('role', 'status');
+  msgbar.setAttribute('aria-label', 'Message from the site');
+  msgbar.appendChild(svgIcon('megaphone', 2.5));
+  const msgbarText = add(msgbar, el('span', 'tv-msgbar-text'));
+  const msgbarEnd = add(msgbar, el('span', 'tv-msgbar-end'));
+  add(msgbarEnd, el('span', '', 'Until'));
+  const msgbarUntil = add(msgbarEnd, el('b'));
+
+  // full-screen message (UX board 13): site name, time, the message; no slot data
+  const takeover = add(root, el('section', 'tv-takeover'));
+  takeover.setAttribute('role', 'alert');
+  takeover.setAttribute('aria-label', 'Message from the site');
+  const toTop = add(takeover, el('div', 'tv-takeover-top'));
+  toTop.appendChild(logo('tv-logo'));
+  const toSite = add(toTop, el('span', 'tv-takeover-site'));
+  const toTime = add(toTop, el('time', 'tv-takeover-time'));
+  const toBody = add(takeover, el('div', 'tv-takeover-body'));
+  toBody.appendChild(svgIcon('megaphone', 2.2));
+  const toText = add(toBody, el('p'));
+  const toFoot = add(takeover, el('div', 'tv-takeover-foot'));
+  const toFrom = add(toFoot, el('span'));
+  add(toFrom, el('span', '', 'Message from the site'));
+  const toUntil = add(toFrom, el('b'));
+  const toBrand = add(toFoot, el('span', 'tv-brand'));
+  toBrand.appendChild(logo(''));
+  add(toBrand, el('span', '', 'ParkFlows'));
+
   // cards
   const grid = add(root, el('section', 'tv-grid'));
   grid.setAttribute('aria-label', 'Slots');
@@ -243,7 +272,7 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
     if (fill) fill.style.setProperty('--pf-progress', Math.round(progress * 100) + '%');
   }
 
-  function setTiles(m: ScreenModel, unavailable: boolean): void {
+  function setTiles(m: ScreenModel, unavailable: boolean, forced: boolean): void {
     const groups = m.feed ? m.feed.counts.groups : [];
     let shown = groups;
     if (groups.length > MAX_TILES) {
@@ -260,10 +289,12 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
       const g = shown[i];
       show(tiles[i].root, !!g);
       if (!g) continue;
-      const full = !unavailable && g.free === 0;
+      // Forced full: every count is 0 (vacant slots are neither shown nor counted, UX board 14).
+      const free = forced ? 0 : g.free;
+      const full = !unavailable && free === 0;
       cls(tiles[i].root, 'tv-level' + (full ? ' tv-level--full' : ''));
       text(tiles[i].name, g.label);
-      text(tiles[i].count, unavailable ? '—' : groupIndian(g.free));
+      text(tiles[i].count, unavailable ? '—' : groupIndian(free));
       text(tiles[i].word, unavailable ? '' : full ? 'Full' : 'free');
     }
   }
@@ -296,6 +327,16 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
           small: (m.lastOkMs !== null ? 'Last update ' + fmtTime(m.lastOkMs) + ' · ' : '') + 'reconnecting by itself',
           icon: 'unavailable',
         });
+      case 'FORCED_FULL':
+        // Forced full and no current data (AC-28): the forced-full header stays, the cards go.
+        return m.cardsHidden
+          ? assignMsg(none, {
+              title: 'Parking full',
+              text: 'Not accepting cars right now.',
+              small: m.lastOkMs !== null ? 'Last update ' + fmtTime(m.lastOkMs) + ' · reconnecting by itself' : '',
+              icon: 'full',
+            })
+          : null;
       case 'STARTING':
         return assignMsg(none, { title: 'Connecting…', text: 'Live parking will show here in a moment.', logo: true });
       default:
@@ -307,24 +348,28 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
 
   return {
     render(m: ScreenModel) {
-      const live = m.view === 'LIVE' && !!m.grid;
+      const forced = m.view === 'FORCED_FULL';
+      const slotsView = (m.view === 'LIVE' || forced) && !!m.feed;
+      const live = slotsView && !!m.grid;
       const unavailable = m.view === 'UNAVAILABLE' && !!m.feed;
+      const withHead = slotsView || unavailable;
       const msgData = message(m);
-      cls(root, 'tv' + (m.view === 'CLOSED' ? ' tv--dim' : ''));
+      cls(root, 'tv' + (m.view === 'CLOSED' ? ' tv--dim' : '') + (m.banner && withHead ? ' tv--banner' : ''));
       if (lastView !== m.view) {
         attr(root, 'data-view', m.view.toLowerCase());
         lastView = m.view;
       }
 
-      // ---- header (live slots, and "Live status unavailable" with a known place)
-      show(head, live || unavailable);
-      if (live || unavailable) {
+      // ---- header (live slots, forced full, and "Live status unavailable" with a known place)
+      show(head, withHead);
+      if (withHead) {
         const feed = m.feed!;
         const labels = feed.counts.groups.map((g) => g.label);
-        const full = live && m.grid!.mode === 'FULL';
+        const full = forced || (live && m.grid!.mode === 'FULL');
         text(placeName, labels.length ? 'Parking · ' + joinLabels(labels) : 'Parking');
         text(placeSub, [feed.siteName, feed.place].filter(Boolean).join(' · '));
-        const banner = live && m.stale ? 'STALE' : full ? 'FULL' : '';
+        // Forced full keeps its banner even when stale (it is the admin's instruction); real full gives way to "Updating…".
+        const banner = forced ? 'FULL' : live && m.stale ? 'STALE' : full ? 'FULL' : '';
         show(place, banner === '');
         show(headBanner, banner !== '');
         if (banner === 'STALE') {
@@ -336,14 +381,36 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
           cls(headBanner, 'tv-headbanner tv-headbanner--full');
           setIcon(headBannerIcon, 'full');
           text(headBannerTitle, 'Parking full');
-          text(headBannerSub, labels.length && labels.length <= 3 ? 'No free slots on ' + joinLabels(labels, 'or') : 'No free slots right now');
+          // Forced: "Not accepting cars right now" (UX board 14; "No free slots…" would be untrue). Nothing says it was forced.
+          text(headBannerSub, forced ? 'Not accepting cars right now' : labels.length && labels.length <= 3 ? 'No free slots on ' + joinLabels(labels, 'or') : 'No free slots right now');
         }
-        setTiles(m, unavailable);
+        setTiles(m, unavailable, forced);
         cls(total, 'tv-total' + (full ? ' tv-total--full' : ''));
-        text(totalN, unavailable ? '—' : groupIndian(feed.counts.free));
+        text(totalN, unavailable ? '—' : forced ? '0' : groupIndian(feed.counts.free));
         text(totalWord, unavailable ? '' : 'of ' + groupIndian(feed.counts.total));
-        cls(updated, 'tv-updated' + (m.stale || unavailable ? ' tv-updated--stale' : ''));
+        cls(updated, 'tv-updated' + (m.stale || unavailable || m.cardsHidden ? ' tv-updated--stale' : ''));
         text(updatedTime, m.lastOkMs !== null ? fmtTimeSeconds(m.lastOkMs) : '—');
+      }
+
+      // ---- banner message (AC-23): over live slots, forced full or "unavailable" (03 O-2)
+      const bannerOn = !!m.banner && withHead;
+      show(msgbar, bannerOn);
+      if (bannerOn) {
+        text(msgbarText, m.banner!.text);
+        const until = untilText(m.banner!.endsAt, m.nowMs);
+        show(msgbarEnd, until !== '');
+        text(msgbarUntil, until);
+      }
+
+      // ---- full-screen message (AC-23): the message only, with the site name and time
+      const takeoverOn = m.view === 'TAKEOVER' && !!m.takeover;
+      show(takeover, takeoverOn);
+      if (takeoverOn) {
+        text(toSite, (m.feed && m.feed.siteName) || '');
+        text(toTime, fmtTime(m.nowMs));
+        text(toText, m.takeover!.text);
+        const until = untilText(m.takeover!.endsAt, m.nowMs);
+        text(toUntil, until ? ' · until ' + until : '');
       }
 
       // ---- cards
@@ -357,7 +424,6 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
             if (cards[i].root.parentNode !== grid) grid.appendChild(cards[i].root);
           } else if (cards[i].root.parentNode === grid) grid.removeChild(cards[i].root);
         }
-        // keep DOM order = list order (cards are only appended above, so this is already true)
       }
 
       // ---- system pages
@@ -381,10 +447,10 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
       }
 
       // ---- footer
-      show(foot, live || unavailable);
+      show(foot, withHead);
       if (live) {
         const g = m.grid!;
-        text(footText, footerText(g, m.feed!.counts.total, { banner: false, forced: false }));
+        text(footText, footerText(g, m.feed!.counts.total, { banner: !!m.banner, forced: forced }));
         const paging = g.mode === 'PAGING';
         show(pager, paging);
         cls(brand, paging ? 'tv-brand' : 'tv-brand tv-brand--end');
@@ -394,7 +460,7 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
           text(pagerNext, 'Next page in ' + m.nextPageS + ' s');
           setSegments(g.pages, g.page - 1, m.pageProgress);
         }
-      } else if (unavailable) {
+      } else if (withHead) {
         text(footText, 'Slot list hidden after 2 minutes without an update');
         show(pager, false);
         cls(brand, 'tv-brand tv-brand--end');

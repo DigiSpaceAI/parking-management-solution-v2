@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(join(ROOT, 'package.json'));
 const esbuild = require('esbuild');
 
-const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload', 'layout'];
+const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload', 'layout', 'decide', 'override'];
 const mod = {};
 
 before(async () => {
@@ -395,6 +395,134 @@ test('pairing: an expired code (410) or a code past its 10 minutes gets a new co
   env.advance(600000);
   app.tick();
   assert.equal(starts, 3, 'a new code after 10 minutes');
+});
+
+// ---- F5: precedence (AC-28) and the override cache ---------------------------------------
+const NOW = Date.parse(ist(2026, 10, 21, 10, 0));
+const msg = (mode, endsAt = null) => ({ id: 'm1', text: 'Level B2 closed', mode, endsAt });
+const base = { credential: 'OK', now: NOW, closed: false, lastOkAgeMs: 1000, feedState: 'OPEN', message: null, forcedFull: null };
+
+test('decideScreen: the AC-28 order, first match wins', () => {
+  const { decideScreen } = mod.decide;
+  const v = (o) => decideScreen({ ...base, ...o }).view;
+  const full = msg('FULL');
+  const ff = { endsAt: null };
+  // 1 switched off / link not valid beat everything, 2 the full-screen message beats closed, …
+  assert.equal(v({ credential: 'OFF', message: full, closed: true, forcedFull: ff }), 'OFF');
+  assert.equal(v({ credential: 'INVALID', message: full }), 'INVALID');
+  assert.equal(v({ message: full, closed: true, feedState: 'EMPTY', forcedFull: ff, lastOkAgeMs: 500000 }), 'TAKEOVER');
+  assert.equal(v({ closed: true, feedState: 'EMPTY', forcedFull: ff, lastOkAgeMs: 500000 }), 'CLOSED');
+  assert.equal(v({ feedState: 'EMPTY', forcedFull: ff, lastOkAgeMs: 500000 }), 'EMPTY');
+  assert.equal(v({ lastOkAgeMs: 120001 }), 'UNAVAILABLE');
+  assert.equal(v({ forcedFull: ff }), 'FORCED_FULL');
+  assert.equal(v({}), 'LIVE');
+  assert.equal(v({ credential: 'NONE' }), 'PAIRING');
+  assert.equal(v({ feedState: null }), 'STARTING');
+});
+
+test('decideScreen: overlays — banner over live / forced full / unavailable; stale over live and forced full; forced full + 2 min keeps the look, hides the cards', () => {
+  const { decideScreen } = mod.decide;
+  const d = (o) => decideScreen({ ...base, ...o });
+  const b = msg('BANNER');
+  for (const [o, view] of [[{}, 'LIVE'], [{ forcedFull: { endsAt: null } }, 'FORCED_FULL'], [{ lastOkAgeMs: 200000 }, 'UNAVAILABLE']]) {
+    const r = d({ ...o, message: b });
+    assert.equal(r.view, view);
+    assert.equal(r.banner, b, `banner on ${view}`);
+  }
+  assert.equal(d({ message: b, closed: true }).banner, null, 'no banner on Closed');
+  assert.equal(d({ lastOkAgeMs: 31000 }).staleBanner, true);
+  assert.equal(d({ lastOkAgeMs: 31000, forcedFull: { endsAt: null } }).staleBanner, true);
+  assert.equal(d({ lastOkAgeMs: 29000 }).staleBanner, false);
+  const hidden = d({ lastOkAgeMs: 130000, forcedFull: { endsAt: null } });
+  assert.deepEqual([hidden.view, hidden.cardsHidden, hidden.staleBanner], ['FORCED_FULL', true, false]);
+});
+
+test('decideScreen: an override past its end time is ignored (end checked against the server-offset clock)', () => {
+  const { decideScreen, isActive } = mod.decide;
+  const past = new Date(NOW - 1000).toISOString();
+  const future = new Date(NOW + 1000).toISOString();
+  assert.equal(decideScreen({ ...base, message: msg('FULL', past) }).view, 'LIVE');
+  assert.equal(decideScreen({ ...base, message: msg('FULL', future) }).view, 'TAKEOVER');
+  assert.equal(decideScreen({ ...base, forcedFull: { endsAt: past } }).view, 'LIVE');
+  assert.equal(isActive({ endsAt: null }, NOW), true);
+});
+
+const withOverride = (override, over = {}) => feed({ override, siteName: 'Alphatech Tower', ...over });
+
+test('a takeover stays through polling failure until its end, then goes within 1 s; with no end it stays until a good poll says otherwise', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  const end = new Date(Date.parse(ist(2026, 10, 21, 9, 14, 32)) + 60000).toISOString(); // 1 min after the feed's serverTime
+  let up = true;
+  const { app } = start(env, () => (up ? { status: 200, body: withOverride({ message: msg('FULL', end), forcedFull: null }) } : { status: 0, body: null }));
+  assert.equal(app.model().view, 'TAKEOVER');
+  up = false;
+  env.advance(59000);
+  assert.equal(app.model().view, 'TAKEOVER', 'kept while the network is down');
+  env.advance(1500);
+  assert.notEqual(app.model().view, 'TAKEOVER', 'gone within a second of its end time');
+  // no end time: stays until a successful poll without it
+  const e2 = fakeEnv({ hash: `#k=${TOKEN}` });
+  let body = withOverride({ message: msg('FULL'), forcedFull: null });
+  let ok = true;
+  const s2 = start(e2, () => (ok ? { status: 200, body } : { status: 0, body: null }));
+  ok = false;
+  e2.advance(10 * 60000);
+  assert.equal(s2.app.model().view, 'TAKEOVER');
+  ok = true;
+  body = withOverride({ message: null, forcedFull: null }, { v: 'v2' });
+  e2.advance(15000);
+  assert.equal(s2.app.model().view, 'LIVE', 'a clear arrives with the next good poll (AC-24)');
+});
+
+test('the override cache survives a reload with no network, is ignored for another display, and is wiped by 401/410', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  start(env, () => ({ status: 200, body: withOverride({ message: msg('BANNER'), forcedFull: { endsAt: null } }) }));
+  assert.ok(env.data.get(mod.override.OVERRIDE_KEY), 'cached');
+  // reload, no network: same credential → forced full + banner from the cache, cards hidden (no slot data yet)
+  const again = fakeEnv({ hash: '' });
+  again.data.set(mod.credential.TOKEN_KEY, TOKEN);
+  again.data.set(mod.override.OVERRIDE_KEY, env.data.get(mod.override.OVERRIDE_KEY));
+  const r = start(again, () => ({ status: 0, body: null }));
+  const m = r.app.model();
+  assert.equal(m.view, 'FORCED_FULL');
+  assert.equal(m.cardsHidden, true);
+  // another display (another credential) ignores it
+  const other = fakeEnv({ hash: `#k=${'B'.repeat(43)}` });
+  other.data.set(mod.override.OVERRIDE_KEY, env.data.get(mod.override.OVERRIDE_KEY));
+  const o = start(other, () => ({ status: 0, body: null }));
+  assert.equal(o.app.model().view, 'STARTING');
+  // 410 wipes it
+  let status = 200;
+  const w = fakeEnv({ hash: `#k=${TOKEN}` });
+  start(w, () => (status === 200 ? { status, body: withOverride({ message: msg('FULL'), forcedFull: null }) } : { status, body: {} }));
+  status = 410;
+  w.advance(3000);
+  assert.equal(w.data.has(mod.override.OVERRIDE_KEY), false);
+});
+
+test('forced full: occupied cards only, every count 0, no paging; a banner makes it 8 per page', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  const slots = [...many('B1', 30, 'VACANT'), ...many('B2', 20, 'OCCUPIED')];
+  let override = { message: null, forcedFull: { endsAt: null } };
+  const { app } = start(env, () => ({ status: 200, body: withOverride(override, { v: JSON.stringify(override), slots }) }));
+  let m = app.model();
+  assert.equal(m.view, 'FORCED_FULL');
+  assert.equal(m.grid.mode, 'FULL');
+  assert.equal(m.grid.cards.length, 12);
+  assert.ok(m.grid.cards.every((c) => c.status === 'OCCUPIED'), 'vacant slots are not shown');
+  override = { message: msg('BANNER'), forcedFull: null };
+  env.advance(3000);
+  m = app.model();
+  assert.equal(m.view, 'LIVE');
+  assert.equal(m.grid.cards.length, 8);
+  assert.equal(m.grid.pages, 4, '30 vacant at 8 per page');
+});
+
+test('until text: today → HH:mm, another day → D MMM, HH:mm (03 O-1)', () => {
+  const { untilText } = mod.time;
+  assert.equal(untilText(ist(2026, 10, 21, 14, 0), NOW), '14:00');
+  assert.equal(untilText(ist(2026, 10, 22, 9, 0), NOW), '22 Oct, 09:00');
+  assert.equal(untilText(null, NOW), '');
 });
 
 // ---- the built bundle -----------------------------------------------------------------------

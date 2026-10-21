@@ -134,3 +134,22 @@ body { font-family: var(--font-text); color: var(--on-navy); -webkit-font-smooth
 .tv-code-box + .tv-code-box { margin-left: calc(var(--tv-px) * 16); }
 .tv-code-gap { width: calc(var(--tv-px) * 48); }
 .tv-url { font-family: var(--font-mono); font-weight: 600; color: var(--teal-300); }
+
+/* ---- Admin overrides (PRD v1.4 AC-23..AC-28; UX boards 11–14) ---- */
+/* Banner message: a teal-300 strip (not a status colour) between the header and the cards; 8 cards while it is on. */
+.tv-msgbar { flex: none; display: flex; align-items: center; min-height: calc(var(--tv-px) * 160); padding: calc(var(--tv-px) * 24) calc(var(--tv-px) * 32);
+  border-radius: calc(var(--tv-px) * 16); background: var(--teal-300); color: var(--ink); }
+.tv-msgbar svg { width: calc(var(--tv-px) * 64); height: calc(var(--tv-px) * 64); flex: none; margin-right: calc(var(--tv-px) * 28); }
+.tv-msgbar-text { flex: 1 1 auto; min-width: 0; font: 600 calc(var(--tv-px) * 44)/calc(var(--tv-px) * 56) var(--font-text); overflow-wrap: break-word; }
+.tv-msgbar-end { flex: none; display: flex; flex-direction: column; align-items: flex-end; margin-left: calc(var(--tv-px) * 28); font: 500 var(--tv-text-size)/var(--tv-text-line) var(--font-text); white-space: nowrap; }
+.tv-msgbar-end b { font: 600 var(--tv-plate-size)/var(--tv-plate-line) var(--font-mono); }
+/* Full-screen message: no slot data; the site name and the time on top. */
+.tv-takeover { flex: 1 1 auto; display: flex; flex-direction: column; padding: calc(var(--tv-px) * 24) calc(var(--tv-px) * 24) 0; }
+.tv-takeover > :not([hidden]) ~ :not([hidden]) { margin-top: calc(var(--tv-px) * 40); }
+.tv-takeover-top { display: flex; align-items: center; font: 600 var(--tv-title-size)/var(--tv-title-line) var(--font-display); color: var(--on-navy); }
+.tv-takeover-time { margin-left: auto; font: 600 var(--tv-count-size)/var(--tv-count-line) var(--font-mono); }
+.tv-takeover-body { flex: 1 1 auto; display: flex; align-items: center; padding: calc(var(--tv-px) * 56) calc(var(--tv-px) * 64); border-radius: calc(var(--tv-px) * 16); background: var(--teal-300); color: var(--ink); }
+.tv-takeover-body svg { width: calc(var(--tv-px) * 140); height: calc(var(--tv-px) * 140); flex: none; margin-right: calc(var(--tv-px) * 48); }
+.tv-takeover-body p { margin: 0; min-width: 0; font: 700 var(--tv-message-size)/calc(var(--tv-px) * 88) var(--font-display); overflow-wrap: break-word; }
+.tv-takeover-foot { display: flex; align-items: center; justify-content: space-between; height: var(--tv-footer-h-vw); font: 500 var(--tv-text-size)/var(--tv-text-line) var(--font-text); color: var(--navy-100); }
+.tv-takeover-foot b { color: var(--on-navy); font-weight: 600; }

@@ -62,6 +62,13 @@ export function fmtDayMonth(ms: number): string {
   return p.day + ' ' + MONTHS[p.month];
 }
 
+/** An override's end for "Until …" (03 O-1): "14:00" today (IST), "21 Oct, 14:00" on another day; '' with no end. */
+export function untilText(endsAt: string | null, nowMs: number): string {
+  const end = parseIso(endsAt);
+  if (end === null) return '';
+  return istParts(end).dayKey === istParts(nowMs).dayKey ? fmtTime(end) : fmtDayMonth(end) + ', ' + fmtTime(end);
+}
+
 /** ISO → ms, or null. */
 export function parseIso(iso: string | null | undefined): number | null {
   if (!iso) return null;

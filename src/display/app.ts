@@ -6,15 +6,17 @@
  * One timer for polling, one 1 s tick, one request in flight; the feed object is replaced, never
  * grown (NFR-4: 7 days without a reload).
  */
-import type { DisplayFeed, FeedResponse, FeedSlot } from './types';
+import type { DisplayFeed, FeedMessage, FeedOverride, FeedResponse, FeedSlot } from './types';
 import { isUnchanged } from './types';
 import type { HttpResult, Store } from './env';
-import { readCredential, TOKEN_KEY } from './credential';
+import { readCredential, TOKEN_KEY, tokenTag } from './credential';
 import { isOpenAt } from './hours';
 import { freshness, nextDelayMs, outcomeOf, POLL_MS, REQUEST_TIMEOUT_MS, BACKOFF_MAX_MS, type Freshness, type PollOutcome } from './poll';
 import { istParts, parseIso, ServerClock } from './time';
 import { pickReloadMinute, RELOAD_KEY, shouldReload } from './reload';
 import { gridLayout, newlyVacant, type GridLayout } from './layout';
+import { decideScreen, type DecidedView } from './decide';
+import { clearOverride, loadOverride, NO_OVERRIDE, saveOverride } from './override';
 
 /** No object spread in the TV bundle: esbuild's es2015 helper for it needs Object.getOwnPropertyDescriptors (not in Chromium 53). */
 function assign<T extends object>(target: object, ...sources: object[]): T {
@@ -29,6 +31,8 @@ const CLOSED_TRUST_MS = 35000;
 /** UX board 2: the "Just freed" outline and tag stay 10 s. */
 export const JUST_FREED_MS = 10000;
 export const CARDS_PER_PAGE = 12;
+/** UX board 11: 4 × 2 cards while a banner message is shown. */
+export const CARDS_PER_PAGE_BANNER = 8;
 
 export interface TvEnv {
   mono(): number;
@@ -44,20 +48,26 @@ export interface TvEnv {
 
 export type Credential = 'NONE' | 'OK' | 'INVALID' | 'OFF';
 
-export type View = 'STARTING' | 'PAIRING' | 'OFF' | 'INVALID' | 'CLOSED' | 'EMPTY' | 'UNAVAILABLE' | 'LIVE';
+export type View = DecidedView;
 
 /** Everything the renderer needs for one frame. */
 export interface ScreenModel {
   view: View;
-  /** No update for 30 s (amber "Updating…" banner); LIVE only. */
+  /** No update for 30 s (amber "Updating…" banner); LIVE and FORCED_FULL only. */
   stale: boolean;
+  /** The banner message strip (AC-23), on LIVE / FORCED_FULL / UNAVAILABLE. */
+  banner: FeedMessage | null;
+  /** TAKEOVER: the full-screen message (AC-23). */
+  takeover: FeedMessage | null;
+  /** FORCED_FULL with no current data: the forced-full header stays, the cards go (AC-28, UX). */
+  cardsHidden: boolean;
   freshness: Freshness;
   feed: DisplayFeed | null;
   /** Server-offset "now". */
   nowMs: number;
   /** Server time of the last good response, for "Updated HH:mm:ss" / "last updated HH:mm". */
   lastOkMs: number | null;
-  /** LIVE only: the cards on screen now. */
+  /** LIVE / FORCED_FULL: the cards on screen now. */
   grid: GridLayout | null;
   /** Paging: 0..1 of the current page's time, and whole seconds to the next page. */
   pageProgress: number;
@@ -92,6 +102,8 @@ export class TvApp {
   private pairSecret: string | null = null;
   private pairExpiresMono = 0;
   private pairFailures = 0;
+  private override: FeedOverride = NO_OVERRIDE;
+  private tag = '';
 
   constructor(private env: TvEnv, private renderer: Renderer) {
     this.startedMono = env.mono();
@@ -103,7 +115,12 @@ export class TvApp {
   start(): void {
     this.token = readCredential(this.env.hash(), this.env.store);
     this.credential = this.token ? 'OK' : 'NONE';
-    if (this.token) this.poll();
+    if (this.token) {
+      // A message or forced full received before a reload stays until its end time (AC-28).
+      this.tag = tokenTag(this.token);
+      this.override = loadOverride(this.env.store, this.tag);
+      this.poll();
+    }
     else this.pairStart();
     this.render();
   }
@@ -132,6 +149,8 @@ export class TvApp {
   useToken(token: string): void {
     this.token = token;
     this.env.store.set(TOKEN_KEY, token);
+    this.tag = tokenTag(token);
+    this.override = NO_OVERRIDE;
     this.credential = 'OK';
     this.pairCode = null;
     this.pairSecret = null;
@@ -208,6 +227,8 @@ export class TvApp {
       this.credential = outcome.reason;
       this.stopped = true;
       this.feed = null; // board 8 / "isn't valid": no slot data from here on (AC-04)
+      this.override = NO_OVERRIDE; // and no override either (03 v1.2)
+      clearOverride(this.env.store);
     }
     let delay = nextDelayMs(outcome, this.failures, this.env.random());
     if (delay !== null && outcome.kind === 'retry' && r.retryAfterS) delay = Math.max(delay, Math.min(r.retryAfterS * 1000, BACKOFF_MAX_MS));
@@ -230,6 +251,9 @@ export class TvApp {
     const freed = newlyVacant(prev, body.slots || []);
     for (let i = 0; i < freed.length; i++) this.freedUntil[freed[i]] = mono + JUST_FREED_MS;
     this.feed = body;
+    // A good feed always replaces the cached overrides: that's how a Clear arrives (AC-24).
+    this.override = body.override ? { message: body.override.message || null, forcedFull: body.override.forcedFull || null } : NO_OVERRIDE;
+    if (this.tag) saveOverride(this.env.store, this.tag, this.override);
   }
 
   // ---- pairing (UX board 10; 03 "Pairing") -------------------------------------------------
@@ -288,11 +312,26 @@ export class TvApp {
       if (this.freedUntil[code] > mono) justFreed[code] = true;
       else delete this.freedUntil[code];
     }
+    const feed = this.feed;
+    // Closed: the server's answer while it is current; the TV's own rule (server-offset clock) after that.
+    const closed = !!feed && (ageMs <= CLOSED_TRUST_MS ? feed.state === 'CLOSED' : !isOpenAt(feed.hours, nowMs));
+    const d = decideScreen({
+      credential: this.credential,
+      now: nowMs,
+      closed: closed,
+      lastOkAgeMs: ageMs,
+      feedState: feed ? feed.state : null,
+      message: this.override.message,
+      forcedFull: this.override.forcedFull,
+    });
     const m: ScreenModel = {
-      view: 'STARTING',
-      stale: false,
+      view: d.view,
+      stale: d.staleBanner,
+      banner: d.banner,
+      takeover: d.takeover,
+      cardsHidden: d.cardsHidden || (d.view === 'FORCED_FULL' && !(feed && feed.state === 'OPEN')),
       freshness: fresh,
-      feed: this.feed,
+      feed: feed,
       nowMs: nowMs,
       lastOkMs: this.lastOkServerMs,
       grid: null,
@@ -301,28 +340,17 @@ export class TvApp {
       justFreed: justFreed,
       pairCode: this.pairCode,
     };
-    if (this.credential === 'NONE') return assign<ScreenModel>(m, { view: 'PAIRING' });
-    if (this.credential === 'OFF') return assign<ScreenModel>(m, { view: 'OFF' });
-    if (this.credential === 'INVALID') return assign<ScreenModel>(m, { view: 'INVALID' });
-    const feed = this.feed;
-    if (!feed) return assign<ScreenModel>(m, { view: fresh === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'STARTING' });
-    // Closed: the server's answer while it is current; the TV's own rule (server-offset clock) after that.
-    const closed = ageMs <= CLOSED_TRUST_MS ? feed.state === 'CLOSED' : !isOpenAt(feed.hours, nowMs);
-    if (closed) return assign<ScreenModel>(m, { view: 'CLOSED' });
-    if (feed.state === 'EMPTY') return assign<ScreenModel>(m, { view: 'EMPTY' });
-    if (fresh === 'UNAVAILABLE') return assign<ScreenModel>(m, { view: 'UNAVAILABLE' });
-    // A CLOSED feed carries no slots: if the TV opens by itself before the next poll, it waits for data.
-    if (feed.state === 'CLOSED') return assign<ScreenModel>(m, { view: 'STARTING' });
-    const grid = gridLayout(feed.slots || [], CARDS_PER_PAGE, this.pageIndex, justFreed);
-    const pageMs = Math.max(1, feed.pageSeconds) * 1000;
-    const inPage = Math.min(pageMs, Math.max(0, mono - this.pageStartMono));
-    return assign<ScreenModel>(m, {
-      view: 'LIVE',
-      stale: fresh === 'STALE',
-      grid: grid,
-      pageProgress: grid.mode === 'PAGING' ? inPage / pageMs : 0,
-      nextPageS: grid.mode === 'PAGING' ? Math.max(1, Math.ceil((pageMs - inPage) / 1000)) : 0,
-    });
+    if ((m.view === 'LIVE' || m.view === 'FORCED_FULL') && !m.cardsHidden && feed) {
+      const perPage = m.banner ? CARDS_PER_PAGE_BANNER : CARDS_PER_PAGE;
+      const forced = m.view === 'FORCED_FULL';
+      const grid = gridLayout(feed.slots || [], perPage, forced ? 0 : this.pageIndex, forced ? {} : justFreed, forced);
+      const pageMs = Math.max(1, feed.pageSeconds) * 1000;
+      const inPage = Math.min(pageMs, Math.max(0, mono - this.pageStartMono));
+      m.grid = grid;
+      m.pageProgress = grid.mode === 'PAGING' ? inPage / pageMs : 0;
+      m.nextPageS = grid.mode === 'PAGING' ? Math.max(1, Math.ceil((pageMs - inPage) / 1000)) : 0;
+    }
+    return m;
   }
 
   render(): void {

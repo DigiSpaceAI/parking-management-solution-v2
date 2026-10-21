@@ -1594,7 +1594,13 @@ async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): 
   }
 }
 
+// 003 B3: bumped whenever slots may have changed (a full save, or a targeted
+// save that includes slots), so the display selection cache can rebuild.
+let slotsVersion = 0;
+export const getSlotsVersion = () => slotsVersion;
+
 export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+  if (!targetedSync || targetedSync.length === 0 || targetedSync.some((t) => t.collection === 'slots')) slotsVersion++;
   writeLocalCopy();
 
   // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
@@ -4535,6 +4541,17 @@ export function getDisplay(id: string): LiveDisplay | undefined {
 export function saveDisplay(display: LiveDisplay) {
   touchDisplays();
   saveDB([{ collection: 'displays', ids: [display.id] }]);
+}
+
+// Last seen (03 "Online / last seen"): persisted at most every 10 minutes, a
+// targeted write that doesn't count as a display change (no cache rebuild).
+export function persistDisplayLastSeen(display: LiveDisplay, iso: string) {
+  display.lastSeenAt = iso;
+  saveDB([{ collection: 'displays', ids: [display.id] }]);
+}
+
+export function getSiteName(siteId: string): string {
+  return (getStore().sites || []).find((x) => x.id === siteId)?.siteName || '';
 }
 
 export type DisplayInput = Partial<Pick<LiveDisplay, 'name' | 'location' | 'selection' | 'pageSeconds' | 'hours'>>;

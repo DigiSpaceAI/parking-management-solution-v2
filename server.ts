@@ -89,7 +89,8 @@ import {
   type DisplayInput,
 } from './src/server/db';
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
-import { issueDisplayToken, switchOffDisplay } from './src/server/displayAuth';
+import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
+import { displayFeedFor, markSeen, lastSeenIso } from './src/server/displayScreen';
 import { displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
@@ -316,6 +317,13 @@ app.use('/api/', (req, res, next) => {
   return globalApiLimiter(req, res, next);
 });
 
+// 003 Live Parking Display: the only routes a TV calls. Outside the session
+// gate, matched on gatePath() AND the method, exactly (03 "Outside the session
+// gate"); anything else under /api/v1/screen/ goes to requireAuth -> 401.
+const SCREEN_PUBLIC = new Set<string>([
+  'GET /api/v1/screen/feed',
+]);
+
 // Require a valid session for all API routes except the ones listed here.
 // Public: health check, login, set-password, employee self-registration
 // submission, and the domain list the registration form checks against.
@@ -340,6 +348,8 @@ app.use((req, res, next) => {
   const p = gatePath(req.path); // R1B-S1: same decision for every spelling of a path
   if (!p.startsWith('/api/v1/') && p !== '/login') return next();
   if (PUBLIC_API_PATHS.has(p)) return next();
+  // 003: the public TV routes, by exact gatePath + method (never startsWith).
+  if (SCREEN_PUBLIC.has(`${req.method} ${p}`)) return next();
   // 002 B6: POST /demo-requests is public (the parkflows.in form). Its other
   // methods are the Master console's; without a session they answer 405
   // (AC-32c: a GET with query-string fields is not a way to submit).
@@ -2217,8 +2227,8 @@ function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now())
     screenAgent: d.screenAgent || null,
   };
 }
-// B3 replaces this with the live (in-memory) last seen.
-let displayLastSeen = (d: { lastSeenAt?: string }): string | undefined => d.lastSeenAt;
+// Live (in-memory) last seen, falling back to the stored value after a restart.
+const displayLastSeen = lastSeenIso;
 
 app.get('/api/v1/displays', requirePermission('DISPLAYS', 'view'), (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: true });
@@ -2279,6 +2289,48 @@ app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/switch-off`, requirePermission('D
   switchOffDisplay(display, req.user!.email);
   auditDisplay(req, 'DISPLAY_SWITCHED_OFF', display, `Display ${display.id} switched off by ${req.user!.email}.`);
   res.json({ success: true, display: displayRow(display) });
+});
+
+// B3: the console's live preview: the same feed, never moves last seen.
+app.get(`/api/v1/displays/${DISPLAY_ID_PARAM}/preview`, requirePermission('DISPLAYS', 'view'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display) return;
+  res.json(displayFeedFor(display));
+});
+
+// ---------------------------------------------------------------------------
+// 003 B3: THE TV FEED. Public (SCREEN_PUBLIC). The x-display-token header is
+// the only input that matters: the feed is built from that display's record
+// alone. 401 unknown, 410 replaced / switched off. Polls are not audited,
+// except the first after a new credential (DISPLAY_CONNECTED, id + site).
+// ---------------------------------------------------------------------------
+app.get('/api/v1/screen/feed', (req, res) => {
+  const auth = resolveScreenToken(req.headers['x-display-token']);
+  if (auth.kind === 'UNKNOWN') return sendApiError(res, 401, 'ERR_SCREEN_TOKEN', "This display link isn't valid. Ask your site admin.");
+  if (auth.kind === 'OFF') return sendApiError(res, 410, 'ERR_SCREEN_OFF', 'This display has been switched off — ask your site admin.');
+  const display = (auth as { display: ReturnType<typeof getDisplays>[number] }).display;
+  const now = Date.now();
+  const feed = displayFeedFor(display, now);
+  markSeen(display, now);
+  if (takeFirstPoll(display.id)) {
+    logSecurityEvent({
+      action: 'DISPLAY_CONNECTED',
+      actor: 'screen',
+      actorRole: 'SCREEN',
+      redactClient: true,
+      targetResource: `display/${display.id}`,
+      status: 'SUCCESS',
+      details: `Display ${display.id} connected.`,
+      siteId: display.siteId,
+    });
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  if (typeof req.query.v === 'string' && req.query.v === feed.v) {
+    return res.json({ unchanged: true, v: feed.v, serverTime: feed.serverTime, state: feed.state });
+  }
+  res.json(feed);
 });
 
 // 8. Predictive Analytics 24-Hour Forecast Endpoint

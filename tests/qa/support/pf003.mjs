@@ -88,10 +88,16 @@ export const slot = (num, extra = {}) => ({ slotNumber: num, basement: 'B1', flo
   height: 'Standard (2.0m)', parkingType: 'PUZZLE', allocation: 'EMPLOYEE', status: 'VACANT', ...extra });
 
 // Bulk-uploads `rows` at the site and returns slotNumber -> slot.
+// One request per row, a few ms apart: slot ids are slot-<ms>-<0..999>, so rows
+// of one bulk upload can share an id (pre-existing; see 04 gaps).
 export async function addSlots(c, siteId, rows) {
-  const r = await c.post('master', '/slots/bulk-upload', { slots: rows }, { site: siteId });
-  assert.ok(r.body.success, JSON.stringify(r.body));
+  for (const row of rows) {
+    const r = await c.post('master', '/slots/bulk-upload', { slots: [row] }, { site: siteId });
+    assert.ok(r.body.success, JSON.stringify(r.body));
+    await sleep(3);
+  }
   const all = await c.slots(siteId);
+  assert.equal(new Set(all.map((s) => s.id)).size, all.length, 'fixture: slot ids are unique');
   return Object.fromEntries(all.map((s) => [s.slotNumber, s]));
 }
 

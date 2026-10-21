@@ -1,7 +1,8 @@
 // 003 Live Parking Display: what a display covers, and (B3) the TV feed.
 // Pure functions over the in-memory store. 03-tech-design v1.2 "The feed",
 // "Zones" (areas = level + parking type, no free-text matching).
-import { LiveDisplay, ParkingSlot, ParkingType } from '../types';
+import crypto from 'node:crypto';
+import { LiveDisplay, ParkingSlot, ParkingType, DisplayFeed, FeedSlot, DisplayHours, SlotStatus } from '../types';
 
 export const ONLINE_WINDOW_MS = 120 * 1000; // AC-17: offline = not seen for 2 minutes
 
@@ -69,4 +70,110 @@ export function displayOptions(siteSlots: ParkingSlot[]) {
       .sort((a, b) => byCode(a.slotNumber, b.slotNumber))
       .map((s) => ({ id: s.id, code: s.slotNumber, level: s.basement, area: areaLabel(s.basement, s.parkingType), puzzleNumber: s.puzzleNumber, type: s.slotType })),
   };
+}
+
+// ==========================================
+// B3: the TV feed (03 "The feed", NFR-5). Built from the display record and
+// the in-memory store only; the TV can't name a site, display or slot.
+// ==========================================
+const IST_OFFSET_MS = 330 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STATUS_ORDER: SlotStatus[] = ['VACANT', 'OCCUPIED', 'RESERVED', 'MAINTENANCE'];
+const byCode = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' });
+
+/** Minutes since IST midnight (fixed +05:30; host and TV clocks don't matter). */
+export const istMinuteOfDay = (nowMs: number): number => Math.floor((((nowMs + IST_OFFSET_MS) % DAY_MS) + DAY_MS) % DAY_MS / 60000);
+const hhmm = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+
+/** Display hours in IST: ALWAYS, or DAILY on..off where off < on is overnight. */
+export function isOpenAt(hours: DisplayHours, nowMs: number): boolean {
+  if (!hours || hours.mode !== 'DAILY') return true;
+  const m = istMinuteOfDay(nowMs);
+  const on = hhmm(hours.on);
+  const off = hhmm(hours.off);
+  return on < off ? m >= on && m < off : m >= on || m < off;
+}
+
+/** NFR-5 allow-list: the only slot fields a screen can ever receive. */
+export function toFeedSlot(s: ParkingSlot, pinned: boolean): FeedSlot {
+  const out: FeedSlot = {
+    code: s.slotNumber,
+    level: s.basement,
+    area: areaLabel(s.basement, s.parkingType),
+    type: s.slotType,
+    ev: s.slotType === 'EV',
+    parkingType: s.parkingType,
+    status: s.status,
+  };
+  if (s.puzzleNumber) out.puzzleNumber = s.puzzleNumber;
+  if (typeof s.palletLevel === 'number') out.palletLevel = s.palletLevel;
+  const m = String(s.height || '').match(/\d+(?:\.\d+)?/);
+  if (m) out.heightM = parseFloat(m[0]);
+  if (typeof s.lengthM === 'number') out.lengthM = s.lengthM;
+  if (s.status === 'OCCUPIED' && s.currentVehicle) out.plate = String(s.currentVehicle);
+  if (pinned) out.pinned = true;
+  return out;
+}
+
+export interface FeedInputs {
+  display: LiveDisplay;
+  slots: ParkingSlot[]; // the display's selected slots (hidden ones already removed)
+  pinned: Set<string>; // slot ids (US-17)
+  siteName: string;
+  override: DisplayFeed['override'];
+  nowMs: number;
+}
+
+/** The feed without serverTime; `v` hashes everything else. */
+export function buildFeed(i: FeedInputs): Omit<DisplayFeed, 'serverTime'> {
+  const d = i.display;
+  const base = {
+    place: d.location || '',
+    siteName: i.siteName,
+    hours: d.hours,
+    pageSeconds: d.pageSeconds,
+    override: i.override,
+  };
+  let body: Omit<DisplayFeed, 'serverTime' | 'v'>;
+  if (!isOpenAt(d.hours, i.nowMs)) {
+    body = { state: 'CLOSED', ...base, counts: { free: 0, total: 0, groups: [] } };
+  } else if (i.slots.length === 0) {
+    body = { state: 'EMPTY', ...base, counts: { free: 0, total: 0, groups: [] } };
+  } else {
+    const levels = new Set<string>(d.selection.levels || []);
+    const areas = new Set<string>((d.selection.areas || []).map((a) => `${a.level}|${a.parkingType}`));
+    // One header group per selected level or area, in level order. A slot counts
+    // in its level's group when that level is selected (or it was picked singly),
+    // otherwise in its area's group.
+    const groups = new Map<string, { label: string; rank: number; sub: number; free: number; total: number }>();
+    for (const s of i.slots) {
+      const areaKey = `${s.basement}|${s.parkingType}`;
+      const useArea = !levels.has(s.basement) && areas.has(areaKey);
+      const key = useArea ? `a:${areaKey}` : `l:${s.basement}`;
+      const g = groups.get(key) || { label: useArea ? areaLabel(s.basement, s.parkingType) : s.basement, rank: levelRank(s.basement), sub: useArea ? 1 : 0, free: 0, total: 0 };
+      g.total++;
+      if (s.status === 'VACANT') g.free++;
+      groups.set(key, g);
+    }
+    const sorted = [...i.slots].sort(
+      (a, b) =>
+        STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
+        Number(i.pinned.has(b.id)) - Number(i.pinned.has(a.id)) ||
+        byCode(a.slotNumber, b.slotNumber)
+    );
+    body = {
+      state: 'OPEN',
+      ...base,
+      counts: {
+        free: i.slots.filter((s) => s.status === 'VACANT').length,
+        total: i.slots.length,
+        groups: [...groups.values()]
+          .sort((a, b) => a.rank - b.rank || a.sub - b.sub || byCode(a.label, b.label))
+          .map(({ label, free, total }) => ({ label, free, total })),
+      },
+      slots: sorted.map((s) => toFeedSlot(s, i.pinned.has(s.id))),
+    };
+  }
+  const v = crypto.createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 16);
+  return { v, ...body };
 }

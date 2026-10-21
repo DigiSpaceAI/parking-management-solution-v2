@@ -459,7 +459,7 @@
   .pf-bars-figure figcaption { font: var(--type-small); color: var(--text-muted); }
   .pf-pager-ellipsis { min-width: var(--control-sm); text-align: center; color: var(--text-muted); }
   .pf-slot-since-none { color: var(--text-muted); }
-  .pf-panel-close { margin-left: auto; }
+  .pf-panel-close { margin-left: auto; flex: none; } /* never squeezed below its target size by a long title */
 
   /* App shell layout (002 F1): top bar over a permanent nav (≥ 1024px) or a drawer (< 1024px) */
   .pf-app { min-height: 100dvh; display: flex; flex-direction: column; background: var(--surface-25); }
@@ -675,6 +675,25 @@
   .pf-modal--wide { width: min(100%, calc(var(--modal-w) + var(--space-16) * 2 + var(--space-8))); }
   .pf-push-start { margin-right: auto; }
   .pf-panel--wide { width: min(100%, calc(var(--panel-w) + var(--space-12) * 2 + var(--space-6))); }
+  /* Overrides (003 F6, UX C8–C10) */
+  .pf-override-badge { display: inline-flex; align-items: center; height: var(--space-6); padding: 0 var(--space-2); border-radius: var(--radius-full); background: var(--teal-50); color: var(--ink); border: 1px solid var(--teal-600); font: 600 var(--text-caption-size)/var(--text-caption-line) var(--font-text); white-space: nowrap; }
+  .pf-override-cell { display: flex; align-items: center; gap: var(--space-3); }
+  .pf-override-box { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); background: var(--teal-50); border: 1px solid var(--teal-600); }
+  .pf-override-box > .pf-stack { flex: 1 1 auto; min-width: 0; }
+  .pf-override-text { overflow-wrap: anywhere; }
+  .pf-switch-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+  .pf-switch { all: unset; flex: none; position: relative; width: calc(var(--control-sm) + var(--space-5)); height: var(--control-sm); border-radius: var(--radius-full); background: var(--line-300); cursor: pointer; }
+  .pf-switch:focus-visible { box-shadow: var(--focus-ring); }
+  .pf-switch[aria-checked="true"] { background: var(--danger-600); }
+  .pf-switch[disabled] { cursor: not-allowed; opacity: 0.6; }
+  .pf-switch-knob { position: absolute; top: 50%; margin-top: calc(var(--space-6) / -2); left: var(--space-1); width: var(--space-6); height: var(--space-6); border-radius: var(--radius-full); background: var(--surface-0); transition: left var(--duration-fast) var(--ease-standard); }
+  .pf-switch[aria-checked="true"] .pf-switch-knob { left: calc(100% - var(--space-6) - var(--space-1)); }
+  .pf-textarea { height: auto; min-height: calc(var(--control-md) * 2); padding: var(--space-2) var(--space-3); resize: vertical; }
+  .pf-counter { font: var(--type-small); color: var(--text-secondary); }
+  .pf-counter--over { color: var(--danger-600); font-weight: 600; }
+  .pf-field-warning { font: var(--type-small); color: var(--warning-700); margin: 0; }
+  .pf-indent { padding-left: var(--space-6); }
+  .pf-text-muted { color: var(--text-muted); }
   @media (max-width: 1279.98px) {
     .pf-display-edit { flex-direction: column; align-items: stretch; }
     .pf-display-preview { width: 100%; position: static; }
@@ -687,7 +706,8 @@
   @media (pointer: coarse), (max-width: 767.98px) {
     .pf-btn, .pf-btn--sm, .pf-input, .pf-select, .pf-page-select .pf-select, .pf-seg-btn, .pf-switcher, .pf-account { height: auto; min-height: var(--touch-min); }
     .pf-icon-btn { width: var(--touch-min); height: var(--touch-min); }
-    .pf-seg-btn { min-width: var(--touch-min); justify-content: center; } /* 003: a one-word segment ("All") is a 44×44 target too */
+    .pf-seg-btn { min-width: var(--touch-min); justify-content: center; }
+    .pf-switch { height: var(--touch-min); width: calc(var(--touch-min) + var(--space-6)); } /* 003: the Force Parking full switch is a 44px target on touch */ /* 003: a one-word segment ("All") is a 44×44 target too */
     .pf-pager-ellipsis { min-width: var(--touch-min); }
     .pf-page { min-width: var(--touch-min); height: var(--touch-min); }
     .pf-toast-close, .pf-banner-close { width: var(--touch-min); height: var(--touch-min); }

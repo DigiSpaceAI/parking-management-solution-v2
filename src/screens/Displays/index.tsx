@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Monitor, Pencil, Plus, Power, RefreshCw, ScreenShare } from 'lucide-react';
+import { Ban, Megaphone, Monitor, Pencil, Plus, Power, RefreshCw, ScreenShare } from 'lucide-react';
 import type { ModuleAccessRights } from '../../types';
 import {
   ActionMenu, Banner, Button, EmptyState, ErrorState, Modal, PageHeader, SiteTag, StatusChip, Table, useNow, useToast, type Column,
@@ -8,7 +8,8 @@ import { formatAgo, formatNumber } from '../../utils/format';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
 import { displayState, displaysApi, hoursText, type DisplayRow } from './api';
-import { seenText, STATE_CHIP } from './status';
+import { hasOverride, overrideLines, seenText, STATE_CHIP } from './status';
+import { clearOverrides, ForceFullDialog, MessagePanel } from './Overrides';
 import { DisplayEditor } from './DisplayEditor';
 import { DisplayPanel } from './DisplayPanel';
 import { ScreensGuide, SetUpDialog } from './SetUpDialog';
@@ -40,6 +41,9 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [busy, setBusy] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [messageFor, setMessageFor] = useState<{ id: string | null } | null>(null);
+  const [forceFor, setForceFor] = useState<DisplayRow | null>(null);
+  const [clearing, setClearing] = useState<string | null>(null);
   const allSites = ctx.isAllSites;
   const canCreate = rights.canCreate && !allSites;
   const canEdit = rights.canEdit && !allSites;
@@ -73,6 +77,17 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
   const needAttention = rows.filter((d) => d.status === 'ACTIVE' && (displayState(d) === 'OFFLINE' || d.slotCount === 0)).length;
 
   const openRow = rows.find((r) => r.id === openId) ?? null;
+  const withOverride = rows.filter((d) => d.status === 'ACTIVE' && hasOverride(d.override));
+
+  // C8 "Clear": acts at once, no confirm (it only returns the screen to normal); audit-logged by the server.
+  const clear = async (d: DisplayRow) => {
+    setClearing(d.id);
+    const r = await clearOverrides(d);
+    setClearing(null);
+    if (r.ok) toast.show({ tone: 'success', message: `Override cleared on ${d.name} · screen back to live slots` });
+    else toast.show({ tone: 'error', message: r.message || COPY_SAVE_ERROR });
+    await refresh.refresh();
+  };
 
   const doConfirm = async () => {
     if (!confirm) return;
@@ -126,6 +141,8 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
         items={[
           { label: 'Edit', icon: Pencil, guard: true, disabled: !canEdit || off, onSelect: () => setEditing({ mode: 'edit', display: d }) },
           { label: 'Set up screen', icon: ScreenShare, guard: true, disabled: !canEdit || off, onSelect: () => setSetUp({ display: d, link: null, justSaved: false }) },
+          { label: 'Show a message…', icon: Megaphone, guard: true, disabled: !canEdit || off, onSelect: () => setMessageFor({ id: d.id }) },
+          { label: 'Force Parking full…', icon: Ban, guard: true, disabled: !canEdit || off || !!d.override?.forcedFull, onSelect: () => setForceFor(d) },
           { label: 'Replace link', icon: RefreshCw, guard: true, disabled: !canEdit || off, onSelect: () => setConfirm({ kind: 'replace', display: d }) },
           { label: 'Switch off', icon: Power, guard: true, destructive: true, disabled: !canEdit || off, onSelect: () => setConfirm({ kind: 'switch-off', display: d }) },
         ]}
@@ -157,6 +174,26 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
       {d.location && <span className="pf-cell-sub">{d.location}</span>}
     </span>
   );
+  const overrideCell = (d: DisplayRow) =>
+    d.status === 'ACTIVE' && hasOverride(d.override) ? (
+      <span className="pf-override-cell">
+        <span className="pf-stack pf-stack--tight pf-display-status">
+          <span className="pf-override-badge">Override active</span>
+          {overrideLines(d.override, now).map((l) => (
+            <span key={l} className="pf-cell-sub">
+              {l}
+            </span>
+          ))}
+        </span>
+        {!allSites && rights.canEdit && (
+          <Button size="sm" guard loading={clearing === d.id} loadingLabel="Clearing…" aria-label={`Clear override on ${d.name}`} onClick={(e) => { e.stopPropagation(); void clear(d); }}>
+            Clear
+          </Button>
+        )}
+      </span>
+    ) : (
+      <span className="pf-text-muted">—</span>
+    );
   const siteCell = (d: DisplayRow) => {
     const s = ctx.sites.find((x) => x.id === d.siteId);
     return (
@@ -180,6 +217,7 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
         { key: 'free', header: 'Free now', kind: 'num', render: (d) => (d.status === 'ACTIVE' && displayState(d) !== 'OFFLINE' && d.slotCount > 0 ? formatNumber(d.freeNow) : '—') },
         { key: 'hours', header: 'Hours', width: 'wide', render: (d) => hoursText(d.hours) },
       ];
+  if (withOverride.length) columns.splice(allSites ? 4 : 4, 0, { key: 'override', header: 'Override', render: overrideCell });
 
   const createButton = (
     <Button variant="primary" icon={Plus} guard disabled={!canCreate} onClick={() => setEditing({ mode: 'create' })}>
@@ -193,8 +231,24 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
         title="Displays"
         description={allSites ? 'Every site’s screens. Choose a site to create or change its displays.' : 'Screens at entrances and ramps that show drivers the free slots, live.'}
         updatedAt={refresh.updatedAt}
-        primary={rights.canCreate ? createButton : undefined}
+        primary={
+          rights.canEdit || rights.canCreate ? (
+            <>
+              {rights.canEdit && (
+                <Button guard disabled={!canEdit || !rows.some((d) => d.status === 'ACTIVE')} onClick={() => setMessageFor({ id: null })}>
+                  Message displays
+                </Button>
+              )}
+              {rights.canCreate && createButton}
+            </>
+          ) : undefined
+        }
       />
+      {withOverride.length > 0 && (
+        <Banner tone="info" title={`${withOverride.length} ${withOverride.length === 1 ? 'display has' : 'displays have'} an override.`}>
+          Drivers see the override instead of, or on top of, the live slots.
+        </Banner>
+      )}
       {allSites && (
         <Banner tone="info" title="All sites is view only.">
           To create, edit or switch off a display, choose its site in the site switcher.
@@ -253,6 +307,10 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
         onSetUp={(d) => setSetUp({ display: d, link: null, justSaved: false })}
         onReplace={(d) => setConfirm({ kind: 'replace', display: d })}
         onSwitchOff={(d) => setConfirm({ kind: 'switch-off', display: d })}
+        onMessage={(d) => setMessageFor({ id: d.id })}
+        onForceFull={(d) => setForceFor(d)}
+        onClear={(d) => void clear(d)}
+        clearing={clearing}
       />
 
       <SetUpDialog
@@ -305,6 +363,9 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
       </Modal>
 
       <ScreensGuide open={guideOpen} onClose={() => setGuideOpen(false)} />
+
+      <MessagePanel open={!!messageFor} displays={rows} initialId={messageFor?.id ?? null} onClose={() => setMessageFor(null)} onDone={() => void refresh.refresh()} />
+      <ForceFullDialog display={forceFor} onClose={() => setForceFor(null)} onDone={() => void refresh.refresh()} />
     </>
   );
 };

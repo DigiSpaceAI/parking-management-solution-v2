@@ -70,6 +70,31 @@ export interface DisplayInput {
   hours: DisplayHours;
 }
 
+/** 03 v1.2 DisplayMessage, as the console lists it (GET /displays/messages). */
+export interface DisplayMessage {
+  id: string;
+  siteId: string;
+  text: string;
+  mode: 'BANNER' | 'FULL';
+  target: { all: true } | { displayIds: string[] };
+  clearedFor: string[];
+  endsAt: string | null;
+  createdAt: string;
+  createdBy: string;
+  endedAt?: string;
+  endReason?: 'CLEARED' | 'EXPIRED' | 'REPLACED';
+  /** Resolved display ids it is shown on now. */
+  appliesTo?: string[];
+}
+
+export interface MessageInput {
+  text: string;
+  mode: 'BANNER' | 'FULL';
+  target: { all: true } | { displayIds: string[] };
+  /** ISO with an explicit +05:30 offset (the IST wall time picked), or null = "when I clear it". */
+  endsAt: string | null;
+}
+
 export interface ApiResult<T> {
   ok: boolean;
   status: number;
@@ -102,7 +127,34 @@ export const displaysApi = {
   pair: (id: string, code: string) => call<object>('POST', `/api/v1/displays/${enc(id)}/pair`, { code }),
   replace: (id: string) => call<{ link?: string }>('POST', `/api/v1/displays/${enc(id)}/replace`),
   switchOff: (id: string) => call<{ display?: DisplayRow }>('POST', `/api/v1/displays/${enc(id)}/switch-off`),
+  // 03 v1.2 overrides (US-15, US-16)
+  messages: () => call<{ messages?: DisplayMessage[] }>('GET', '/api/v1/displays/messages'),
+  createMessage: (input: MessageInput) => call<{ message?: DisplayMessage; appliesTo?: string[] }>('POST', '/api/v1/displays/messages', input),
+  /** No ids = clear it everywhere; ids = clear it on these displays only (per-row Clear, C8). */
+  clearMessage: (id: string, displayIds?: string[]) =>
+    call<{ message?: DisplayMessage }>('POST', `/api/v1/displays/messages/${enc(id)}/clear`, displayIds ? { displayIds } : {}),
+  forceFull: (id: string, endsAt: string | null) => call<{ display?: DisplayRow }>('POST', `/api/v1/displays/${enc(id)}/force-full`, { endsAt }),
+  clearForceFull: (id: string) => call<{ display?: DisplayRow }>('POST', `/api/v1/displays/${enc(id)}/force-full/clear`),
 };
+
+/** The IST wall time picked in the console as an ISO string with its +05:30 offset (03 v1.2 "End times are IST"). */
+export function istIso(date: string, time: string): string {
+  return `${date}T${time}:00+05:30`;
+}
+
+/** The next `n` IST calendar days as { value: 'YYYY-MM-DD', label: 'Today, 21 Oct 2026' }. */
+export function istDays(n: number, now = Date.now()): { value: string; label: string }[] {
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const out: { value: string; label: string }[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(now + 330 * 60000 + i * 86400000);
+    const value = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    const date = `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+    out.push({ value, label: `${i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : DAYS[d.getUTCDay()]}, ${date}` });
+  }
+  return out;
+}
 
 /** "Always on" / "07:00–23:00". */
 export function hoursText(h: DisplayHours): string {

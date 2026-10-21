@@ -13,7 +13,7 @@ const esbuild = createRequire(join(ROOT, 'package.json'))('esbuild');
 const mod = {};
 before(async () => {
   const out = mkdtempSync(join(tmpdir(), 'pf-console-'));
-  const entries = { draft: 'src/screens/Displays/draft.ts', rbac: 'src/utils/rbac.ts', api: 'src/screens/Displays/api.ts' };
+  const entries = { draft: 'src/screens/Displays/draft.ts', rbac: 'src/utils/rbac.ts', api: 'src/screens/Displays/api.ts', status: 'src/screens/Displays/status.ts' };
   await esbuild.build({ entryPoints: Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, join(ROOT, v)])), bundle: true, format: 'esm', platform: 'neutral', outdir: out, logLevel: 'silent' });
   for (const k of Object.keys(entries)) mod[k] = await import(pathToFileURL(join(out, `${k}.js`)).href);
 });
@@ -78,4 +78,26 @@ test('display status words and hours (UX C1)', () => {
   assert.equal(displayState(row({ status: 'SWITCHED_OFF', online: true })), 'SWITCHED_OFF');
   assert.equal(hoursText({ mode: 'DAILY', on: '07:00', off: '23:00' }), '07:00–23:00');
   assert.equal(hoursText({ mode: 'ALWAYS' }), 'Always on');
+});
+
+test('override summary lines: what · who · until, IST (UX C8, AC-29)', () => {
+  const { overrideLines, hasOverride, untilLabel } = mod.status;
+  const now = Date.parse('2026-10-21T04:30:00Z'); // 10:00 IST
+  const o = { message: { id: 'm', mode: 'BANNER', text: 'x', by: 'Priya Nair', until: '2026-10-21T14:00:00+05:30' }, forcedFull: { by: 'Arjun Rao', until: null }, hidden: 0, pinned: 0 };
+  assert.deepEqual(overrideLines(o, now), ['Banner message · Priya Nair · until 14:00', 'Forced Parking full · Arjun Rao · until cleared']);
+  assert.equal(untilLabel('2026-10-22T09:00:00+05:30', now), 'until 22 Oct, 09:00');
+  assert.equal(hasOverride({ hidden: 3, pinned: 1 }), false, 'hidden/pinned alone is not an "Override active" badge');
+  assert.equal(hasOverride(o), true);
+});
+
+test('end times are sent as the IST wall time with +05:30; the date list starts today in IST (03 v1.2)', () => {
+  const { istIso, istDays } = mod.api;
+  assert.equal(istIso('2026-10-21', '14:00'), '2026-10-21T14:00:00+05:30');
+  assert.equal(Date.parse(istIso('2026-10-21', '14:00')), Date.parse('2026-10-21T08:30:00Z'));
+  const late = Date.parse('2026-10-21T19:00:00Z'); // 00:30 IST on 22 Oct
+  const days = istDays(3, late);
+  assert.equal(days[0].value, '2026-10-22');
+  assert.match(days[0].label, /^Today, 22 Oct 2026$/);
+  assert.match(days[1].label, /^Tomorrow, 23 Oct 2026$/);
+  assert.equal(istDays(31).length, 31, 'up to 31 days ahead');
 });

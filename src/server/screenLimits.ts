@@ -33,8 +33,37 @@ export class WindowLimiter {
   }
 }
 
+// Known credentials only (live or retired; 03 v1.3): garbage can't fill these.
 export const FEED_PER_CREDENTIAL = new WindowLimiter(40, 60_000); // normal is 20/min
 export const FEED_ALL_SCREENS = new WindowLimiter(3000, 60_000); // ~150 TVs together
+// 03 v1.3 (code review R1-1): missing, malformed and unknown tokens have their
+// own buckets, so a flood of them can never make a valid TV get 429.
+export const FEED_UNKNOWN_PER_CLIENT = new WindowLimiter(30, 60_000); // per client key (002 Hosting rule)
+export const FEED_UNKNOWN_TOTAL = new WindowLimiter(600, 60_000);
+
+/**
+ * Counts refusals by the unknown-token total and reports them at most once a
+ * minute (SCREEN_UNKNOWN_TOKEN_FLOOD with the count), on the first unknown
+ * request after the minute or from a sweep when traffic stops.
+ */
+export class FloodCounter {
+  private windowStart = Date.now();
+  private refused = 0;
+  constructor(private readonly report: (refused: number) => void, readonly windowMs = 60_000) {
+    const t = setInterval(() => this.roll(Date.now()), windowMs);
+    t.unref();
+  }
+  roll(now: number) {
+    if (now - this.windowStart < this.windowMs) return;
+    if (this.refused > 0) this.report(this.refused);
+    this.refused = 0;
+    this.windowStart = now;
+  }
+  note(now = Date.now()) {
+    this.roll(now);
+    this.refused++;
+  }
+}
 
 // B5 pairing limits (03 "Abuse limits").
 export const PAIR_START_ALL = new WindowLimiter(20, 60_000); // platform-wide

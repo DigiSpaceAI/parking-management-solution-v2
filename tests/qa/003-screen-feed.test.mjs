@@ -234,7 +234,7 @@ test('B4 the 41st poll in a minute from one credential -> 429, one redacted audi
   assert.ok(!JSON.stringify(row).includes(d.token));
 });
 
-test('B4 100 TVs x 20 polls skip the global /api/ limiter (and logins still work); unknown tokens hit only the all-screens bucket', async () => {
+test('B4 100 TVs x 20 polls skip the global /api/ limiter (and logins still work); garbage after them does not touch valid TVs', async () => {
   const s = await startServer();
   try {
     const cl = client(s);
@@ -254,12 +254,10 @@ test('B4 100 TVs x 20 polls skip the global /api/ limiter (and logins still work
     assert.deepEqual(statuses, { 200: 2000 }, '2,000 polls in well under a minute: none refused (the global limiter is 600/min)');
     const login = await cl.call(null, 'POST', '/auth/login', { body: { identifier: MASTER_EMAIL, password: 'Display003Password#2026' } });
     assert.equal(login.status, 200, 'a login is still not 429');
-    // 1,000 more unknown-token polls fill the all-screens bucket (3,000/min) but no credential's own bucket.
+    // 03 v1.3 (R1-1): unknown tokens have their own buckets; they never make a valid TV 429.
     const junk = await Promise.all(Array.from({ length: 1000 }, () => cl.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': 'Z'.repeat(43) } })));
-    assert.ok(junk.every((r) => r.status === 401));
-    const over = await cl.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': tokens[0] } });
-    assert.equal(over.status, 429, 'the 3,001st screen request in the minute is refused');
-    assert.equal(over.body.errorCode, 'ERR_RATE_LIMITED');
+    assert.ok(junk.every((r) => r.status === 401 || r.status === 429));
+    assert.equal((await cl.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': tokens[0] } })).status, 200, 'a valid TV after the garbage');
     assert.equal((await cl.get('master', '/displays', { site: site.id })).status, 200, 'console unaffected');
   } finally { s.stop(); }
 });

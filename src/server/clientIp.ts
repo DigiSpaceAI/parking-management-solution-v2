@@ -78,26 +78,43 @@ export function clientKey(ip: string): string {
   return net.isIP(ip) === 6 ? `${ipv6Groups(ip).slice(0, 4).join(':')}::/64` : ip;
 }
 
+/**
+ * 003 v1.3 (code review R1-1): the shared client-IP rule. `requireHosting`
+ * true is the 002 demo rule (refuse anything that didn't come through the
+ * Hosting rewrite). With false (the TV screen routes) nothing is refused:
+ *   - edge hop inside the Hosting egress list -> the hop left of it (the visitor);
+ *   - edge hop outside the list (a direct *.run.app call) -> the edge hop itself,
+ *     which the caller can't forge;
+ *   - no usable edge hop -> the socket address.
+ * Off Cloud Run, X-Forwarded-For is never read.
+ */
+export function pickHostingClientKey(input: {
+  xff: string | string[] | undefined;
+  socketIp: string | undefined;
+  onCloudRun: boolean;
+  hostingCidrs: HostingCidrs;
+  requireHosting: boolean;
+}): DemoClientIp {
+  const own = () => { const s = normalizeHop(input.socketIp); return { ok: true as const, key: s ? clientKey(s) : 'unknown' }; };
+  if (!input.onCloudRun) return own(); // local dev and tests without K_SERVICE
+  const joined = Array.isArray(input.xff) ? input.xff.join(',') : input.xff || '';
+  const hops = joined.split(',').map((s) => s.trim()).filter(Boolean);
+  const edge = hops.length > 0 ? normalizeHop(hops[hops.length - 1]) : null;
+  if (!edge) return input.requireHosting ? { ok: false, reason: 'no-edge-hop' } : own();
+  if (input.hostingCidrs.count === 0 || !input.hostingCidrs.list.check(edge, net.isIP(edge) === 4 ? 'ipv4' : 'ipv6')) {
+    return input.requireHosting ? { ok: false, reason: 'not-via-hosting' } : { ok: true, key: clientKey(edge) };
+  }
+  const client = hops.length >= 2 ? normalizeHop(hops[hops.length - 2]) : null;
+  if (!client) return input.requireHosting ? { ok: false, reason: 'no-client-hop' } : { ok: true, key: clientKey(edge) };
+  return { ok: true, key: clientKey(client) };
+}
+
+/** The 002 demo rule (unchanged behaviour): pickHostingClientKey with requireHosting. */
 export function pickDemoClientIp(input: {
   xff: string | string[] | undefined;
   socketIp: string | undefined;
   onCloudRun: boolean;
   hostingCidrs: HostingCidrs;
 }): DemoClientIp {
-  if (!input.onCloudRun) {
-    // Local dev and tests without K_SERVICE: X-Forwarded-For is never read.
-    const own = normalizeHop(input.socketIp);
-    return { ok: true, key: own ? clientKey(own) : 'unknown' };
-  }
-  const joined = Array.isArray(input.xff) ? input.xff.join(',') : input.xff || '';
-  const hops = joined.split(',').map((s) => s.trim()).filter(Boolean);
-  if (hops.length === 0) return { ok: false, reason: 'no-edge-hop' };
-  const edge = normalizeHop(hops[hops.length - 1]);
-  if (!edge) return { ok: false, reason: 'no-edge-hop' };
-  if (input.hostingCidrs.count === 0 || !input.hostingCidrs.list.check(edge, net.isIP(edge) === 4 ? 'ipv4' : 'ipv6')) {
-    return { ok: false, reason: 'not-via-hosting' };
-  }
-  const client = hops.length >= 2 ? normalizeHop(hops[hops.length - 2]) : null;
-  if (!client) return { ok: false, reason: 'no-client-hop' };
-  return { ok: true, key: clientKey(client) };
+  return pickHostingClientKey({ ...input, requireHosting: true });
 }

@@ -95,11 +95,11 @@ import {
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso, invalidateFeeds } from './src/server/displayScreen';
-import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
+import { FEED_UNKNOWN_PER_CLIENT, FEED_UNKNOWN_TOTAL, FloodCounter, FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
 import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, setForcedFull, clearForcedFull, overrideSummary, type NewMessage } from './src/server/displayOverrides';
 import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
 import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
-import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
+import { parseHostingCidrs, pickDemoClientIp, pickHostingClientKey } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
 import {
   securityHeadersMiddleware,
@@ -2550,17 +2550,44 @@ function refuseScreen(res: express.Response, route: string, who: string, siteId:
   return sendApiError(res, 429, 'ERR_RATE_LIMITED', 'Too many requests. Try again in a moment.');
 }
 
+// 03 v1.3 (code review R1-1): one flood report a minute for unknown tokens.
+const unknownFlood = new FloodCounter((refused) => {
+  logSecurityEvent({
+    action: 'SCREEN_UNKNOWN_TOKEN_FLOOD',
+    actor: 'anonymous',
+    actorRole: 'SCREEN',
+    redactClient: true,
+    targetResource: '/api/v1/screen/feed',
+    status: 'RATE_LIMITED',
+    details: `${refused} feed request(s) with a missing or unknown display token refused in the last minute.`,
+  });
+});
+
 app.get('/api/v1/screen/feed', (req, res) => {
+  // Classified BEFORE any limiter counts (03 v1.3): a malformed or missing
+  // token is refused without hashing; a well-formed one is hashed once and
+  // looked up. Known (live or retired) and unknown traffic never share a bucket.
   const auth = resolveScreenToken(req.headers['x-display-token']);
-  // Every request counts toward the all-screens bucket; only a known
-  // credential (live or retired) has a bucket of its own.
-  const all = FEED_ALL_SCREENS.hit('screen:feed:all');
-  if (!all.ok) return refuseScreen(res, '/api/v1/screen/feed', auth.kind === 'OK' ? `display ${auth.display.id}` : 'unknown', auth.kind === 'OK' ? auth.display.siteId : undefined, all);
-  if (auth.kind !== 'UNKNOWN') {
-    const own = FEED_PER_CREDENTIAL.hit(`screen:feed:${auth.hash}`);
-    if (!own.ok) return refuseScreen(res, '/api/v1/screen/feed', auth.kind === 'OK' ? `display ${auth.display.id}` : 'unknown', auth.kind === 'OK' ? auth.display.siteId : undefined, own);
+  if (auth.kind === 'UNKNOWN') {
+    const picked = pickHostingClientKey({
+      xff: req.headersDistinct['x-forwarded-for'],
+      socketIp: req.socket.remoteAddress,
+      onCloudRun: DEMO_ON_CLOUD_RUN,
+      hostingCidrs: demoHosting.cidrs,
+      requireHosting: false, // a screen call is never refused for not coming through Hosting
+    }) as { key: string };
+    const total = FEED_UNKNOWN_TOTAL.hit('screen:unknown:all');
+    if (!total.ok) { unknownFlood.note(); return refuseScreen(res, '/api/v1/screen/feed', 'unknown', undefined, total); }
+    const mine = FEED_UNKNOWN_PER_CLIENT.hit(`screen:unknown:${picked.key}`);
+    if (!mine.ok) return refuseScreen(res, '/api/v1/screen/feed', 'unknown', undefined, mine);
+    return sendApiError(res, 401, 'ERR_SCREEN_TOKEN', "This display link isn't valid. Ask your site admin.");
   }
-  if (auth.kind === 'UNKNOWN') return sendApiError(res, 401, 'ERR_SCREEN_TOKEN', "This display link isn't valid. Ask your site admin.");
+  const who = auth.kind === 'OK' ? `display ${auth.display.id}` : 'unknown';
+  const siteOf = auth.kind === 'OK' ? auth.display.siteId : undefined;
+  const all = FEED_ALL_SCREENS.hit('screen:feed:all');
+  if (!all.ok) return refuseScreen(res, '/api/v1/screen/feed', who, siteOf, all);
+  const own = FEED_PER_CREDENTIAL.hit(`screen:feed:${auth.hash}`);
+  if (!own.ok) return refuseScreen(res, '/api/v1/screen/feed', who, siteOf, own);
   if (auth.kind === 'OFF') return sendApiError(res, 410, 'ERR_SCREEN_OFF', 'This display has been switched off — ask your site admin.');
   const display = (auth as { display: ReturnType<typeof getDisplays>[number] }).display;
   const now = Date.now();

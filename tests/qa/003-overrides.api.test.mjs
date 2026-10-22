@@ -384,3 +384,24 @@ test('B9 validation: Site B slot, unknown slot, overlap and > 200 -> 400; AC-30 
   assert.equal(again.status, 200, 'a stale id of a deleted slot is dropped, not refused');
   assert.equal(again.body.display.override.pinned, 1, 'pruned');
 });
+
+test('R1-5 (AC-26): console counts and summaries leave out the slots hidden on that display; all hidden is flagged like the TV', async () => {
+  const S = F.slotsA;
+  const d = await mkDisplay('Counts', F.A.id, 'adminA', sel({ areas: [{ level: 'B1', parkingType: 'GROUND' }] })); // A-B1-G01, A-B1-G02
+  const rowOf = async () => (await c.get('adminA', '/displays', { site: F.A.id })).body.displays.find((x) => x.id === d.id);
+  const before = await rowOf();
+  const tvBefore = (await feed(d)).body;
+  assert.equal(before.slotCount, tvBefore.counts.total); assert.equal(before.freeNow, tvBefore.counts.free); assert.equal(before.hiddenCount, 0);
+  const vacant = tvBefore.slots.find((s) => s.status === 'VACANT');
+  const vacantId = Object.values(S).find((s) => s.slotNumber === vacant.code).id;
+  await c.post('adminA', `/displays/${d.id}/slot-rules`, { hidden: [vacantId] }, { site: F.A.id });
+  const row = await rowOf();
+  const tv = (await feed(d)).body;
+  assert.equal(row.slotCount, before.slotCount - 1, 'hidden slot not counted'); assert.equal(row.hiddenCount, 1);
+  assert.equal(row.freeNow, before.freeNow - 1, 'a hidden vacant slot is not "free now"');
+  assert.equal(row.slotCount, tv.counts.total); assert.equal(row.freeNow, tv.counts.free, 'console = TV');
+  await c.post('adminA', `/displays/${d.id}/slot-rules`, { hidden: [S['A-B1-G01'].id, S['A-B1-G02'].id] }, { site: F.A.id });
+  const all = await rowOf();
+  assert.equal(all.slotCount, 0, 'everything hidden: flagged like an empty selection'); assert.equal(all.freeNow, 0); assert.equal(all.hiddenCount, 2);
+  assert.equal((await feed(d)).body.state, 'EMPTY', 'and the TV shows "No slots selected"');
+});

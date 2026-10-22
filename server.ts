@@ -2226,7 +2226,13 @@ function refuseIfSwitchedOff(res: express.Response, display: { status: string })
 // One row of GET /displays: settings, coverage and online state; no credential data.
 function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now()) {
   const siteSlots = siteSlotsOf(d.siteId);
-  const covered = selectedSlots(d, siteSlots);
+  // Code review R1-5 (AC-26): the console counts what the TV shows, so slots
+  // hidden on this display are left out (the same filter as the feed). If
+  // every selected slot is hidden, slotCount is 0 and the console flags it
+  // like the TV's "No slots selected" (AC-21).
+  const hidden = new Set(d.slotRules?.hidden || []);
+  const selected = selectedSlots(d, siteSlots);
+  const covered = selected.filter((s) => !hidden.has(s.id));
   const lastSeenAt = displayLastSeen(d);
   return {
     id: d.id,
@@ -2238,6 +2244,7 @@ function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now())
     slotCount: covered.length,
     missingSlots: missingSlotIds(d, siteSlots).length,
     freeNow: covered.filter((s) => s.status === 'VACANT').length,
+    hiddenCount: selected.length - covered.length, // selected slots hidden on this display
     pageSeconds: d.pageSeconds,
     hours: d.hours,
     status: d.status,

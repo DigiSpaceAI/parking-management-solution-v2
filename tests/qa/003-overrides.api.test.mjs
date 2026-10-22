@@ -339,6 +339,9 @@ test('B9 AC-26/27: a hidden slot leaves the slot list and every count; pinned sl
   assert.ok(o.slots.some((s) => s.code === 'A-B1-G01') && !o.slots.some((s) => s.pinned), 'other displays are unaffected');
   const row = (await c.get('adminA', '/displays', { site: F.A.id })).body.displays.find((x) => x.id === d.id);
   assert.equal(row.override.hidden, 1); assert.equal(row.override.pinned, 1);
+  // C11: the editor gets the ids (console only); the TV feed never carries them.
+  assert.deepEqual(row.slotRules, { hidden: [S['A-B1-G01'].id], pinned: [S['A-B1-P03'].id] });
+  assert.ok(!('slotRules' in f) && !JSON.stringify(f).includes(S['A-B1-G01'].id), 'no slot ids in the feed');
   const audit = (await c.audit('DISPLAY_SLOT_RULES_UPDATED')).find((l) => l.targetResource === `display/${d.id}`);
   assert.ok(audit); assert.match(audit.details, /hidden 1 \(\+A-B1-G01\)/); assert.match(audit.details, /pinned 1 \(\+A-B1-P03\)/);
   // A pinned Occupied slot is first among the Occupied, never before a Vacant one (O-5).

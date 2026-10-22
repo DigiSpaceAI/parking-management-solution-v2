@@ -2240,6 +2240,9 @@ function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now())
     pairedAt: d.pairedAt || null,
     screenAgent: d.screenAgent || null,
     override: overrideSummary(d, adminName, now), // B8: C8 "Override active" (console only)
+    // US-17 (C11): the editor needs the slot ids to show and change the rules; the counts alone
+    // can't. Console only, behind DISPLAYS:view and the site checks; never in the TV feed.
+    slotRules: d.slotRules || { hidden: [], pinned: [] },
   };
 }
 const adminName = (email: string) => getAppUsers().find((u) => u.email === email)?.fullName || email;

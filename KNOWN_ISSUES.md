@@ -177,3 +177,26 @@ Any status, role, site or password change to these accounts is lost on the next 
 `removeWhitelistedDomain()` (`src/server/db.ts`) removes the entry from memory and calls a full `saveDB()`. A full sync never deletes Firestore documents, so the removed domain's document stays and is loaded again on the next cold start. That is the real cause of `company.com` (`dom-1`) reappearing after restarts.
 **Fix:** do a targeted Firestore delete, like B6's `deleteFirestoreDocs`, then test remove → reload → absent.
 **Owner:** to be assigned by the architect.
+
+## 003 R1-3: anonymous clients can block TV pairing everywhere (Minor, accepted for R1)
+
+**Found:** 2026-10-22, code review round 1 of feature 003 (`05-code-review.md` R1-3).
+**Status:** accepted for R1, per 05 and 03 v1.3 ("Pairing (R1-3) isn't changed by v1.3"). Not fixed.
+
+**What happens.** `POST /api/v1/screen/pair/start` is public. It's limited to
+**20 per minute platform-wide**, and at most **200 pairings can be pending**
+(the oldest are dropped first). Anyone can:
+- send 21+ starts a minute, so real TVs get 429 instead of a code;
+- or keep filling the 200 pending places, so a real TV's code is dropped before an admin types it.
+
+No data is exposed, and nothing can be bound: only a signed-in admin can bind
+a code, and only to a display of their own site.
+
+**Workaround (the fallback the release relies on):** open the display's
+**link** on the screen instead: the "Display link" in the set-up window, or a
+new one from **Replace link**. The link method doesn't use pairing at all.
+
+**Fix direction (later):** key the start limit per caller with the shared
+`pickHostingClientKey` rule (as the unknown-token feed buckets do since 03
+v1.3), once the Hosting egress list is confirmed for admin.parkflows.in on
+the D1 preview. Security review to note it.

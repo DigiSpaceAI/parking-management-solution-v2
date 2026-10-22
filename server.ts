@@ -94,7 +94,7 @@ import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso } from './src/server/displayScreen';
 import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
-import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, type NewMessage } from './src/server/displayOverrides';
+import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, setForcedFull, clearForcedFull, overrideSummary, type NewMessage } from './src/server/displayOverrides';
 import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
 import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
@@ -2237,8 +2237,10 @@ function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now())
     lastSeenAt: lastSeenAt || null,
     pairedAt: d.pairedAt || null,
     screenAgent: d.screenAgent || null,
+    override: overrideSummary(d, adminName, now), // B8: C8 "Override active" (console only)
   };
 }
+const adminName = (email: string) => getAppUsers().find((u) => u.email === email)?.fullName || email;
 // Live (in-memory) last seen, falling back to the stored value after a restart.
 const displayLastSeen = lastSeenIso;
 
@@ -2407,6 +2409,36 @@ app.post(`/api/v1/displays/messages/${DISPLAY_MESSAGE_ID_PARAM}/clear`, requireP
     details: `Display message ${message.id} cleared on ${ids ? ids.join(', ') : 'all'} by ${req.user!.email}.`,
   });
   res.json({ success: true, message: messageView(message, Date.now()) });
+});
+
+// ---------------------------------------------------------------------------
+// 003 B8: FORCED "PARKING FULL" (US-16, AC-25). On the display; the slots and
+// counts in the feed stay real (the TV computes the view, so a forced full
+// that ends while polling has failed falls back to real data).
+// ---------------------------------------------------------------------------
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/force-full`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display || refuseIfSwitchedOff(res, display)) return;
+  const ends = parseEndsAt(req.body?.endsAt);
+  if (ends.error) return res.status(400).json({ success: false, message: ends.error, errors: { endsAt: ends.error } });
+  if (!overrideWriteAllowed(req, res)) return;
+  setForcedFull(display, ends.value ?? null, req.user!.email);
+  auditDisplay(req, 'DISPLAY_FORCED_FULL_SET', display, `Display ${display.id}: "Parking full" forced until ${display.forcedFull!.endsAt || 'cleared'} by ${req.user!.email}.`);
+  res.json({ success: true, display: displayRow(display) });
+});
+
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/force-full/clear`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display) return;
+  if (!overrideWriteAllowed(req, res)) return;
+  if (clearForcedFull(display, req.user!.email)) {
+    auditDisplay(req, 'DISPLAY_FORCED_FULL_CLEARED', display, `Display ${display.id}: forced "Parking full" cleared by ${req.user!.email}.`);
+  }
+  res.json({ success: true, display: displayRow(display) });
 });
 
 // B5: bind the code a waiting TV shows to this display. A new credential is

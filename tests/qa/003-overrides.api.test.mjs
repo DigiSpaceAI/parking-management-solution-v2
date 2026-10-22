@@ -230,3 +230,90 @@ test('B7 30 override writes per user per minute', async () => {
   assert.equal(r.status, 429); assert.equal(r.body.errorCode, 'ERR_RATE_LIMITED');
   assert.equal((await say({ text: 'other user', target: { displayIds: [d.id] } })).status, 200);
 });
+
+// ------------------------------------------------------------------ B8 forced full
+test('B8 AC-25: forced full set/clear reaches the feed at once; slots and counts stay real; audits', async () => {
+  const d = await mkDisplay('Full');
+  const before = (await feed(d)).body;
+  assert.equal(before.override.forcedFull, null);
+  const until = istIso(2 * 3600000);
+  const r = await c.post('adminA', `/displays/${d.id}/force-full`, { endsAt: until }, { site: F.A.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const f = (await feed(d)).body;
+  assert.deepEqual(f.override.forcedFull, { endsAt: new Date(until).toISOString() });
+  assert.notEqual(f.v, before.v);
+  assert.deepEqual(f.counts, before.counts, 'real counts still sent'); assert.deepEqual(f.slots, before.slots, 'real slots still sent');
+  const open = await c.post('adminA', `/displays/${d.id}/force-full`, { endsAt: null }, { site: F.A.id });
+  assert.equal(open.status, 200);
+  assert.deepEqual((await feed(d)).body.override.forcedFull, { endsAt: null }, '"until I clear it"');
+  const cl = await c.post('adminA', `/displays/${d.id}/force-full/clear`, {}, { site: F.A.id });
+  assert.equal(cl.status, 200);
+  assert.equal((await feed(d)).body.override.forcedFull, null);
+  const set = (await c.audit('DISPLAY_FORCED_FULL_SET')).filter((l) => l.targetResource === `display/${d.id}`);
+  const cleared = (await c.audit('DISPLAY_FORCED_FULL_CLEARED')).filter((l) => l.targetResource === `display/${d.id}`);
+  assert.equal(set.length, 2); assert.equal(cleared.length, 1);
+  for (const l of [...set, ...cleared]) { assert.equal(l.siteId, F.A.id); assert.equal(l.ipAddress, 'redacted'); assert.ok(!l.details.includes(d.token)); }
+  assert.ok(set.some((l) => l.details.includes(new Date(until).toISOString())), 'endsAt in the audit');
+});
+
+test('B8 validation and AC-30: end-time rule; Site B, roles without the module, view-as and ALL refused; switched off 409', async () => {
+  const d = await mkDisplay('Full rules');
+  for (const endsAt of [istIso(-60000), istIso(32 * 86400000), new Date(Date.now() + 3600000).toISOString(), 'soon']) {
+    const r = await c.post('adminA', `/displays/${d.id}/force-full`, { endsAt }, { site: F.A.id });
+    assert.equal(r.status, 400, String(endsAt)); assert.ok(r.body.errors.endsAt);
+  }
+  assert.equal((await c.post('adminB', `/displays/${d.id}/force-full`, { endsAt: null }, { site: F.B.id })).status, 403, 'Site B admin');
+  assert.equal((await c.post('adminB', `/displays/${d.id}/force-full/clear`, {}, { site: F.B.id })).status, 403);
+  for (const who of ['attA', 'misA', 'customA']) assert.equal((await c.post(who, `/displays/${d.id}/force-full`, { endsAt: null }, { site: F.A.id })).status, 403, who);
+  const va = await c.post('master', `/displays/${d.id}/force-full`, { endsAt: null }, { site: F.A.id, headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(va.status, 403); assert.equal(va.body.errorCode, 'ERR_VIEW_AS_READ_ONLY');
+  assert.equal((await c.post('master', `/displays/${d.id}/force-full`, { endsAt: null }, { site: 'ALL' })).status, 400);
+  assert.equal((await feed(d)).body.override.forcedFull, null, 'nothing was set');
+  await c.post('adminA', `/displays/${d.id}/switch-off`, {}, { site: F.A.id });
+  assert.equal((await c.post('adminA', `/displays/${d.id}/force-full`, { endsAt: null }, { site: F.A.id })).status, 409);
+});
+
+test('B8 C8 / AC-29: GET /displays carries the override summary (what, who, until) for the console only', async () => {
+  // Earlier "all" messages would also cover this new display (O-3): clear them first.
+  for (const m of (await c.get('master', '/displays/messages', { site: F.A.id })).body.messages) {
+    if (!m.endedAt) await c.post('master', `/displays/messages/${m.id}/clear`, {}, { site: F.A.id });
+  }
+  const d = await mkDisplay('Summary');
+  const row0 = (await c.get('adminA', '/displays', { site: F.A.id })).body.displays.find((x) => x.id === d.id);
+  assert.equal(row0.override, null);
+  const until = istIso(3600000);
+  const m = (await say({ text: 'Summary text', target: { displayIds: [d.id] }, endsAt: until })).body.message;
+  await c.post('adminA', `/displays/${d.id}/force-full`, { endsAt: null }, { site: F.A.id });
+  const row = (await c.get('adminA', '/displays', { site: F.A.id })).body.displays.find((x) => x.id === d.id);
+  assert.deepEqual(row.override, {
+    message: { id: m.id, mode: 'BANNER', text: 'Summary text', by: 'D3 adminA', until: new Date(until).toISOString() },
+    forcedFull: { by: 'D3 adminA', until: null }, hidden: 0, pinned: 0,
+  });
+  const f = (await feed(d)).text;
+  assert.ok(!f.includes('D3 adminA') && !f.includes('ovr.admina'), 'the admin name is never in the feed');
+});
+
+test('B8 expiry on read: a passed forced-full end time is dropped, with one audit', async () => {
+  const fx = await seededServer(() => {});
+  try {
+    const site = await fx.c.onboard('OVRFF', 'Forced full site');
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'F-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    const r = await fx.c.post('master', '/displays', { name: 'F', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
+    const tok = tokenOf(r.body.link);
+    await sleep(3500);
+    fx.srv.stop();
+    const data = fx.readData();
+    const disp = data.displays.find((x) => x.id === r.body.display.id);
+    disp.forcedFull = { setAt: new Date(Date.now() - 60000).toISOString(), setBy: MASTER_EMAIL, endsAt: new Date(Date.now() - 1000).toISOString() };
+    (await import('node:fs')).writeFileSync(fx.dataFile, JSON.stringify(data));
+    const { srv: s2, c: c2 } = await fx.restart();
+    try {
+      const poll = () => c2.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': tok } });
+      assert.equal((await poll()).body.override.forcedFull, null);
+      await sleep(1100); await poll(); await c2.get('master', '/displays', { site: site.id });
+      assert.equal((await c2.audit('DISPLAY_FORCED_FULL_EXPIRED')).filter((l) => l.targetResource === `display/${r.body.display.id}`).length, 1);
+      await sleep(500);
+      assert.equal(fx.readData().displays.find((x) => x.id === r.body.display.id).forcedFull, null, 'targeted write');
+    } finally { s2.stop(); }
+  } finally { fx.stop(); }
+});

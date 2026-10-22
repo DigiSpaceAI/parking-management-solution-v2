@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import net from 'node:net';
 
 export const REPO = process.env.PF_REPO || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const MASTER_EMAIL = 'digisolutions.fm@gmail.com';
@@ -15,8 +16,15 @@ export const PW = 'Display003Password#2026';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TSX = path.join(REPO, 'node_modules', '.bin', 'tsx');
 
+// A port the OS says is free (a random pick could land on another test's server).
+const freePort = () => new Promise((resolve, reject) => {
+  const srv = net.createServer();
+  srv.once('error', reject);
+  srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+});
+
 export async function startServer({ fake = false, env = {}, waitReady = true } = {}) {
-  const port = 5000 + Math.floor(Math.random() * 3000);
+  const port = await freePort();
   const workDir = mkdtempSync(path.join(tmpdir(), 'pf-003-'));
   const fullEnv = { ...process.env, NODE_ENV: 'production', BOOTSTRAP_ADMIN_PASSWORD: PW, SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
     K_SERVICE: '', SITE_SCOPE_MODE: '', AUDIT_HMAC_SECRET: 'd3'.repeat(32), PORT: String(port), PF_REPO: REPO,

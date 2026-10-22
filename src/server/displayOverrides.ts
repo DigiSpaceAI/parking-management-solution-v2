@@ -136,12 +136,63 @@ export function clearMessage(m: DisplayMessage, displayIds: string[] | null, act
   invalidateFeeds(getDisplays(m.siteId).map((d) => d.id));
 }
 
+// ---------------------------------------------------------------- forced full (B8, US-16)
+/** Lazy expiry of forced full; true when it ended now (one audit, targeted write). */
+export function expireForcedFull(display: LiveDisplay, nowMs = Date.now()): boolean {
+  const f = display.forcedFull;
+  if (!f || f.endsAt === null || Date.parse(f.endsAt) > nowMs) return false;
+  display.forcedFull = null;
+  saveDisplay(display);
+  auditSystem('DISPLAY_FORCED_FULL_EXPIRED', display.siteId, `display/${display.id}`, `Display ${display.id}: forced "Parking full" ended at its end time.`);
+  invalidateFeeds([display.id]);
+  return true;
+}
+
+export function setForcedFull(display: LiveDisplay, endsAt: string | null, actor: string, nowMs = Date.now()) {
+  display.forcedFull = { setAt: new Date(nowMs).toISOString(), setBy: actor, endsAt };
+  display.updatedAt = display.forcedFull.setAt;
+  display.updatedBy = actor;
+  saveDisplay(display);
+  invalidateFeeds([display.id]);
+}
+
+export function clearForcedFull(display: LiveDisplay, actor: string, nowMs = Date.now()): boolean {
+  if (!display.forcedFull) return false;
+  display.forcedFull = null;
+  display.updatedAt = new Date(nowMs).toISOString();
+  display.updatedBy = actor;
+  saveDisplay(display);
+  invalidateFeeds([display.id]);
+  return true;
+}
+
+/**
+ * The console's "Override active" summary for one display (C8, AC-29).
+ * `by` is the admin's name: console only, never in the feed.
+ */
+export function overrideSummary(display: LiveDisplay, nameOf: (email: string) => string, nowMs = Date.now()) {
+  expireMessages(display.siteId, nowMs);
+  expireForcedFull(display, nowMs);
+  const m = display.status === 'ACTIVE' ? messageFor(display, nowMs) : null;
+  const f = display.forcedFull;
+  const hidden = display.slotRules?.hidden.length || 0;
+  const pinned = display.slotRules?.pinned.length || 0;
+  if (!m && !f && hidden === 0 && pinned === 0) return null;
+  return {
+    ...(m ? { message: { id: m.id, mode: m.mode, text: m.text, by: nameOf(m.createdBy), until: m.endsAt } } : {}),
+    ...(f ? { forcedFull: { by: nameOf(f.setBy), until: f.endsAt } } : {}),
+    hidden,
+    pinned,
+  };
+}
+
 // ---------------------------------------------------------------- the feed hook
 setOverrideResolver((display, nowMs) => {
   expireMessages(display.siteId, nowMs);
+  expireForcedFull(display, nowMs);
   const m = messageFor(display, nowMs);
   return {
     message: m ? { id: m.id, text: m.text, mode: m.mode, endsAt: m.endsAt } : null,
-    forcedFull: null,
+    forcedFull: display.forcedFull ? { endsAt: display.forcedFull.endsAt } : null,
   };
 });

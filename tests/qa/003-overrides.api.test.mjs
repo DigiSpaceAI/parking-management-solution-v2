@@ -317,3 +317,67 @@ test('B8 expiry on read: a passed forced-full end time is dropped, with one audi
     } finally { s2.stop(); }
   } finally { fx.stop(); }
 });
+
+// ------------------------------------------------------------------ B9 hide / pin (US-17, separable)
+test('B9 AC-26/27: a hidden slot leaves the slot list and every count; pinned slots are flagged and first within their status group', async () => {
+  const S = F.slotsA;
+  const d = await mkDisplay('Rules', F.A.id, 'adminA', sel({ levels: ['B1'] }));
+  const other = await mkDisplay('Other', F.A.id, 'adminA', sel({ levels: ['B1'] }));
+  const base = (await feed(d)).body;
+  assert.ok(base.slots.some((s) => s.code === 'A-B1-G01'));
+  const r = await c.post('adminA', `/displays/${d.id}/slot-rules`, { hidden: [S['A-B1-G01'].id], pinned: [S['A-B1-P03'].id] }, { site: F.A.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const f = (await feed(d)).body;
+  assert.ok(!f.slots.some((s) => s.code === 'A-B1-G01'), 'hidden: not in the list');
+  assert.equal(f.counts.total, base.counts.total - 1); assert.equal(f.counts.free, base.counts.free - 1, 'hidden: not counted');
+  assert.equal(f.counts.groups[0].total, base.counts.groups[0].total - 1);
+  const vac = f.slots.filter((s) => s.status === 'VACANT').map((s) => s.code);
+  assert.equal(vac[0], 'A-B1-P03', 'a pinned vacant slot is first among the vacant');
+  assert.equal(f.slots[0].pinned, true); assert.ok(f.slots.slice(1).every((s) => !('pinned' in s)), 'only pinned slots carry the flag');
+  assert.deepEqual(vac.slice(1), [...vac.slice(1)].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })), 'the rest keep code order');
+  const o = (await feed(other)).body;
+  assert.ok(o.slots.some((s) => s.code === 'A-B1-G01') && !o.slots.some((s) => s.pinned), 'other displays are unaffected');
+  const row = (await c.get('adminA', '/displays', { site: F.A.id })).body.displays.find((x) => x.id === d.id);
+  assert.equal(row.override.hidden, 1); assert.equal(row.override.pinned, 1);
+  const audit = (await c.audit('DISPLAY_SLOT_RULES_UPDATED')).find((l) => l.targetResource === `display/${d.id}`);
+  assert.ok(audit); assert.match(audit.details, /hidden 1 \(\+A-B1-G01\)/); assert.match(audit.details, /pinned 1 \(\+A-B1-P03\)/);
+  // A pinned Occupied slot is first among the Occupied, never before a Vacant one (O-5).
+  await c.post('master', '/vehicles/entry', { vehicleNumber: 'MH14PN0007', targetSlotNumber: 'A-B1-P02' }, { site: F.A.id });
+  await c.post('master', '/vehicles/entry', { vehicleNumber: 'MH14PN0008', targetSlotNumber: 'A-B1-P01' }, { site: F.A.id });
+  await c.post('adminA', `/displays/${d.id}/slot-rules`, { hidden: [], pinned: [S['A-B1-P02'].id] }, { site: F.A.id });
+  const g = (await feed(d)).body;
+  const order = g.slots.map((s) => `${s.status[0]}:${s.code}${s.pinned ? '*' : ''}`);
+  const firstOcc = order.findIndex((x) => x.startsWith('O:'));
+  assert.equal(order[firstOcc], 'O:A-B1-P02*', `pinned occupied first among occupied: ${order}`);
+  assert.ok(order.slice(0, firstOcc).every((x) => x.startsWith('V:')), 'all vacant before it');
+  for (const v of ['MH14PN0007', 'MH14PN0008']) await c.post('master', '/vehicles/exit', { vehicleNumberOrSlot: v }, { site: F.A.id });
+});
+
+test('B9 validation: Site B slot, unknown slot, overlap and > 200 -> 400; AC-30 refusals; a deleted pinned slot is skipped and pruned', async () => {
+  const S = F.slotsA;
+  const d = await mkDisplay('Rules 2');
+  const bad = [
+    { hidden: [F.slotsB['B-B1-P01'].id] }, { pinned: ['slot-nope'] }, { hidden: [S['A-B1-P01'].id], pinned: [S['A-B1-P01'].id] },
+    { hidden: Array.from({ length: 201 }, (_, i) => `slot-x${i}`) }, { hidden: 'all' }, { pinned: [42] },
+  ];
+  for (const body of bad) {
+    const r = await c.post('adminA', `/displays/${d.id}/slot-rules`, body, { site: F.A.id });
+    assert.equal(r.status, 400, JSON.stringify(body).slice(0, 60)); assert.ok(r.body.errors.slotRules);
+  }
+  assert.equal((await c.post('adminB', `/displays/${d.id}/slot-rules`, { hidden: [] }, { site: F.B.id })).status, 403);
+  for (const who of ['attA', 'misA', 'customA']) assert.equal((await c.post(who, `/displays/${d.id}/slot-rules`, { hidden: [] }, { site: F.A.id })).status, 403, who);
+  const va = await c.post('master', `/displays/${d.id}/slot-rules`, { hidden: [] }, { site: F.A.id, headers: { 'x-view-as': F.adminA.id } });
+  assert.equal(va.status, 403);
+  assert.equal((await feed(d)).body.slots.some((s) => s.pinned), false, 'nothing stored');
+  // A pinned slot that is deleted later is skipped in the feed and pruned on the next edit.
+  await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-B1-TMP', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: F.A.id });
+  const tmp = (await c.slots(F.A.id)).find((s) => s.slotNumber === 'A-B1-TMP');
+  assert.equal((await c.post('adminA', `/displays/${d.id}/slot-rules`, { pinned: [tmp.id, S['A-B1-G02'].id] }, { site: F.A.id })).status, 200);
+  await c.post('master', '/slots/delete', { slotId: tmp.id }, { site: F.A.id });
+  await sleep(1100);
+  const f = (await feed(d)).body;
+  assert.ok(!f.slots.some((s) => s.code === 'A-B1-TMP'), 'deleted slot skipped');
+  const again = await c.post('adminA', `/displays/${d.id}/slot-rules`, { pinned: [tmp.id, S['A-B1-G02'].id] }, { site: F.A.id });
+  assert.equal(again.status, 200, 'a stale id of a deleted slot is dropped, not refused');
+  assert.equal(again.body.display.override.pinned, 1, 'pruned');
+});

@@ -4675,9 +4675,45 @@ export function createDisplay(siteId: string, values: Required<DisplayInput>, ac
   return display;
 }
 
+// 003 B9 (US-17): validates a whole new { hidden, pinned } list. Every id must
+// be a slot of the display's site; ids already in the stored rules whose slot
+// was deleted since are dropped silently (03: "pruned on the next edit").
+export function validateSlotRules(display: LiveDisplay, body: Record<string, unknown>): { rules?: { hidden: string[]; pinned: string[] }; error?: string } {
+  const siteIds = new Set(siteSlotsOf(display.siteId).map((sl) => sl.id));
+  const stored = new Set([...(display.slotRules?.hidden || []), ...(display.slotRules?.pinned || [])]);
+  const list = (v: unknown): string[] | null => (v === undefined || v === null ? [] : Array.isArray(v) && v.every((x) => typeof x === 'string') ? Array.from(new Set(v as string[])) : null);
+  const hiddenIn = list(body.hidden);
+  const pinnedIn = list(body.pinned);
+  if (!hiddenIn || !pinnedIn) return { error: 'Send the hidden and pinned slots as lists.' };
+  const keep = (ids: string[]) => ids.filter((id) => siteIds.has(id) || !stored.has(id));
+  const hidden = keep(hiddenIn);
+  const pinned = keep(pinnedIn);
+  if (hidden.length > 200 || pinned.length > 200) return { error: 'Hide or pin at most 200 slots each.' };
+  if ([...hidden, ...pinned].some((id) => !siteIds.has(id))) return { error: "One of the chosen slots isn't at this site." };
+  if (hidden.some((id) => pinned.includes(id))) return { error: "A slot can't be both hidden and pinned." };
+  return { rules: { hidden, pinned } };
+}
+
+export function saveSlotRules(display: LiveDisplay, rules: { hidden: string[]; pinned: string[] }, actor: string) {
+  display.slotRules = rules;
+  display.updatedAt = new Date().toISOString();
+  display.updatedBy = actor;
+  saveDisplay(display);
+}
+
 // Applies already-validated values; returns the names of the fields that changed.
 export function updateDisplay(display: LiveDisplay, values: DisplayInput, actor: string): string[] {
   const changed: string[] = [];
+  // B9: drop hide/pin entries of slots deleted since (the next edit prunes them).
+  if (display.slotRules) {
+    const siteIds = new Set(siteSlotsOf(display.siteId).map((sl) => sl.id));
+    const h = display.slotRules.hidden.filter((id) => siteIds.has(id));
+    const pn = display.slotRules.pinned.filter((id) => siteIds.has(id));
+    if (h.length !== display.slotRules.hidden.length || pn.length !== display.slotRules.pinned.length) {
+      display.slotRules = { hidden: h, pinned: pn };
+      changed.push('slotRules');
+    }
+  }
   for (const k of ['name', 'location', 'selection', 'pageSeconds', 'hours'] as const) {
     if (values[k] === undefined) continue;
     if (JSON.stringify(values[k]) !== JSON.stringify(display[k])) {

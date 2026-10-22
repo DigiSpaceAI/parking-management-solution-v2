@@ -89,10 +89,12 @@ import {
   type DisplayInput,
   getDisplayMessages,
   getDisplayMessage,
+  validateSlotRules,
+  saveSlotRules,
 } from './src/server/db';
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
-import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso } from './src/server/displayScreen';
+import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso, invalidateFeeds } from './src/server/displayScreen';
 import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
 import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, setForcedFull, clearForcedFull, overrideSummary, type NewMessage } from './src/server/displayOverrides';
 import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
@@ -2438,6 +2440,38 @@ app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/force-full/clear`, requirePermiss
   if (clearForcedFull(display, req.user!.email)) {
     auditDisplay(req, 'DISPLAY_FORCED_FULL_CLEARED', display, `Display ${display.id}: forced "Parking full" cleared by ${req.user!.email}.`);
   }
+  res.json({ success: true, display: displayRow(display) });
+});
+
+// ---------------------------------------------------------------------------
+// 003 B9: HIDE / PIN SLOTS on one display (US-17, AC-26/27; separable). The
+// whole new lists are sent. Hidden slots are removed before the counts and the
+// slot list are built; pinned ones are flagged and go first within their
+// status group (O-5).
+// ---------------------------------------------------------------------------
+app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/slot-rules`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const display = loadDisplayForSite(req, res, siteId);
+  if (!display || refuseIfSwitchedOff(res, display)) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const { rules, error } = validateSlotRules(display, body);
+  if (error) return res.status(400).json({ success: false, message: error, errors: { slotRules: error } });
+  if (!overrideWriteAllowed(req, res)) return;
+  const before = display.slotRules || { hidden: [], pinned: [] };
+  const codeOf = new Map(siteSlotsOf(display.siteId).map((sl) => [sl.id, sl.slotNumber]));
+  const diff = (was: string[], now: string[]) => ({
+    added: now.filter((id) => !was.includes(id)).map((id) => codeOf.get(id) || id),
+    removed: was.filter((id) => !now.includes(id)).map((id) => codeOf.get(id) || id),
+  });
+  const h = diff(before.hidden, rules!.hidden);
+  const pn = diff(before.pinned, rules!.pinned);
+  saveSlotRules(display, rules!, req.user!.email);
+  invalidateFeeds([display.id]);
+  const part = (label: string, d: { added: string[]; removed: string[] }) =>
+    `${label} ${label === 'hidden' ? rules!.hidden.length : rules!.pinned.length}` +
+    (d.added.length ? ` (+${d.added.join(', ')})` : '') + (d.removed.length ? ` (-${d.removed.join(', ')})` : '');
+  auditDisplay(req, 'DISPLAY_SLOT_RULES_UPDATED', display, `Display ${display.id} slot rules by ${req.user!.email}: ${part('hidden', h)}; ${part('pinned', pn)}.`);
   res.json({ success: true, display: displayRow(display) });
 });
 

@@ -96,8 +96,9 @@ export const slot = (num, extra = {}) => ({ slotNumber: num, basement: 'B1', flo
   height: 'Standard (2.0m)', parkingType: 'PUZZLE', allocation: 'EMPLOYEE', status: 'VACANT', ...extra });
 
 // Bulk-uploads `rows` at the site and returns slotNumber -> slot.
-// One request per row, a few ms apart: slot ids are slot-<ms>-<0..999>, so rows
-// of one bulk upload can share an id (pre-existing; see 04 gaps).
+// One request per row, a few ms apart. (Written when slot ids were
+// slot-<ms>-<0..999> and could collide; since R1-2 they are UUIDs, and
+// 003-slot-ids tests a single 400-row upload.)
 export async function addSlots(c, siteId, rows) {
   for (const row of rows) {
     const r = await c.post('master', '/slots/bulk-upload', { slots: [row] }, { site: siteId });

@@ -1422,9 +1422,23 @@ export function rotateKnownDefaultPasswords(): void {
   }
 }
 
+// 003 R1-2: slots that already share an id (from bulk uploads before the
+// fix) are logged once at load, so they can be found and repaired. Nothing is
+// changed here.
+export function logDuplicateSlotIds(data: { slots?: ParkingSlot[] } = getStore()): string[] {
+  const seen = new Map<string, number>();
+  for (const sl of data.slots || []) seen.set(sl.id, (seen.get(sl.id) || 0) + 1);
+  const dups = [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
+  if (dups.length > 0) {
+    console.warn(`[slots] ${dups.length} slot id(s) are shared by more than one slot (bulk uploads before 003 R1-2): ${dups.slice(0, 20).join(', ')}${dups.length > 20 ? ', ...' : ''}`);
+  }
+  return dups;
+}
+
 export async function bootstrapFirestore(): Promise<void> {
   const db = getFirestoreDb();
   if (!db) {
+    logDuplicateSlotIds();
     // Firestore unavailable this run (not configured, or disabled after a
     // fatal config error): nothing can be written to it, so the local store
     // is all there is.
@@ -1437,6 +1451,7 @@ export async function bootstrapFirestore(): Promise<void> {
     store = remote;
     storeReady = true;
     console.log('[firestore] Loaded existing data from Firestore.');
+    logDuplicateSlotIds(); // in Firestore (keyed by id) they are already one document each
     rotateKnownDefaultPasswords();
   } else if (failed) {
     // Loading genuinely failed (quota, timeout, network): do NOT reseed,
@@ -2369,7 +2384,11 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
     return updated;
   } else {
     const newSlot: ParkingSlot = {
-      id: slotData.id || `slot-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      // 003 R1-2: always a server-made random id for a NEW slot (save, bulk
+      // upload). slot-<ms>-<0..999> collided within one bulk upload; an id the
+      // client sends that doesn't exist yet is not used either. Existing ids
+      // are never changed (the update branch above keeps them).
+      id: `slot-${crypto.randomUUID()}`,
       siteId: slotData.siteId || DEFAULT_SITE_ID,
       slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
       basement: slotData.basement || 'B1',

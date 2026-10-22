@@ -6,7 +6,7 @@ import { formatAgo, formatDateTime, formatNumber } from '../../utils/format';
 import type { DisplayFeed } from '../../display/types';
 import { displayState, displaysApi, hoursText, type DisplayRow } from './api';
 import { TvPreview } from './TvPreview';
-import { hasOverride, overrideLines, seenText, STATE_CHIP } from './status';
+import { hasOverride, overrideLines, selectionText, seenText, STATE_CHIP } from './status';
 
 /** The TV polls every 3 s; the panel's preview follows at the same pace while it is open. */
 const PREVIEW_MS = 3000;
@@ -182,7 +182,7 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ display, canEdit, on
             </>
           )}
           <dt>Shows</dt>
-          <dd>{display.slotCount === 0 && !off ? `No slots left${display.missingSlots ? ` · ${formatNumber(display.missingSlots)} slots were deleted` : ''}` : display.selectionSummary}</dd>
+          <dd>{display.slotCount === 0 && !off ? `No slots left${display.missingSlots ? ` · ${formatNumber(display.missingSlots)} slots were deleted` : ''}` : selectionText(display)}</dd>
           {!forced && (
             <>
               <dt>Free now</dt>
@@ -205,7 +205,7 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ display, canEdit, on
           <dd>
             {display.pairedAt
               ? `Paired ${formatDateTime(display.pairedAt)}${display.screenAgent ? ` · browser: ${display.screenAgent}` : ''}`
-              : display.setUp
+              : display.lastSeenAt
                 ? 'Opened with the display’s link'
                 : 'Not set up yet'}
           </dd>

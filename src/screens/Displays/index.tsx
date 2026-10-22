@@ -8,7 +8,7 @@ import { formatAgo, formatNumber } from '../../utils/format';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
 import { displayState, displaysApi, hoursText, type DisplayRow } from './api';
-import { hasOverride, overrideLines, seenText, STATE_CHIP } from './status';
+import { hasOverride, overrideLines, selectionText, seenText, STATE_CHIP } from './status';
 import { clearOverrides, ForceFullDialog, MessagePanel } from './Overrides';
 import { DisplayEditor } from './DisplayEditor';
 import { DisplayPanel } from './DisplayPanel';
@@ -158,7 +158,7 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
         {d.missingSlots > 0 ? ` · ${formatNumber(d.missingSlots)} slots were deleted` : ''}
       </span>
     ) : (
-      d.selectionSummary
+      selectionText(d)
     );
   const status = (d: DisplayRow) => {
     const chip = STATE_CHIP[displayState(d)];

@@ -75,9 +75,19 @@ test('display status words and hours (UX C1)', () => {
   assert.equal(displayState(row({ online: true, setUp: true, lastSeenAt: 'x' })), 'ONLINE');
   assert.equal(displayState(row({ setUp: true, lastSeenAt: 'x' })), 'OFFLINE');
   assert.equal(displayState(row({})), 'NOT_SET_UP');
+  // The backend issues the credential at create (setUp: true) before any screen polls: still "Not set up".
+  assert.equal(displayState(row({ setUp: true, lastSeenAt: null })), 'NOT_SET_UP');
   assert.equal(displayState(row({ status: 'SWITCHED_OFF', online: true })), 'SWITCHED_OFF');
   assert.equal(hoursText({ mode: 'DAILY', on: '07:00', off: '23:00' }), '07:00–23:00');
   assert.equal(hoursText({ mode: 'ALWAYS' }), 'Always on');
+});
+
+test('"Shows" summary in UX words (C1)', () => {
+  const { selectionText } = mod.status;
+  const sel = (o) => ({ levels: [], areas: [], slotIds: [], vehicleClass: 'ALL', ...o });
+  assert.equal(selectionText({ selection: sel({ levels: ['B1', 'B2'], vehicleClass: '4W' }), slotCount: 120 }), 'B1, B2 · 4-wheelers · 120 slots');
+  assert.equal(selectionText({ selection: sel({ areas: [{ level: 'B1', parkingType: 'PUZZLE' }], slotIds: ['a', 'b', 'c'] }), slotCount: 40 }), 'B1 · Puzzles, 3 single slots · 40 slots');
+  assert.equal(selectionText({ selection: sel({ slotIds: ['a'], vehicleClass: '2W' }), slotCount: 1 }), '1 single slot · 2-wheelers · 1 slot');
 });
 
 test('override summary lines: what · who · until, IST (UX C8, AC-29)', () => {

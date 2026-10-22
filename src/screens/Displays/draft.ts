@@ -13,7 +13,7 @@ import type { DisplayFeed, DisplayHours, FeedSlot } from '../../display/types';
 import type { DisplaySelection } from './api';
 
 const ORDER: Record<SlotStatus, number> = { VACANT: 0, OCCUPIED: 1, RESERVED: 2, MAINTENANCE: 3 };
-const LEVELS = ['B1', 'B2', 'B3', 'Ground', 'Driveway'];
+const LEVELS: ParkingSlot['basement'][] = ['B1', 'B2', 'B3', 'Ground', 'Driveway'];
 const AREA_WORD: Record<string, string> = { PUZZLE: 'Puzzles', STACK: 'Stackers', GROUND: 'Open bays' };
 
 export function levelLabel(level: string): string {

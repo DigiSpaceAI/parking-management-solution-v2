@@ -19,12 +19,6 @@ export type RouteId =
 
 export type NavGroupId = 'Operations' | 'People' | 'Setup';
 
-/**
- * 003: the new DISPLAYS module (03 "Data model", B1). The backend adds it to AppModuleId with the
- * role defaults; until then the console names it here, and utils/rbac.ts gives it the 03 defaults.
- */
-export type ConsoleModuleId = AppModuleId | 'DISPLAYS';
-
 export interface RouteDef {
   id: RouteId;
   /** Page title = nav label (AC-07). */
@@ -32,7 +26,7 @@ export interface RouteDef {
   /** One line under the H1 (AC-09). */
   description: string;
   /** The 001 module that grants it. `employees` accepts either REGISTRATION or APPROVALS. */
-  modules: ConsoleModuleId[];
+  modules: AppModuleId[];
   /** Master Admin only (the viewer, so view-as a Site Admin sees No access, 001 m-5). */
   masterOnly?: boolean;
   /** Platform page: works with no site chosen (Master's Sites, Billing, Audit log, …). */

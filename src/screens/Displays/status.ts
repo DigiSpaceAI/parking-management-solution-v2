@@ -1,4 +1,5 @@
-import { formatAgo } from '../../utils/format';
+import { formatAgo, formatNumber } from '../../utils/format';
+import { areaLabel } from './draft';
 import { untilText } from '../../display/time';
 import type { DisplayOverrideSummary } from './api';
 import { displayState, type DisplayRow } from './api';
@@ -9,6 +10,22 @@ export const STATE_CHIP: Record<ReturnType<typeof displayState>, { label: string
   NOT_SET_UP: { label: 'Not set up', tone: 'neutral' },
   SWITCHED_OFF: { label: 'Switched off', tone: 'neutral' },
 };
+
+/**
+ * The "Shows" summary (UX C1): "B1, B2 · 4-wheelers · 120 slots", "B1 · Puzzles, 3 single slots ·
+ * 40 slots". Built here from the selection and slot count, so the words follow the UX
+ * ("4-wheelers", not "4W").
+ */
+export function selectionText(d: Pick<DisplayRow, 'selection' | 'slotCount'>): string {
+  const sel = d.selection;
+  const what = [...sel.levels, ...sel.areas.map((a) => areaLabel(a.level, a.parkingType))];
+  if (sel.slotIds.length) what.push(`${formatNumber(sel.slotIds.length)} single ${sel.slotIds.length === 1 ? 'slot' : 'slots'}`);
+  const parts = [what.join(', ')];
+  if (sel.vehicleClass === '4W') parts.push('4-wheelers');
+  if (sel.vehicleClass === '2W') parts.push('2-wheelers');
+  parts.push(`${formatNumber(d.slotCount)} ${d.slotCount === 1 ? 'slot' : 'slots'}`);
+  return parts.join(' · ');
+}
 
 /** "seen 3s ago" / "last seen 18 min ago" / "no screen yet" / "link switched off". */
 export function seenText(d: DisplayRow, now: number): string {

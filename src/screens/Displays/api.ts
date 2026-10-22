@@ -3,24 +3,16 @@
  * wrapper, which adds the session, x-site-id and x-view-as; the server decides access
  * (DISPLAYS:view / canCreate / canEdit, resolveSite, refused under view-as).
  *
- * These shapes follow 03. The backend (B1) owns them in src/types.ts; until then they live here.
+ * Stored shapes come from src/types.ts (backend B1/B7); the row, options and summary shapes
+ * below are what the console routes in server.ts return.
  */
-import type { ParkingType, SlotType } from '../../types';
+import type { DisplayArea, DisplayMessage as StoredDisplayMessage, DisplaySelection, ParkingSlot, ParkingType, SlotType } from '../../types';
 import type { DisplayFeed, DisplayHours } from '../../display/types';
 
-export type VehicleClass = 'ALL' | '4W' | '2W';
-
-export interface DisplayArea {
-  level: string;
-  parkingType: ParkingType;
-}
-
-export interface DisplaySelection {
-  levels: string[];
-  areas: DisplayArea[];
-  slotIds: string[];
-  vehicleClass: VehicleClass;
-}
+export type { DisplayArea, DisplaySelection };
+export type VehicleClass = DisplaySelection['vehicleClass'];
+/** A level (B1, B2, …, Ground, Driveway). */
+export type Level = ParkingSlot['basement'];
 
 /** 03 v1.2: GET /displays `override` summary (console only; `by` is the admin's name). */
 export interface DisplayOverrideSummary {
@@ -44,21 +36,21 @@ export interface DisplayRow {
   pageSeconds: number;
   hours: DisplayHours;
   status: 'ACTIVE' | 'SWITCHED_OFF';
-  /** A screen has connected at least once with the current credential. */
+  /** The display has a live credential (issued at create; null after switch-off). Not "a screen connected". */
   setUp: boolean;
   /** Seen in the last 120 s (AC-17). */
   online: boolean;
-  lastSeenAt?: string;
-  pairedAt?: string;
-  screenAgent?: string;
-  /** US-17 (03 v1.2); absent on a backend without B9. */
+  lastSeenAt?: string | null;
+  pairedAt?: string | null;
+  screenAgent?: string | null;
+  /** US-17 (C11): the ids, so the editor can show and change the rules. */
   slotRules?: { hidden: string[]; pinned: string[] };
   override?: DisplayOverrideSummary | null;
 }
 
 export interface DisplayOptions {
-  levels: { level: string; slots: number }[];
-  areas: { level: string; parkingType: ParkingType; label: string; slots: number }[];
+  levels: { level: Level; slots: number }[];
+  areas: { level: Level; parkingType: ParkingType; label: string; slots: number }[];
   slots: { id: string; code: string; level: string; area: string; puzzleNumber?: string; type: SlotType }[];
 }
 
@@ -70,19 +62,8 @@ export interface DisplayInput {
   hours: DisplayHours;
 }
 
-/** 03 v1.2 DisplayMessage, as the console lists it (GET /displays/messages). */
-export interface DisplayMessage {
-  id: string;
-  siteId: string;
-  text: string;
-  mode: 'BANNER' | 'FULL';
-  target: { all: true } | { displayIds: string[] };
-  clearedFor: string[];
-  endsAt: string | null;
-  createdAt: string;
-  createdBy: string;
-  endedAt?: string;
-  endReason?: 'CLEARED' | 'EXPIRED' | 'REPLACED';
+/** A DisplayMessage as GET /displays/messages lists it. */
+export interface DisplayMessage extends StoredDisplayMessage {
   /** Resolved display ids it is shown on now. */
   appliesTo?: string[];
 }
@@ -165,10 +146,11 @@ export function hoursText(h: DisplayHours): string {
 
 /** The display's state for the Status column and panel (UX C1/C6). */
 export type DisplayState = 'ONLINE' | 'OFFLINE' | 'NOT_SET_UP' | 'SWITCHED_OFF';
-export function displayState(d: DisplayRow): DisplayState {
+export function displayState(d: Pick<DisplayRow, 'status' | 'online' | 'lastSeenAt'>): DisplayState {
   if (d.status === 'SWITCHED_OFF') return 'SWITCHED_OFF';
   if (d.online) return 'ONLINE';
-  if (!d.setUp && !d.lastSeenAt) return 'NOT_SET_UP';
+  // No screen has ever polled this display (the credential exists from create, so `setUp` can't say this).
+  if (!d.lastSeenAt) return 'NOT_SET_UP';
   return 'OFFLINE';
 }
 

@@ -7,7 +7,7 @@ import type { LiveSlot } from '../../utils/slots';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import type { DisplayHours } from '../../display/types';
-import { displaysApi, type DisplayInput, type DisplayOptions, type DisplayRow, type DisplaySelection, type VehicleClass } from './api';
+import { displaysApi, type Level, type DisplayInput, type DisplayOptions, type DisplayRow, type DisplaySelection, type VehicleClass } from './api';
 import { areaLabel, draftFeed, isEmptySelection, levelLabel, selectedSlots } from './draft';
 import { TvPreview } from './TvPreview';
 import { SlotRulesSection, type SlotRules } from './SlotRules';
@@ -100,10 +100,10 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
     [slots, sel, location, ctx.activeSite?.siteName, hoursMode, on, off, pageSeconds, live.updatedAt, rules]
   );
 
-  const toggleLevel = (level: string) =>
+  const toggleLevel = (level: Level) =>
     setSel((s) => ({ ...s, levels: s.levels.includes(level) ? s.levels.filter((l) => l !== level) : [...s.levels, level] }));
-  const hasArea = (level: string, pt: ParkingType) => sel.areas.some((a) => a.level === level && a.parkingType === pt);
-  const toggleArea = (level: string, pt: ParkingType) =>
+  const hasArea = (level: Level, pt: ParkingType) => sel.areas.some((a) => a.level === level && a.parkingType === pt);
+  const toggleArea = (level: Level, pt: ParkingType) =>
     setSel((s) => ({ ...s, areas: hasArea(level, pt) ? s.areas.filter((a) => !(a.level === level && a.parkingType === pt)) : [...s.areas, { level, parkingType: pt }] }));
   const addSlots = (ids: string[]) => setSel((s) => ({ ...s, slotIds: [...s.slotIds, ...ids.filter((id) => !s.slotIds.includes(id))] }));
   const removeSlot = (id: string) => setSel((s) => ({ ...s, slotIds: s.slotIds.filter((x) => x !== id) }));

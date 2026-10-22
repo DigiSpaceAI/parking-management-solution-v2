@@ -137,16 +137,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Record<string, ModuleAcces
 };
 
 /**
- * 003 DISPLAYS (03 "Data model"): full for Master Admin and Site Facility Manager, off for every
- * other system role and every custom role. Stored roles are not rewritten: a role with no
- * DISPLAYS entry gets this default when it is read (server: requirePermission, B1).
+ * 003 DISPLAYS: the role defaults are in the table above (B1). Stored roles are not rewritten: a
+ * role with no DISPLAYS entry gets its role's default when read (client here, server in
+ * security.ts). Modules that are off unless a role's stored or default permissions turn them on
+ * (no role-name guessing), so a custom role never gets DISPLAYS by default (AC-19).
  */
-DEFAULT_ROLE_PERMISSIONS['role-master-admin'].DISPLAYS = FULL_ACCESS_RIGHTS;
-DEFAULT_ROLE_PERMISSIONS['role-site-manager'].DISPLAYS = FULL_ACCESS_RIGHTS;
-for (const roleId of Object.keys(DEFAULT_ROLE_PERMISSIONS)) {
-  if (!DEFAULT_ROLE_PERMISSIONS[roleId].DISPLAYS) DEFAULT_ROLE_PERMISSIONS[roleId].DISPLAYS = DISABLED_RIGHTS;
-}
-/** Modules that are off unless a role's stored or default permissions turn them on (no role-name guessing). */
 const OPT_IN_MODULES = new Set<string>(['DISPLAYS']);
 
 /**

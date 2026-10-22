@@ -336,7 +336,14 @@ const SCREEN_PUBLIC = new Set<string>([
   'POST /api/v1/screen/pair/start',
   'GET /api/v1/screen/pair/status',
 ]);
-const isScreenPublic = (method: string, path: string) => SCREEN_PUBLIC.has(`${method} ${gatePath(path)}`);
+// Code review R1-4: the exemption is NOT decided on gatePath() (which
+// lower-cases and collapses slashes, so /API/V1/screen/feed or
+// //api/v1/screen/feed would skip auth and the global limiter, then hit the SPA
+// shell). Only the exact lower-case path, with at most one trailing slash
+// trimmed (Express routes that spelling to the same handler), is exempt;
+// every other spelling goes to requireAuth -> 401, as R1B-S1 does.
+const isScreenPublic = (method: string, path: string) =>
+  SCREEN_PUBLIC.has(`${method} ${path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path}`);
 
 // Require a valid session for all API routes except the ones listed here.
 // Public: health check, login, set-password, employee self-registration

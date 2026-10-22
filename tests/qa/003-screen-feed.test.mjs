@@ -206,11 +206,15 @@ test('B4 R1B-S1 style: only GET /api/v1/screen/feed (and its trailing slash) is 
   assert.equal((await c.call(null, 'GET', '/displays', { site: F.A.id })).status, 401, '/api/v1/displays with no session');
   const slash = await c.call(null, 'GET', '/screen/feed/', { headers: h });
   assert.equal(slash.status, 200, 'trailing slash = canonical path'); assert.equal(slash.body.state, 'OPEN');
-  for (const url of ['/API/V1/screen/feed', '/api/v1/Screen/feed', '/api/v1/screen/FEED', '//api/v1/screen/feed', '/api//v1/screen/feed']) {
-    const r = await c.call(null, 'GET', url, { headers: h, absolute: true });
-    assert.notEqual(r.status, 200, `${url} must not serve the feed`);
-    assert.ok(!r.text.includes('"slots"') && !r.text.includes('"counts"'), `${url} leaked feed data`);
+  // Code review R1-4: other spellings are not exempt; the gate answers 401 (as R1B-S1).
+  for (const [m, url] of [['GET', '/API/V1/screen/feed'], ['GET', '/api/v1/Screen/feed'], ['GET', '/api/v1/screen/FEED'], ['GET', '//api/v1/screen/feed'],
+    ['GET', '/api//v1/screen/feed'], ['GET', '/api/v1/screen//feed'], ['GET', '/api/v1/screen/feed//'], ['POST', '/API/V1/screen/pair/start'], ['POST', '//api/v1/screen/pair/start'],
+    ['GET', '/api/v1/SCREEN/pair/status'], ['GET', '/api/v1/screen//pair/status']]) {
+    const r = await c.call(null, m, url, { headers: h, absolute: true });
+    assert.equal(r.status, 401, `${m} ${url} -> ${r.status}`); assert.equal(r.body.errorCode, 'ERR_SESSION_EXPIRED', url);
+    assert.ok(!r.text.includes('"slots"') && !r.text.includes('<html'), `${url}: no feed, no SPA shell`);
   }
+  assert.equal((await c.call(null, 'POST', '/screen/pair/start/', { body: {} })).status, 200, 'trailing slash on pair/start = canonical');
   for (const [m, url] of [['POST', '/screen/feed'], ['PUT', '/screen/feed'], ['DELETE', '/screen/feed'], ['GET', '/screen/feedx'], ['GET', '/screen/'], ['GET', '/screen'],
     ['GET', '/screen/pair/start'], ['POST', '/screen/pair/status'], ['GET', '/screen/pair'], ['GET', '/screen/feed/extra']]) {
     const r = await c.call(null, m, url, { headers: h });

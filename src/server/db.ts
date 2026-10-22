@@ -58,6 +58,7 @@ import {
   DemoRequest,
   DemoRequestStatus,
   LiveDisplay,
+  DisplayMessage,
   DisplaySelection,
   DisplayHours,
   DisplayArea,
@@ -85,6 +86,7 @@ interface StoreData {
   overnightRequests: OvernightRequest[];
   demoRequests: DemoRequest[]; // 002 B6
   displays: LiveDisplay[]; // 003 B1
+  displayMessages: DisplayMessage[]; // 003 B7
   lastUpdated: string;
 }
 
@@ -104,6 +106,7 @@ let store: StoreData = {
   overnightRequests: [],
   demoRequests: [],
   displays: [],
+  displayMessages: [],
   lastUpdated: new Date().toISOString(),
 };
 
@@ -929,6 +932,7 @@ function generate1080Inventory(): StoreData {
     overnightRequests: [],
     demoRequests: [],
     displays: [],
+    displayMessages: [],
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -1200,6 +1204,7 @@ export function initDB(): StoreData {
         overnightRequests: loadedStore.overnightRequests || [],
         demoRequests: loadedStore.demoRequests || [],
         displays: loadedStore.displays || [],
+        displayMessages: loadedStore.displayMessages || [],
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
@@ -1238,6 +1243,7 @@ export function initDB(): StoreData {
         overnightRequests: [],
         demoRequests: [],
         displays: [],
+        displayMessages: [],
         lastUpdated: new Date().toISOString(),
       };
       // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
@@ -1270,6 +1276,7 @@ const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
   'whitelistedDomains', 'sites', 'invoices', 'slotChangeNotifications',
   'valetTickets', 'appRoles', 'appUsers', 'overnightRequests', 'demoRequests',
   'displays', // 003 B1 (targeted writes only)
+  'displayMessages', // 003 B7 (targeted writes only)
 ];
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
@@ -4685,3 +4692,44 @@ export function updateDisplay(display: LiveDisplay, values: DisplayInput, actor:
   }
   return changed;
 }
+
+// ==========================================
+// 003 B7: DISPLAY MESSAGES (US-15). Site-level, targeted writes only.
+// ==========================================
+export function getDisplayMessages(siteId: string | 'ALL'): DisplayMessage[] {
+  const list = getStore().displayMessages || [];
+  return siteId === 'ALL' ? [...list] : list.filter((m) => m.siteId === siteId);
+}
+
+export function getDisplayMessage(id: string): DisplayMessage | undefined {
+  return (getStore().displayMessages || []).find((m) => m.id === id);
+}
+
+export function addDisplayMessage(m: DisplayMessage) {
+  const storeData = getStore();
+  if (!storeData.displayMessages) storeData.displayMessages = [];
+  storeData.displayMessages.push(m);
+}
+
+/** Targeted write of changed messages. */
+export function saveDisplayMessages(ids: string[]) {
+  if (ids.length > 0) saveDB([{ collection: 'displayMessages', ids }]);
+}
+
+/**
+ * Retention (03): ended messages are kept 30 days for the console's history,
+ * then deleted (memory, local copy and the Firestore documents) the next time
+ * the site's messages are written. Returns the deleted ids.
+ */
+export function pruneDisplayMessages(siteId: string, nowMs = Date.now()): string[] {
+  const storeData = getStore();
+  const cutoff = nowMs - 30 * 24 * 60 * 60 * 1000;
+  const old = (storeData.displayMessages || []).filter((m) => m.siteId === siteId && m.endedAt && Date.parse(m.endedAt) < cutoff).map((m) => m.id);
+  if (old.length === 0) return [];
+  const gone = new Set(old);
+  storeData.displayMessages = storeData.displayMessages.filter((m) => !gone.has(m.id));
+  writeLocalCopy();
+  void deleteFirestoreDocs('displayMessages', old);
+  return old;
+}
+

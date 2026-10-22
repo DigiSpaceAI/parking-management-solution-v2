@@ -46,3 +46,6 @@ export const PAIR_BIND_PER_USER = new WindowLimiter(10, 10 * 60_000);
 export function __setPairStartLimitForTests(max: number) {
   (PAIR_START_ALL as unknown as { max: number }).max = max;
 }
+
+// B7-B9: override writes, per user (03 "Write limit": a stuck button can't flood the audit).
+export const OVERRIDE_WRITES_PER_USER = new WindowLimiter(30, 60_000);

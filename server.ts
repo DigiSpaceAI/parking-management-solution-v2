@@ -87,11 +87,14 @@ import {
   createDisplay,
   updateDisplay,
   type DisplayInput,
+  getDisplayMessages,
+  getDisplayMessage,
 } from './src/server/db';
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso } from './src/server/displayScreen';
-import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER } from './src/server/screenLimits';
+import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
+import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, type NewMessage } from './src/server/displayOverrides';
 import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
 import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp } from './src/server/clientIp';
@@ -2287,6 +2290,123 @@ app.post(`/api/v1/displays/${DISPLAY_ID_PARAM}/replace`, requirePermission('DISP
   const token = issueDisplayToken(display, req.user!.email);
   auditDisplay(req, 'DISPLAY_LINK_REPLACED', display, `Display ${display.id}: link replaced by ${req.user!.email}.`);
   res.json({ success: true, link: displayLink(token) });
+});
+
+// ---------------------------------------------------------------------------
+// 003 B7: DISPLAY MESSAGES (US-15, AC-23/24/30). Site-level; every target
+// display is checked against its STORED siteId; refused under view-as by the
+// gate; 30 override writes per user per minute.
+// ---------------------------------------------------------------------------
+const DISPLAY_MESSAGE_ID_PARAM = ':id(dmsg-[0-9a-f]{16})';
+
+function overrideWriteAllowed(req: express.Request, res: express.Response): boolean {
+  const hit = OVERRIDE_WRITES_PER_USER.hit(`display:override:${req.user!.id}`);
+  if (hit.ok) return true;
+  res.setHeader('Retry-After', String(hit.retryAfterSec));
+  sendApiError(res, 429, 'ERR_RATE_LIMITED', 'Too many changes in a minute. Wait a moment, then try again.');
+  return false;
+}
+
+// Every id must be a display of the resolved site (403 + audit otherwise) and
+// not switched off (409). Returns null after sending an error.
+function loadTargetDisplays(req: express.Request, res: express.Response, siteId: string, ids: string[]) {
+  const out = [];
+  for (const id of ids) {
+    const d = getDisplay(id);
+    if (!d) {
+      res.status(400).json({ success: false, message: "One of the chosen displays doesn't exist.", errors: { target: "One of the chosen displays doesn't exist." } });
+      return null;
+    }
+    if (!assertRecordSite(req, res, d, siteId)) return null;
+    out.push(d);
+  }
+  const off = out.find((d) => d.status === 'SWITCHED_OFF');
+  if (off) {
+    sendApiError(res, 409, 'ERR_DISPLAY_SWITCHED_OFF', `"${off.name}" is switched off.`);
+    return null;
+  }
+  return out;
+}
+
+const messageView = (m: ReturnType<typeof getDisplayMessages>[number], now: number) => ({ ...m, appliesTo: appliesTo(m, now) });
+
+app.get('/api/v1/displays/messages', requirePermission('DISPLAYS', 'view'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: true });
+  if (siteId === null) return;
+  if (siteId === NO_SITE_ACCESS) return res.json({ messages: [] });
+  const now = Date.now();
+  const list = getDisplayMessages(siteId);
+  for (const s of new Set(list.map((m) => m.siteId))) expireMessages(s, now);
+  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+  const shown = list
+    .filter((m) => !m.endedAt || Date.parse(m.endedAt) >= cutoff)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  res.json({ messages: shown.map((m) => messageView(m, now)) });
+});
+
+app.post('/api/v1/displays/messages', requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const errors: Record<string, string> = {};
+  const text = cleanMessageText(body.text);
+  if (!text || text.length > 140) errors.text = 'Write a message (up to 140 characters).';
+  if (body.mode !== 'BANNER' && body.mode !== 'FULL') errors.mode = 'Choose Banner or Full screen.';
+  let target: NewMessage['target'] | null = null;
+  const t = body.target && typeof body.target === 'object' ? body.target : {};
+  if (t.all === true) target = { all: true };
+  else if (Array.isArray(t.displayIds) && t.displayIds.length > 0 && t.displayIds.length <= 200 && t.displayIds.every((x: unknown) => typeof x === 'string')) {
+    target = { displayIds: Array.from(new Set<string>(t.displayIds)) };
+  } else errors.target = 'Choose at least one display.';
+  const ends = parseEndsAt(body.endsAt);
+  if (ends.error) errors.endsAt = ends.error;
+  if (Object.keys(errors).length > 0) return res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
+  if (target && 'displayIds' in target && !loadTargetDisplays(req, res, siteId, target.displayIds)) return;
+  if (!overrideWriteAllowed(req, res)) return; // counts real writes, after every check
+  const { message, replaced } = createMessage(siteId, { text: text!, mode: body.mode, target: target!, endsAt: ends.value ?? null }, req.user!.email);
+  const targetText = 'all' in message.target ? 'all' : message.target.displayIds.join(', ');
+  logSecurityEvent({
+    action: 'DISPLAY_MESSAGE_SET', actor: req.user!.email, actorRole: req.user!.roleName, redactClient: true,
+    targetResource: `display-message/${message.id}`, status: 'SUCCESS', siteId,
+    details: `Display message ${message.id} (${message.mode}) to ${targetText}, until ${message.endsAt || 'cleared'}, by ${req.user!.email}: "${message.text}"`,
+  });
+  for (const r of replaced) {
+    logSecurityEvent({
+      action: 'DISPLAY_MESSAGE_REPLACED', actor: req.user!.email, actorRole: req.user!.roleName, redactClient: true,
+      targetResource: `display-message/${r.id}`, status: 'SUCCESS', siteId, details: `Display message ${r.id} replaced by ${message.id}.`,
+    });
+  }
+  const now = Date.now();
+  res.json({ success: true, message, appliesTo: appliesTo(message, now) });
+});
+
+app.post(`/api/v1/displays/messages/${DISPLAY_MESSAGE_ID_PARAM}/clear`, requirePermission('DISPLAYS', 'canEdit'), (req, res) => {
+  const siteId = resolveSite(req, res, { allowAll: false });
+  if (siteId === null) return;
+  const message = getDisplayMessage(String(req.params.id));
+  if (!message) return res.status(404).json({ success: false, message: 'Message not found.' });
+  if (!assertRecordSite(req, res, message, siteId)) return;
+  const raw = req.body?.displayIds;
+  let ids: string[] | null = null;
+  if (raw !== undefined && raw !== null) {
+    if (!Array.isArray(raw) || raw.length === 0 || !raw.every((x: unknown) => typeof x === 'string')) {
+      return res.status(400).json({ success: false, message: 'Choose the displays to clear.', errors: { displayIds: 'Choose the displays to clear.' } });
+    }
+    ids = Array.from(new Set<string>(raw));
+    for (const id of ids) {
+      const d = getDisplay(id);
+      if (!d) return res.status(404).json({ success: false, message: 'Display not found.' });
+      if (!assertRecordSite(req, res, d, siteId)) return;
+    }
+  }
+  if (!overrideWriteAllowed(req, res)) return;
+  clearMessage(message, ids, req.user!.email);
+  logSecurityEvent({
+    action: 'DISPLAY_MESSAGE_CLEARED', actor: req.user!.email, actorRole: req.user!.roleName, redactClient: true,
+    targetResource: `display-message/${message.id}`, status: 'SUCCESS', siteId,
+    details: `Display message ${message.id} cleared on ${ids ? ids.join(', ') : 'all'} by ${req.user!.email}.`,
+  });
+  res.json({ success: true, message: messageView(message, Date.now()) });
 });
 
 // B5: bind the code a waiting TV shows to this display. A new credential is

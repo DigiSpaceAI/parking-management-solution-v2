@@ -191,10 +191,10 @@ test('B3 last seen is persisted (targeted) on the first poll, not on every poll'
     const tok = tokenOf(r.body.link);
     const poll = () => fx.c.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': tok } });
     assert.equal((await poll()).status, 200);
-    await sleep(300);
+    await sleep(1500); // due displays are written together, at most once a second
     const first = fx.readData().displays.find((x) => x.id === r.body.display.id).lastSeenAt;
     assert.ok(first, 'persisted on the first poll');
-    await sleep(1100); await poll(); await sleep(300);
+    await sleep(1100); await poll(); await sleep(1500);
     assert.equal(fx.readData().displays.find((x) => x.id === r.body.display.id).lastSeenAt, first, 'not re-written within 10 min');
   } finally { fx.stop(); }
 });

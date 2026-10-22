@@ -1594,13 +1594,17 @@ async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): 
   }
 }
 
-// 003 B3: bumped whenever slots may have changed (a full save, or a targeted
-// save that includes slots), so the display selection cache can rebuild.
-let slotsVersion = 0;
-export const getSlotsVersion = () => slotsVersion;
+// 003 B3/B6: bumped when the SET of slots or a slot's level / type / site may
+// have changed (slot save, migration). Deletes and store reloads replace the
+// slots array, which the display cache also notices. Entries, exits and status
+// changes mutate slots in place and don't bump it: displays read statuses live.
+let slotSetVersion = 0;
+export const getSlotSetVersion = () => slotSetVersion;
+export function noteSlotSetChanged() {
+  slotSetVersion++;
+}
 
 export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
-  if (!targetedSync || targetedSync.length === 0 || targetedSync.some((t) => t.collection === 'slots')) slotsVersion++;
   writeLocalCopy();
 
   // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
@@ -2307,6 +2311,7 @@ function applyDimensions(slot: ParkingSlot, dims: SlotDimensions) {
 // `...slotData` spread). siteId is decided by the route (siteForSave).
 export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: boolean = false): ParkingSlot {
   const storeData = getStore();
+  noteSlotSetChanged(); // 003: the slot object is replaced or added
   const now = new Date().toISOString();
   let existingIndex = -1;
   const dims = parseSlotDimensions(slotData).values; // routes validate first; invalid values are ignored here
@@ -3107,6 +3112,7 @@ export function migrateSiteData(fromSiteId: string, toSiteId: string): { success
       }
     }
     migrated[label] = count;
+    noteSlotSetChanged(); // 003: slots may have moved site
   };
 
   migrateCollection(storeData.slots, 'slots');
@@ -4543,11 +4549,13 @@ export function saveDisplay(display: LiveDisplay) {
   saveDB([{ collection: 'displays', ids: [display.id] }]);
 }
 
-// Last seen (03 "Online / last seen"): persisted at most every 10 minutes, a
-// targeted write that doesn't count as a display change (no cache rebuild).
-export function persistDisplayLastSeen(display: LiveDisplay, iso: string) {
-  display.lastSeenAt = iso;
-  saveDB([{ collection: 'displays', ids: [display.id] }]);
+// Last seen (03 "Online / last seen"): persisted at most every 10 minutes per
+// display, in ONE targeted write for every display that is due (B6: a write
+// per display rewrote the whole local copy each time). Not a display change.
+export function persistDisplaysLastSeen(updates: { display: LiveDisplay; iso: string }[]) {
+  if (updates.length === 0) return;
+  for (const u of updates) u.display.lastSeenAt = u.iso;
+  saveDB([{ collection: 'displays', ids: updates.map((u) => u.display.id) }]);
 }
 
 export function getSiteName(siteId: string): string {

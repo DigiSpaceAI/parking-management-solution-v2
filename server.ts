@@ -90,7 +90,7 @@ import {
 } from './src/server/db';
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
-import { displayFeedFor, markSeen, lastSeenIso } from './src/server/displayScreen';
+import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso } from './src/server/displayScreen';
 import { FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER } from './src/server/screenLimits';
 import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
 import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
@@ -2375,7 +2375,7 @@ app.get('/api/v1/screen/feed', (req, res) => {
   if (auth.kind === 'OFF') return sendApiError(res, 410, 'ERR_SCREEN_OFF', 'This display has been switched off — ask your site admin.');
   const display = (auth as { display: ReturnType<typeof getDisplays>[number] }).display;
   const now = Date.now();
-  const feed = displayFeedFor(display, now);
+  const out = screenFeedResponse(display, req.query.v, now);
   markSeen(display, now);
   if (takeFirstPoll(display.id)) {
     logSecurityEvent({
@@ -2390,10 +2390,7 @@ app.get('/api/v1/screen/feed', (req, res) => {
     });
   }
   res.setHeader('Cache-Control', 'no-store');
-  if (typeof req.query.v === 'string' && req.query.v === feed.v) {
-    return res.json({ unchanged: true, v: feed.v, serverTime: feed.serverTime, state: feed.state });
-  }
-  res.json(feed);
+  res.type('application/json').send(out.body);
 });
 
 // ---------------------------------------------------------------------------

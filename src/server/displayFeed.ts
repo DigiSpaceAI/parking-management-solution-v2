@@ -6,6 +6,12 @@ import { LiveDisplay, ParkingSlot, ParkingType, DisplayFeed, FeedSlot, DisplayHo
 
 export const ONLINE_WINDOW_MS = 120 * 1000; // AC-17: offline = not seen for 2 minutes
 
+// Slot-code order ("B1-P2" before "B1-P10"). One shared collator: a
+// localeCompare with options builds a new one per call (B6: 40 ms per sort).
+const CODE_COLLATOR = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+export const byCode = (a: string, b: string): number => CODE_COLLATOR.compare(a, b);
+export const sortByCode = (slots: ParkingSlot[]): ParkingSlot[] => [...slots].sort((a, b) => byCode(a.slotNumber, b.slotNumber));
+
 export const LEVEL_ORDER: ParkingSlot['basement'][] = ['B1', 'B2', 'B3', 'Ground', 'Driveway'];
 const PARKING_TYPE_LABEL: Record<ParkingType, string> = { PUZZLE: 'Puzzles', STACK: 'Stackers', GROUND: 'Open bays' };
 
@@ -62,7 +68,6 @@ export function displayOptions(siteSlots: ParkingSlot[]) {
     a.slots++;
     areas.set(key, a);
   }
-  const byCode = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' });
   return {
     levels: [...levels.entries()].sort((a, b) => levelRank(a[0]) - levelRank(b[0])).map(([level, slots]) => ({ level, slots })),
     areas: [...areas.values()].sort((a, b) => levelRank(a.level) - levelRank(b.level) || byCode(a.label, b.label)),
@@ -79,7 +84,6 @@ export function displayOptions(siteSlots: ParkingSlot[]) {
 const IST_OFFSET_MS = 330 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STATUS_ORDER: SlotStatus[] = ['VACANT', 'OCCUPIED', 'RESERVED', 'MAINTENANCE'];
-const byCode = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' });
 
 /** Minutes since IST midnight (fixed +05:30; host and TV clocks don't matter). */
 export const istMinuteOfDay = (nowMs: number): number => Math.floor((((nowMs + IST_OFFSET_MS) % DAY_MS) + DAY_MS) % DAY_MS / 60000);
@@ -117,15 +121,19 @@ export function toFeedSlot(s: ParkingSlot, pinned: boolean): FeedSlot {
 
 export interface FeedInputs {
   display: LiveDisplay;
-  slots: ParkingSlot[]; // the display's selected slots (hidden ones already removed)
+  slots: ParkingSlot[]; // the display's selected slots, SORTED BY CODE (sortByCode), hidden ones removed
   pinned: Set<string>; // slot ids (US-17)
   siteName: string;
   override: DisplayFeed['override'];
   nowMs: number;
 }
 
-/** The feed without serverTime; `v` hashes everything else. */
-export function buildFeed(i: FeedInputs): Omit<DisplayFeed, 'serverTime'> {
+/**
+ * The feed without serverTime; `v` hashes everything else. Also returns the
+ * serialised body (without v and serverTime) so a response is built without a
+ * second JSON.stringify (feedResponseJson).
+ */
+export function buildFeed(i: FeedInputs): { feed: Omit<DisplayFeed, 'serverTime'>; json: string } {
   const d = i.display;
   const base = {
     place: d.location || '',
@@ -155,12 +163,16 @@ export function buildFeed(i: FeedInputs): Omit<DisplayFeed, 'serverTime'> {
       if (s.status === 'VACANT') g.free++;
       groups.set(key, g);
     }
-    const sorted = [...i.slots].sort(
-      (a, b) =>
-        STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
-        Number(i.pinned.has(b.id)) - Number(i.pinned.has(a.id)) ||
-        byCode(a.slotNumber, b.slotNumber)
-    );
+    // Input is already in code order: bucket by status, pinned first within
+    // each status (US-17), keeping code order inside each bucket. O(n).
+    const buckets: ParkingSlot[][] = STATUS_ORDER.map(() => []);
+    const pinnedBuckets: ParkingSlot[][] = STATUS_ORDER.map(() => []);
+    for (const s of i.slots) {
+      const k = STATUS_ORDER.indexOf(s.status);
+      (i.pinned.has(s.id) ? pinnedBuckets : buckets)[k === -1 ? STATUS_ORDER.length - 1 : k].push(s);
+    }
+    const sorted: ParkingSlot[] = [];
+    STATUS_ORDER.forEach((_, k) => { sorted.push(...pinnedBuckets[k], ...buckets[k]); });
     body = {
       state: 'OPEN',
       ...base,
@@ -174,6 +186,11 @@ export function buildFeed(i: FeedInputs): Omit<DisplayFeed, 'serverTime'> {
       slots: sorted.map((s) => toFeedSlot(s, i.pinned.has(s.id))),
     };
   }
-  const v = crypto.createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 16);
-  return { v, ...body };
+  const json = JSON.stringify(body);
+  const v = crypto.createHash('sha1').update(json).digest('hex').slice(0, 16);
+  return { feed: { v, ...body }, json };
 }
+
+/** `{ v, serverTime, ...body }` as a string, from buildFeed's serialised body. */
+export const feedResponseJson = (v: string, serverTime: string, json: string): string =>
+  `{"v":${JSON.stringify(v)},"serverTime":${JSON.stringify(serverTime)}${json.length > 2 ? ',' + json.slice(1) : '}'}`;

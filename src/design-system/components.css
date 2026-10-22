@@ -661,6 +661,10 @@
   .pf-display-edit { display: flex; gap: var(--space-6); align-items: flex-start; }
   .pf-display-form { flex: 1 1 0; min-width: 0; }
   .pf-display-preview { flex: none; width: var(--panel-w); position: sticky; top: var(--space-4); }
+  /* 003 F7 (C11): Slots on this display — hide / pin */
+  .pf-slot-rules { border-top: 1px solid var(--line-100); padding-top: var(--space-5); }
+  .pf-rule-pinned { font-weight: 600; color: var(--ink); }
+  .pf-rule-actions { gap: var(--space-2); }
   .pf-check-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--slot-card-min), 1fr)); gap: var(--space-2); }
   .pf-check-tile { border: 1px solid var(--line-300); border-radius: var(--radius-md); padding: 0 var(--space-3); }
   .pf-pick-results, .pf-slot-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }

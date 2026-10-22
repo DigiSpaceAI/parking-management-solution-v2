@@ -525,6 +525,28 @@ test('until text: today → HH:mm, another day → D MMM, HH:mm (03 O-1)', () =>
   assert.equal(untilText(null, NOW), '');
 });
 
+// ---- F7: pinned slots (US-17, AC-27, 03 O-5) ------------------------------------------------
+test('pinned order: a pinned vacant slot is first on page 1; a pinned occupied slot is the first taken card and never displaces a vacant one', () => {
+  const { gridLayout } = mod.layout;
+  const vac = many('B1', 14, 'VACANT');
+  vac[9] = { ...vac[9], pinned: true };
+  const occ = many('B2', 6, 'OCCUPIED');
+  occ[4] = { ...occ[4], pinned: true };
+  const slots = [...vac, ...occ, slot('B9-R', 'RESERVED')]; // feed order without the server's pinned-first sort
+  const p1 = gridLayout(slots, 12, 0, {});
+  assert.equal(p1.cards[0].code, vac[9].code, 'pinned vacant first');
+  assert.ok(p1.cards.every((c) => c.status === 'VACANT'), 'page 1 is all vacant: vacant-first wins');
+  const p2 = gridLayout(slots, 12, 1, {});
+  assert.deepEqual(p2.cards.slice(0, 2).map((c) => c.status), ['VACANT', 'VACANT']);
+  assert.equal(p2.cards[2].code, occ[4].code, 'the pinned occupied slot is the first taken card on the last vacant page');
+  // With room on page 1, it is on page 1, right after the vacant cards.
+  const few = gridLayout([...vac.slice(0, 3), ...occ, slot('B9-R', 'RESERVED')], 12, 0, {});
+  assert.equal(few.cards[3].code, occ[4].code);
+  // Full and forced full: it is the first card.
+  assert.equal(gridLayout(occ, 12, 0, {}).cards[0].code, occ[4].code);
+  assert.equal(gridLayout([...vac, ...occ], 12, 0, {}, true).cards[0].code, occ[4].code);
+});
+
 // ---- the built bundle -----------------------------------------------------------------------
 function walk(node, visit) {
   if (!node || typeof node.type !== 'string') return;

@@ -38,12 +38,33 @@ export function vacantFirst(slots: FeedSlot[], justFreed: { [code: string]: bool
   return pinned.concat(freed, rest);
 }
 
+/**
+ * Taken slots in feed order, with pinned slots first within their status group (US-17, AC-27,
+ * 03 O-5): a pinned Occupied slot is the first taken card shown. The server already sends this
+ * order; the TV keeps it even if a feed comes without it. Stable: otherwise feed order.
+ */
+export function takenInOrder(slots: FeedSlot[]): FeedSlot[] {
+  const groups: { [status: string]: { pinned: FeedSlot[]; rest: FeedSlot[] } } = {};
+  const order: string[] = [];
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i];
+    if (s.status === 'VACANT') continue;
+    if (!groups[s.status]) {
+      groups[s.status] = { pinned: [], rest: [] };
+      order.push(s.status);
+    }
+    if (s.pinned) groups[s.status].pinned.push(s);
+    else groups[s.status].rest.push(s);
+  }
+  let out: FeedSlot[] = [];
+  for (let i = 0; i < order.length; i++) out = out.concat(groups[order[i]].pinned, groups[order[i]].rest);
+  return out;
+}
+
 /** `pageIndex` is 0-based and wraps. */
 export function gridLayout(slots: FeedSlot[], perPage: number, pageIndex: number, justFreed: { [code: string]: boolean }, forceFull?: boolean): GridLayout {
   const vacant = forceFull ? [] : vacantFirst(slots, justFreed);
-  const taken = slots.filter(function (s) {
-    return s.status !== 'VACANT';
-  });
+  const taken = takenInOrder(slots);
   if (vacant.length === 0) {
     const occupied = taken.filter(function (s) {
       return s.status === 'OCCUPIED';

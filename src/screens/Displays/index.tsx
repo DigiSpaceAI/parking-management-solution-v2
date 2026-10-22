@@ -123,10 +123,11 @@ export const Displays: React.FC<DisplaysProps> = ({ siteId, rights }) => {
         from={editing.mode === 'create' ? editing.from ?? null : null}
         others={rows}
         onCancel={() => setEditing(null)}
-        onSaved={(display, link) => {
+        onSaved={(display, link, warning) => {
           setEditing(null);
           if (link) setSetUp({ display, link, justSaved: true });
-          else toast.show({ tone: 'success', message: 'Display saved' });
+          else if (!warning) toast.show({ tone: 'success', message: 'Display saved' });
+          if (warning) toast.show({ tone: 'error', message: warning });
           void refresh.refresh();
         }}
       />

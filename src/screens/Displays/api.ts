@@ -135,6 +135,8 @@ export const displaysApi = {
     call<{ message?: DisplayMessage }>('POST', `/api/v1/displays/messages/${enc(id)}/clear`, displayIds ? { displayIds } : {}),
   forceFull: (id: string, endsAt: string | null) => call<{ display?: DisplayRow }>('POST', `/api/v1/displays/${enc(id)}/force-full`, { endsAt }),
   clearForceFull: (id: string) => call<{ display?: DisplayRow }>('POST', `/api/v1/displays/${enc(id)}/force-full/clear`),
+  // 03 v1.2 US-17 (separable, B9): the whole new lists.
+  slotRules: (id: string, rules: { hidden: string[]; pinned: string[] }) => call<{ display?: DisplayRow }>('POST', `/api/v1/displays/${enc(id)}/slot-rules`, rules),
 };
 
 /** The IST wall time picked in the console as an ISO string with its +05:30 offset (03 v1.2 "End times are IST"). */

@@ -10,6 +10,7 @@ import type { DisplayHours } from '../../display/types';
 import { displaysApi, type DisplayInput, type DisplayOptions, type DisplayRow, type DisplaySelection, type VehicleClass } from './api';
 import { areaLabel, draftFeed, isEmptySelection, levelLabel, selectedSlots } from './draft';
 import { TvPreview } from './TvPreview';
+import { SlotRulesSection, type SlotRules } from './SlotRules';
 
 export interface DisplayEditorProps {
   /** Edit this display; null = create. */
@@ -19,8 +20,11 @@ export interface DisplayEditorProps {
   /** The site's other displays ("copy the selection from another display"). */
   others: DisplayRow[];
   onCancel: () => void;
-  /** `link` only on create: the display's own link, shown once (C5). */
-  onSaved: (display: DisplayRow, link: string | null) => void;
+  /**
+   * `link` only on create: the display's own link, shown once (C5). `warning`: the display was
+   * saved but its hide/pin rules weren't (US-17), so the caller still shows the link.
+   */
+  onSaved: (display: DisplayRow, link: string | null, warning?: string) => void;
 }
 
 type PickBy = 'levels' | 'zones' | 'slots';
@@ -56,6 +60,9 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
   const [saving, setSaving] = useState(false);
   const [options, setOptions] = useState<DisplayOptions | null>(null);
   const [slots, setSlots] = useState<LiveSlot[]>([]);
+  // US-17 hide / pin on this display only (C11). A copy keeps the rules of the display it copies.
+  const initialRules: SlotRules = seed?.slotRules ? { hidden: [...seed.slotRules.hidden], pinned: [...seed.slotRules.pinned] } : { hidden: [], pinned: [] };
+  const [rules, setRules] = useState<SlotRules>(initialRules);
 
   // Options (levels, zones, slots) once; the site's live slots with the same 15 s refresh as the console.
   useEffect(() => {
@@ -80,15 +87,17 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
   );
 
   const hours: DisplayHours = hoursMode === 'DAILY' ? { mode: 'DAILY', on, off } : { mode: 'ALWAYS' };
-  const chosen = useMemo(() => selectedSlots(slots, sel), [slots, sel]);
+  // The selection before hiding (listed in "Slots on this display"), and what can appear on screen.
+  const inSel = useMemo(() => selectedSlots(slots, sel), [slots, sel]);
+  const chosen = useMemo(() => inSel.filter((s) => !rules.hidden.includes(s.id)), [inSel, rules.hidden]);
   const freeNow = chosen.filter((s) => s.status === 'VACANT').length;
   const feed = useMemo(
     () =>
       live.updatedAt
-        ? draftFeed({ slots, selection: sel, place: location, siteName: ctx.activeSite?.siteName, hours, pageSeconds: Number(pageSeconds) || 8 })
+        ? draftFeed({ slots, selection: sel, place: location, siteName: ctx.activeSite?.siteName, hours, pageSeconds: Number(pageSeconds) || 8, hidden: rules.hidden, pinned: rules.pinned })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [slots, sel, location, ctx.activeSite?.siteName, hoursMode, on, off, pageSeconds, live.updatedAt]
+    [slots, sel, location, ctx.activeSite?.siteName, hoursMode, on, off, pageSeconds, live.updatedAt, rules]
   );
 
   const toggleLevel = (level: string) =>
@@ -141,7 +150,25 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
     try {
       const r = display ? await displaysApi.update(display.id, input) : await displaysApi.create(input);
       if (r.ok && r.data.display) {
-        onSaved(r.data.display, display ? null : (r.data as { link?: string }).link ?? null);
+        const saved = r.data.display;
+        const link = display ? null : (r.data as { link?: string }).link ?? null;
+        // US-17: only rules for slots still in the selection are kept (deleted or deselected slots drop out).
+        const keep = new Set(inSel.map((s) => s.id));
+        const next: SlotRules = { hidden: rules.hidden.filter((id) => keep.has(id)), pinned: rules.pinned.filter((id) => keep.has(id)) };
+        const before = seed?.slotRules || { hidden: [], pinned: [] };
+        const same = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+        const changed = display ? !(same(next.hidden, before.hidden) && same(next.pinned, before.pinned)) : next.hidden.length + next.pinned.length > 0;
+        if (!changed) onSaved(saved, link);
+        else {
+          let warning: string | undefined;
+          try {
+            const rr = await displaysApi.slotRules(saved.id, next);
+            if (!rr.ok) warning = `Display saved, but the hidden and pinned slots weren't: ${saveErrorMessage(rr.data)}`;
+          } catch {
+            warning = "Display saved, but the hidden and pinned slots weren't. Try again.";
+          }
+          onSaved(saved, link, warning);
+        }
       } else if (r.data.errors && Object.keys(r.data.errors).length) {
         setErrors(r.data.errors);
       } else setFormError(saveErrorMessage(r.data));
@@ -335,6 +362,8 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
               </div>
             )}
           </fieldset>
+
+          <SlotRulesSection slots={inSel} rules={rules} onChange={setRules} />
 
           <div className="pf-form-actions">
             <Button onClick={onCancel}>Cancel</Button>

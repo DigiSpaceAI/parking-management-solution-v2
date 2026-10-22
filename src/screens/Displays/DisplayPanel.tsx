@@ -189,6 +189,14 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ display, canEdit, on
               <dd>{off ? '—' : freeText(feed, display)}</dd>
             </>
           )}
+          {(display.override?.pinned || display.override?.hidden) ? (
+            <>
+              <dt>Slots on this display</dt>
+              <dd>
+                {formatNumber(display.override.pinned)} pinned · {formatNumber(display.override.hidden)} hidden (edit the display to change)
+              </dd>
+            </>
+          ) : null}
           <dt>Pages</dt>
           <dd>Every {display.pageSeconds} s, when more than 12 are free</dd>
           <dt>Display hours</dt>

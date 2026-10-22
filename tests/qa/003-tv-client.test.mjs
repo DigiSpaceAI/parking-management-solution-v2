@@ -559,10 +559,12 @@ function walk(node, visit) {
   }
 }
 
-test('build:display output is ES2015 for Chromium 53 (syntax, runtime APIs, CSS, classic script)', () => {
-  const r = spawnSync(process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'vite.display.config.ts', '--outDir', join(tmpdir(), 'pf-tv-dist'), '--emptyOutDir'], { cwd: ROOT, encoding: 'utf8' });
+test('build:display output is ES2015 for Chromium 53 (syntax, runtime APIs, CSS, classic script)', (t) => {
+  // Its own temp folder, so two test runs at the same time (e.g. review and QA) can't collide.
+  const dist = mkdtempSync(join(tmpdir(), 'pf-tv-dist-'));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  const r = spawnSync(process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'vite.display.config.ts', '--outDir', dist, '--emptyOutDir'], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  const dist = join(tmpdir(), 'pf-tv-dist');
   const html = readFileSync(join(dist, 'tv.html'), 'utf8');
   assert.doesNotMatch(html, /type="module"|modulepreload/, 'a classic script, no ES modules');
   const assets = readdirSync(join(dist, 'assets'));

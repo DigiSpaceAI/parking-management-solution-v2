@@ -2652,6 +2652,9 @@ app.get('/api/v1/screen/pair/status', (req, res) => {
   res.json(status);
 });
 
+// 07 S3-4: the TV page's own Content-Security-Policy (see the /tv mount).
+const TV_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
+
 // 8. Predictive Analytics 24-Hour Forecast Endpoint
 app.get('/api/v1/analytics/prediction', (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: false });
@@ -3712,10 +3715,18 @@ async function startServer() {
     // Registered before the dashboard's '*' fallback. No referrer ever leaves the page (the
     // display link's #k= fragment is never sent anyway), and the HTML is always revalidated.
     const distDisplayPath = path.join(process.cwd(), 'dist-display');
-    const noReferrer = (res: express.Response) => res.setHeader('Referrer-Policy', 'no-referrer');
-    app.use('/tv/assets', express.static(path.join(distDisplayPath, 'assets'), { index: false, fallthrough: false, setHeaders: noReferrer }));
+    // 07 S3-4: the TV page holds a display credential in localStorage, so it gets
+    // its own strict CSP instead of the platform's ('unsafe-inline' 'unsafe-eval'
+    // https:): same-origin script, styles, fonts and requests only, no inline
+    // script, no eval, framed only by the console (the live preview).
+    // tests/qa/003-tv-csp checks the built page against it.
+    const tvHeaders = (res: express.Response) => {
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('Content-Security-Policy', TV_CSP);
+    };
+    app.use('/tv/assets', express.static(path.join(distDisplayPath, 'assets'), { index: false, fallthrough: false, setHeaders: tvHeaders }));
     app.get(['/tv', '/tv/', '/display', '/display/'], (req, res) => {
-      noReferrer(res);
+      tvHeaders(res);
       res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distDisplayPath, 'tv.html'));
     });

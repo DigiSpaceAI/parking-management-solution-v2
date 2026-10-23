@@ -96,7 +96,7 @@ import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso, invalidateFeeds } from './src/server/displayScreen';
 import { FEED_UNKNOWN_PER_CLIENT, FEED_UNKNOWN_TOTAL, FloodCounter, FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_STATUS_UNKNOWN_TOTAL, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
-import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, setForcedFull, clearForcedFull, overrideSummary, type NewMessage } from './src/server/displayOverrides';
+import { hasHiddenFormatChars, cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, setForcedFull, clearForcedFull, overrideSummary, type NewMessage } from './src/server/displayOverrides';
 import { startPairing, pairingStatus, findWaitingCode, isPendingSecret } from './src/server/displayPairing';
 import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp, pickHostingClientKey } from './src/server/clientIp';
@@ -2372,6 +2372,7 @@ app.post('/api/v1/displays/messages', requirePermission('DISPLAYS', 'canEdit'), 
   const errors: Record<string, string> = {};
   const text = cleanMessageText(body.text);
   if (!text || text.length > 140) errors.text = 'Write a message (up to 140 characters).';
+  else if (hasHiddenFormatChars(body.text)) errors.text = 'Remove hidden characters (text-direction or zero-width marks) from the message.'; // 07 S3-5
   if (body.mode !== 'BANNER' && body.mode !== 'FULL') errors.mode = 'Choose Banner or Full screen.';
   let target: NewMessage['target'] | null = null;
   const t = body.target && typeof body.target === 'object' ? body.target : {};

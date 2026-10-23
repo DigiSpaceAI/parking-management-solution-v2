@@ -405,3 +405,23 @@ test('R1-5 (AC-26): console counts and summaries leave out the slots hidden on t
   assert.equal(all.slotCount, 0, 'everything hidden: flagged like an empty selection'); assert.equal(all.freeNow, 0); assert.equal(all.hiddenCount, 2);
   assert.equal((await feed(d)).body.state, 'EMPTY', 'and the TV shows "No slots selected"');
 });
+
+test('S3-5: messages with text-direction controls or zero-width characters are refused with a field error; normal non-Latin text is fine', async () => {
+  const d = await mkDisplay('Bidi');
+  const before = (await c.get('adminA', '/displays/messages', { site: F.A.id })).body.messages.length;
+  const bidi = [0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x200E, 0x200F, 0x061C];
+  const zeroWidth = [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF];
+  for (const cp of [...bidi, ...zeroWidth]) {
+    const text = `Exit ${String.fromCodePoint(cp)}left`;
+    const r = await say({ text, target: { displayIds: [d.id] } });
+    assert.equal(r.status, 400, `U+${cp.toString(16).toUpperCase()}`);
+    assert.match(r.body.errors.text, /hidden characters \(text-direction or zero-width marks\)/, `U+${cp.toString(16).toUpperCase()}`);
+  }
+  // A "reversed" message (RLO) and a spoofed one (zero-width inside a word) as real examples.
+  assert.equal((await say({ text: `Gate ${String.fromCodePoint(0x202E)}2 nepo`, target: { all: true } })).status, 400);
+  assert.equal((await say({ text: `Pay${String.fromCodePoint(0x200B)}ment at gate`, target: { all: true } })).status, 400);
+  assert.equal((await c.get('adminA', '/displays/messages', { site: F.A.id })).body.messages.length, before, 'nothing stored');
+  const ok = await say({ text: 'निकास गेट 2 · مخرج · Exit → Gate 2 ✓', target: { displayIds: [d.id] } });
+  assert.equal(ok.status, 200, 'Hindi, Arabic, arrows and symbols without hidden marks are fine');
+  assert.equal((await feed(d)).body.override.message.text, 'निकास गेट 2 · مخرج · Exit → Gate 2 ✓');
+});

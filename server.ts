@@ -95,9 +95,9 @@ import {
 import { selectedSlots, missingSlotIds, selectionSummary, displayOptions, ONLINE_WINDOW_MS } from './src/server/displayFeed';
 import { issueDisplayToken, switchOffDisplay, resolveScreenToken, takeFirstPoll } from './src/server/displayAuth';
 import { displayFeedFor, screenFeedResponse, markSeen, lastSeenIso, invalidateFeeds } from './src/server/displayScreen';
-import { FEED_UNKNOWN_PER_CLIENT, FEED_UNKNOWN_TOTAL, FloodCounter, FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
+import { FEED_UNKNOWN_PER_CLIENT, FEED_UNKNOWN_TOTAL, FloodCounter, FEED_PER_CREDENTIAL, FEED_ALL_SCREENS, PAIR_START_ALL, PAIR_STATUS_PER_SECRET, PAIR_STATUS_UNKNOWN_TOTAL, PAIR_BIND_PER_USER, OVERRIDE_WRITES_PER_USER } from './src/server/screenLimits';
 import { cleanMessageText, parseEndsAt, createMessage, clearMessage, appliesTo, expireMessages, setForcedFull, clearForcedFull, overrideSummary, type NewMessage } from './src/server/displayOverrides';
-import { startPairing, pairingStatus, findWaitingCode } from './src/server/displayPairing';
+import { startPairing, pairingStatus, findWaitingCode, isPendingSecret } from './src/server/displayPairing';
 import { normalizePairCode, hashSecret, displayLink } from './src/server/displayToken';
 import { parseHostingCidrs, pickDemoClientIp, pickHostingClientKey } from './src/server/clientIp';
 import cookieParser from 'cookie-parser';
@@ -2637,8 +2637,14 @@ app.post('/api/v1/screen/pair/start', (req, res) => {
 
 app.get('/api/v1/screen/pair/status', (req, res) => {
   const secret = req.headers['x-pair-secret'];
-  const key = typeof secret === 'string' && secret.length <= 100 ? hashSecret(secret) : 'invalid';
-  const hit = PAIR_STATUS_PER_SECRET.hit(`screen:pair:status:${key}`);
+  // 07 S3-2: only the secret of a pending pairing gets a bucket of its own;
+  // random, expired and malformed secrets (refused before hashing) share one
+  // capped bucket, so a flood of them holds no per-key memory and can't block
+  // a waiting TV's own polls.
+  const pendingHash = isPendingSecret(secret);
+  const hit = pendingHash
+    ? PAIR_STATUS_PER_SECRET.hit(`screen:pair:status:${pendingHash}`)
+    : PAIR_STATUS_UNKNOWN_TOTAL.hit('screen:pair:status:unknown');
   if (!hit.ok) return refuseScreen(res, '/api/v1/screen/pair/status', 'unknown', undefined, hit);
   const status = pairingStatus(secret);
   res.setHeader('Cache-Control', 'no-store');

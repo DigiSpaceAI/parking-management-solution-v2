@@ -3,7 +3,7 @@
 // and a 256-bit pair secret it keeps; only hashes of both are held here. A
 // signed-in admin binds the code to a display of their own site; the new
 // credential then waits here until the TV collects it once, or 10 min pass.
-import { newPairCode, hashSecret, newDisplayToken } from './displayToken';
+import { newPairCode, hashSecret, newDisplayToken, TOKEN_FORMAT } from './displayToken';
 
 let PAIR_TTL_MS = 10 * 60 * 1000;
 export let PAIR_MAX_PENDING = 200;
@@ -45,6 +45,18 @@ export function startPairing(userAgent: unknown, now = Date.now()): { code: stri
   byCode.set(p.codeHash, p);
   bySecret.set(p.secretHash, p);
   return { code, pairSecret, expiresIn: Math.round(PAIR_TTL_MS / 1000) };
+}
+
+/**
+ * 07 S3-2: does this pair secret belong to a pending (unexpired) pairing?
+ * Malformed secrets are refused without hashing. Used to pick the limiter
+ * bucket BEFORE pairingStatus(), so random secrets never get their own.
+ */
+export function isPendingSecret(secret: unknown, now = Date.now()): string | null {
+  if (typeof secret !== 'string' || !TOKEN_FORMAT.test(secret)) return null;
+  const h = hashSecret(secret);
+  const p = bySecret.get(h);
+  return p && p.expiresAt > now ? h : null;
 }
 
 /** null = expired, used or unknown (410). A delivered token deletes the entry. */

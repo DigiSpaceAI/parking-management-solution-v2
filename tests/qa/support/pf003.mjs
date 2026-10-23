@@ -23,9 +23,21 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-export async function startServer({ fake = false, env = {}, waitReady = true } = {}) {
+// Resident memory (MB) of a process and all its descendants (tsx runs the
+// server in a child process). Linux /proc only; null elsewhere.
+export function treeRssMb(pid) {
+  const kids = (p) => { try { return readFileSync(`/proc/${p}/task/${p}/children`, 'utf-8').trim().split(/\s+/).filter(Boolean).map(Number); } catch { return []; } };
+  const rss = (p) => { try { const m = /VmRSS:\s+(\d+) kB/.exec(readFileSync(`/proc/${p}/status`, 'utf-8')); return m ? Number(m[1]) / 1024 : 0; } catch { return null; } };
+  if (rss(pid) === null) return null;
+  let total = 0; const todo = [pid];
+  while (todo.length) { const p = todo.pop(); total += rss(p) || 0; todo.push(...kids(p)); }
+  return total;
+}
+
+export async function startServer({ fake = false, env = {}, waitReady = true, prepare } = {}) {
   const port = await freePort();
   const workDir = mkdtempSync(path.join(tmpdir(), 'pf-003-'));
+  if (prepare) await prepare(workDir); // e.g. put a built dist-display/ beside the server
   const fullEnv = { ...process.env, NODE_ENV: 'production', BOOTSTRAP_ADMIN_PASSWORD: PW, SEED_DEMO_USERS: 'false', GEMINI_API_KEY: '',
     K_SERVICE: '', SITE_SCOPE_MODE: '', AUDIT_HMAC_SECRET: 'd3'.repeat(32), PORT: String(port), PF_REPO: REPO,
     FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', ...env };
@@ -40,7 +52,7 @@ export async function startServer({ fake = false, env = {}, waitReady = true } =
     await sleep(250);
   }
   if (exited !== null) throw new Error('server exited:\n' + log.slice(-2000));
-  return { origin, base: origin + '/api/v1', proc, getLog: () => log,
+  return { origin, base: origin + '/api/v1', proc, workDir, getLog: () => log, rssMb: () => treeRssMb(proc.pid),
     stop: () => { proc.kill(); try { rmSync(workDir, { recursive: true, force: true }); } catch {} } };
 }
 

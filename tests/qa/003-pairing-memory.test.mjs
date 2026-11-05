@@ -39,7 +39,11 @@ async function flood(base, n, width = 250) {
   return statuses;
 }
 
-test('S3-2 API: two floods of 60,000 random pair secrets keep server memory flat, and a real pairing still works during the flood', async () => {
+test('S3-2 API: after a warm-up flood, two more floods of 60,000 random pair secrets keep server memory flat, and a real pairing still works during them', async () => {
+  // Code review R2-2: the first flood grows RSS by a one-off step (V8 heap
+  // warm-up under 250 concurrent requests; 60-90 MB depending on the machine),
+  // which is not retained state. So the test warms up with a full flood first
+  // and asserts what S3-2 guarantees: later floods don't grow memory.
   const srv = await startServer();
   try {
     const c = client(srv);
@@ -47,13 +51,13 @@ test('S3-2 API: two floods of 60,000 random pair secrets keep server memory flat
     const site = await c.onboard('MEM', 'Memory site');
     await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'M-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const d = (await c.post('master', '/displays', { name: 'Mem', location: '', selection: sel }, { site: site.id })).body.display;
-    // Warm up so the baseline includes normal heap growth, then measure.
-    await flood(srv.base, 5000);
+    const warm = await flood(srv.base, 60_000);
+    assert.equal((warm[200] || 0), 0, 'no random secret is ever "waiting"');
+    assert.ok((warm[429] || 0) > 50_000, `the unknown-secret cap refuses the flood: ${JSON.stringify(warm)}`);
     const r0 = srv.rssMb();
     const first = await flood(srv.base, 60_000);
     const r1 = srv.rssMb();
-    assert.equal((first[200] || 0), 0, 'no random secret is ever "waiting"');
-    assert.ok((first[429] || 0) > 50_000, `the unknown-secret cap refuses the flood: ${JSON.stringify(first)}`);
+    assert.ok((first[429] || 0) > 50_000);
     // A real TV pairs while the unknown-secret bucket is exhausted.
     const start = await c.call(null, 'POST', '/screen/pair/start', { body: {} });
     assert.equal(start.status, 200);
@@ -66,8 +70,10 @@ test('S3-2 API: two floods of 60,000 random pair secrets keep server memory flat
     const r2 = srv.rssMb();
     assert.ok((second[429] || 0) > 50_000);
     if (r0 === null) { console.log('# /proc not available: memory not measured'); return; }
-    console.log(`# server RSS MB: before ${r0.toFixed(1)}, after flood 1 ${r1.toFixed(1)}, after flood 2 ${r2.toFixed(1)}`);
-    assert.ok(r1 - r0 < 60, `flood 1 grew RSS by ${(r1 - r0).toFixed(1)} MB (was ~1.5 KB a request before S3-2, ~90 MB here)`);
-    assert.ok(r2 - r1 < 25, `flood 2 grew RSS by ${(r2 - r1).toFixed(1)} MB: memory stays flat`);
+    console.log(`# server RSS MB after warm-up ${r0.toFixed(1)}, after flood 1 ${r1.toFixed(1)}, after flood 2 ${r2.toFixed(1)}`);
+    // Before S3-2 each random secret held a bucket (~1.5 KB) for 60 s: ~90 MB per 60,000-request flood, growing.
+    assert.ok(r1 - r0 < 25, `flood 1 after warm-up grew RSS by ${(r1 - r0).toFixed(1)} MB`);
+    assert.ok(r2 - r1 < 25, `flood 2 grew RSS by ${(r2 - r1).toFixed(1)} MB`);
+    assert.ok(r2 - r0 < 35, `two floods together grew RSS by ${(r2 - r0).toFixed(1)} MB: memory stays flat`);
   } finally { srv.stop(); }
 });

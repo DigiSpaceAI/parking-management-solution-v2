@@ -200,3 +200,52 @@ new one from **Replace link**. The link method doesn't use pairing at all.
 `pickHostingClientKey` rule (as the unknown-token feed buckets do since 03
 v1.3), once the Hosting egress list is confirmed for admin.parkflows.in on
 the D1 preview. Security review to note it.
+
+## 003 S3-6: a TV's display link stays in its address bar and history (Low, accepted for R1)
+
+**Found:** 2026-10-23, security review of feature 003 (`07-security-review.md` S3-6; again in the 5 Nov delta).
+**Status:** accepted for R1 (PM, 23 Oct, confirmed in the 5 Nov triage). Not fixed.
+
+**What happens.** A TV opened with its link (`https://admin.parkflows.in/tv#k=<token>`)
+copies the token to `localStorage`, but the `#k=` fragment stays in the
+address bar and the browser history. Anyone who can see the TV's URL bar or
+open its history can copy the credential. The fragment is never sent to the
+server or logged, and a copied link only reads that one display's feed,
+which is public signage already.
+
+**Since R2-1 / S3-9 (5 Nov):** a flooded copy of the link can't make other
+TVs get 429 (the credential's own 40/min bucket is counted first), so a
+leaked link can't take other screens down.
+
+**Workaround:** if a link may have been seen or copied, press **Replace link**
+for that display: the old link stops working within one poll.
+
+**Fix direction (later, frontend):** after storing the token,
+`history.replaceState(null, '', location.pathname + location.search)` in
+`src/display/credential.ts`, then check each TV model's browser (NFR-3).
+
+## 003 S3-10: some other invisible characters are still accepted in TV text (Low, accepted for R1)
+
+**Found:** 2026-11-05, security delta of feature 003 (`07-security-review.md` S3-10; code review R2-4).
+**Status:** accepted for R1 (PM triage, 5 Nov). Not fixed.
+
+**What happens.** Messages (S3-5) and the display location (S3-11) refuse
+the characters that can reverse or hide text: U+061C, U+200B–200F,
+U+202A–202E, U+2060–2069 and U+FEFF. A few other invisible characters are
+still accepted:
+- U+00AD soft hyphen;
+- U+034F combining grapheme joiner;
+- U+115F, U+1160, U+3164, U+FFA0 Hangul fillers;
+- U+180E Mongolian vowel separator;
+- U+E0000–E007F tag characters;
+- U+FFF9–FFFB interlinear annotation marks.
+
+None of them can reverse text, so the spoofing S3-5 targets isn't possible
+with them. They can only make two strings look the same. Only admins with
+`DISPLAYS:canEdit` can write this text, and every message is audit-logged
+with its text.
+
+**Fix direction (later):** extend the shared check in
+`src/server/textSafety.ts`, or allow-list by Unicode category (refuse `Cf`
+except ZWNJ/ZWJ where scripts need them, plus the Hangul fillers), and
+consider the same check for site names, which the TV also shows.

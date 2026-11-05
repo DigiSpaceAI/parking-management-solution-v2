@@ -124,3 +124,23 @@ test('B4b 6 no regression: the demo route still refuses non-Hosting calls (requi
     assert.equal(ok.status, 200, 'through Hosting it is accepted (honeypot)');
   } finally { x.srv.stop(); }
 });
+
+test('R2-1 / S3-9: 3,100 requests on one live link and on one retired link, then a different valid TV still gets 200', async () => {
+  const x = await setup();
+  try {
+    const flooded = await x.mk();
+    const other = await x.mk();
+    const replaced = await x.mk();
+    const retired = replaced.token;
+    assert.equal((await x.c.post("master", `/displays/${replaced.id}/replace`, {}, { site: x.site.id })).status, 200);
+    const live = tally(await burst(3100, () => x.poll(flooded.token)));
+    assert.equal(live[200], 40, `the live link gets its own 40: ${JSON.stringify(live)}`);
+    assert.equal(live[429], 3060);
+    assert.equal((await x.poll(other.token)).status, 200, 'a different valid TV after the live-link flood');
+    const old = tally(await burst(3100, () => x.poll(retired)));
+    assert.equal(old[410], 40, `the retired link gets its own 40 answers: ${JSON.stringify(old)}`);
+    assert.equal(old[429], 3060);
+    assert.equal((await x.poll(other.token)).status, 200, 'a different valid TV after the retired-link flood');
+    for (let i = 0; i < 20; i++) assert.equal((await x.poll(other.token)).status, 200, `and its next polls (${i + 1})`);
+  } finally { x.srv.stop(); }
+});

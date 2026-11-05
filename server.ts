@@ -2599,10 +2599,15 @@ app.get('/api/v1/screen/feed', (req, res) => {
   }
   const who = auth.kind === 'OK' ? `display ${auth.display.id}` : 'unknown';
   const siteOf = auth.kind === 'OK' ? auth.display.siteId : undefined;
-  const all = FEED_ALL_SCREENS.hit('screen:feed:all');
-  if (!all.ok) return refuseScreen(res, '/api/v1/screen/feed', who, siteOf, all);
+  // Code review R2-1 / security S3-9: the credential's own 40/min bucket is
+  // counted FIRST, and only a request it allows counts toward the shared
+  // 3,000/min known-credential total. So one flooded link, live or retired
+  // (retired ones stay known for 30 days), adds at most 40 a minute to the
+  // shared bucket and can't make other TVs get 429 (03 v1.3).
   const own = FEED_PER_CREDENTIAL.hit(`screen:feed:${auth.hash}`);
   if (!own.ok) return refuseScreen(res, '/api/v1/screen/feed', who, siteOf, own);
+  const all = FEED_ALL_SCREENS.hit('screen:feed:all');
+  if (!all.ok) return refuseScreen(res, '/api/v1/screen/feed', who, siteOf, all);
   if (auth.kind === 'OFF') return sendApiError(res, 410, 'ERR_SCREEN_OFF', 'This display has been switched off — ask your site admin.');
   const display = (auth as { display: ReturnType<typeof getDisplays>[number] }).display;
   const now = Date.now();

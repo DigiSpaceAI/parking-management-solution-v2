@@ -214,3 +214,22 @@ test('B2 at rest: only the SHA-256 is stored; replaced hashes are kept as retire
     assert.equal(d.tokenIssuedBy, MASTER_EMAIL);
   } finally { fx.stop(); }
 });
+
+test('S3-11: the display location refuses hidden direction / zero-width characters (as messages do, S3-5); Hindi is fine', async () => {
+  const before = (await c.get('adminA', '/displays', { site: F.A.id })).body.displays.length;
+  for (const cp of [0x202E, 0x2066, 0x200F, 0x061C, 0x200B, 0x200D, 0x2060, 0xFEFF]) {
+    const r = await create('adminA', F.A.id, { location: `Gate ${String.fromCodePoint(cp)}2 tixE` });
+    assert.equal(r.status, 400, `U+${cp.toString(16).toUpperCase()}`);
+    assert.match(r.body.errors.location, /hidden characters \(text-direction or zero-width marks\)/);
+  }
+  assert.equal((await c.get('adminA', '/displays', { site: F.A.id })).body.displays.length, before, 'nothing stored');
+  const ok = await create('adminA', F.A.id, { location: 'मुख्य प्रवेश द्वार · Main entrance' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.display.location, 'मुख्य प्रवेश द्वार · Main entrance');
+  const feed = await c.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': /#k=(.+)$/.exec(ok.body.link)[1] } });
+  assert.equal(feed.body.place, 'मुख्य प्रवेश द्वार · Main entrance', 'reaches the TV header as typed');
+  // Editing an existing display is checked too.
+  const edit = await c.post('adminA', `/displays/${ok.body.display.id}`, { location: `Exit ${String.fromCodePoint(0x202E)}A etaG` }, { site: F.A.id });
+  assert.equal(edit.status, 400); assert.ok(edit.body.errors.location);
+  assert.equal((await c.get('adminA', '/displays', { site: F.A.id })).body.displays.find((x) => x.id === ok.body.display.id).location, 'मुख्य प्रवेश द्वार · Main entrance', 'unchanged');
+});

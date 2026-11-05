@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
 import { selectedSlots } from './displayFeed';
+import { hasHiddenFormatChars } from './textSafety';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -4610,6 +4611,9 @@ export function validateDisplayInput(
   if (has('location')) {
     const raw = body.location === undefined || body.location === null ? '' : body.location;
     if (typeof raw !== 'string' || raw.trim().length > 80) errors.location = 'Keep the location to 80 characters or fewer.';
+    // 07 S3-11: the TV shows the location in its header, so it refuses the same
+    // hidden direction / zero-width characters as messages (S3-5).
+    else if (hasHiddenFormatChars(raw)) errors.location = 'Remove hidden characters (text-direction or zero-width marks) from the location.';
     else values.location = raw.trim();
   }
   if (has('pageSeconds')) {

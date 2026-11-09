@@ -61,6 +61,8 @@ import {
   LiveDisplay,
   DisplayMessage,
   DisplaySelection,
+  DisplayLayout,
+  DISPLAY_LAYOUTS,
   DisplayHours,
   DisplayArea,
   SiteSummaryRow,
@@ -4589,7 +4591,7 @@ export function getSiteName(siteId: string): string {
   return (getStore().sites || []).find((x) => x.id === siteId)?.siteName || '';
 }
 
-export type DisplayInput = Partial<Pick<LiveDisplay, 'name' | 'location' | 'selection' | 'pageSeconds' | 'hours'>>;
+export type DisplayInput = Partial<Pick<LiveDisplay, 'name' | 'location' | 'selection' | 'pageSeconds' | 'hours' | 'layout'>>;
 
 // Validates the editable fields present in `body` (all of them when
 // `requireAll`). Every level, area and slot must exist at `siteId`, so a Site A
@@ -4627,6 +4629,11 @@ export function validateDisplayInput(
     else if (h && h.mode === 'DAILY' && typeof h.on === 'string' && typeof h.off === 'string' && HHMM.test(h.on) && HHMM.test(h.off) && h.on !== h.off) {
       values.hours = { mode: 'DAILY', on: h.on, off: h.off };
     } else errors.hours = 'Choose "Always on", or on and off times (HH:mm, IST) that are different.';
+  }
+  // v1.5 (AC-38): optional on create too (absent = SLOT_CARDS, nothing stored).
+  if (body.layout !== undefined) {
+    if (typeof body.layout === 'string' && (DISPLAY_LAYOUTS as readonly string[]).includes(body.layout)) values.layout = body.layout as DisplayLayout;
+    else errors.layout = 'Choose a layout.';
   }
   if (has('selection')) {
     const sel = (body.selection && typeof body.selection === 'object' ? body.selection : {}) as Record<string, unknown>;
@@ -4693,6 +4700,7 @@ export function createDisplay(siteId: string, values: Required<DisplayInput>, ac
     updatedAt: now,
     updatedBy: actor,
   };
+  if (values.layout && values.layout !== 'SLOT_CARDS') display.layout = values.layout;
   storeData.displays.push(display);
   saveDisplay(display);
   return display;
@@ -4742,6 +4750,15 @@ export function updateDisplay(display: LiveDisplay, values: DisplayInput, actor:
     if (JSON.stringify(values[k]) !== JSON.stringify(display[k])) {
       (display as any)[k] = values[k];
       changed.push(k);
+    }
+  }
+  // v1.5 (AC-38/47): an absent layout reads as SLOT_CARDS; the same value is a
+  // no-op. The audit names the change ("layout: SLOT_CARDS → SUMMARY").
+  if (values.layout !== undefined) {
+    const before = display.layout || 'SLOT_CARDS';
+    if (values.layout !== before) {
+      display.layout = values.layout;
+      changed.push(`layout: ${before} → ${values.layout}`);
     }
   }
   if (changed.length > 0) {

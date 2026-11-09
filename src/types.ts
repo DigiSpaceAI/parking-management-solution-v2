@@ -450,6 +450,10 @@ export interface DisplaySelection {
 }
 
 /** A TV / signage screen of one site. The TV credential is never stored, only its SHA-256. */
+// 003 v1.5 (US-19/20): how a display draws. Absent on a record = SLOT_CARDS.
+export type DisplayLayout = 'SLOT_CARDS' | 'SUMMARY' | 'SUMMARY_CARDS';
+export const DISPLAY_LAYOUTS: readonly DisplayLayout[] = ['SLOT_CARDS', 'SUMMARY', 'SUMMARY_CARDS'];
+
 export interface LiveDisplay {
   id: string; // 'dsp-' + random
   siteId: string; // from resolveSite() at create; never from a body
@@ -468,6 +472,7 @@ export interface LiveDisplay {
   lastSeenAt?: string; // persisted at most every 10 min
   forcedFull?: { setAt: string; setBy: string; endsAt: string | null } | null; // US-16
   slotRules?: { hidden: string[]; pinned: string[] }; // US-17 (separable)
+  layout?: DisplayLayout; // v1.5; absent = 'SLOT_CARDS' (no back-fill)
   createdAt: string;
   createdBy: string;
   updatedAt: string;
@@ -507,6 +512,12 @@ export interface FeedSlot {
   pinned?: true; // US-17
 }
 
+export interface FeedSummary {
+  types: SlotType[];
+  rows: { level: string; cells: { type: SlotType; free: number; total: number }[]; free: number; total: number }[];
+  totals: { type: SlotType; free: number; total: number }[];
+}
+
 export interface DisplayFeed {
   v: string; // content hash of everything except serverTime
   serverTime: string;
@@ -515,7 +526,10 @@ export interface DisplayFeed {
   siteName: string;
   hours: DisplayHours;
   pageSeconds: number;
+  layout: DisplayLayout; // v1.5: always sent
   counts: { free: number; total: number; groups: { label: string; free: number; total: number }[] };
+  // v1.5: OPEN state with SUMMARY / SUMMARY_CARDS only. Counts and level/type codes only (AC-45).
+  summary?: FeedSummary;
   override: {
     message: { id: string; text: string; mode: 'BANNER' | 'FULL'; endsAt: string | null } | null;
     forcedFull: { endsAt: string | null } | null;

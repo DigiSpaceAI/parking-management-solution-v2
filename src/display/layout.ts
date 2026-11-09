@@ -141,3 +141,16 @@ export function footerText(layout: GridLayout, totalSlots: number, opts: { banne
   const shown = 'showing ' + layout.cards.length + ' of ' + groupIndian(totalSlots) + ' slots';
   return 'Vacant first, then occupied, reserved, maintenance · ' + shown + (opts.banner ? ' while a message is shown' : '');
 }
+
+/**
+ * 003 v1.5 (AC-46): summary rows split into pages of `perPage` (6), in the
+ * feed's level order. The Total row and Free now always cover ALL rows, so the
+ * caller takes them from the feed's `summary.totals`, never from a page. One
+ * page (no paging) when there are no more rows than fit. Pure; F11 renders it.
+ */
+export function summaryPages<T>(rows: T[], perPage?: number): T[][] {
+  const size = perPage && perPage > 0 ? Math.floor(perPage) : 6;
+  const pages: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) pages.push(rows.slice(i, i + size));
+  return pages.length ? pages : [[]];
+}

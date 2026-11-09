@@ -138,6 +138,7 @@ import {
 } from './src/server/security';
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
 import { isFirestoreConfigured } from './src/server/firestoreClient';
+import { countSlots } from './src/utils/slotCounts';
 import { isMasterAdmin } from './src/utils/rbac';
 
 // Initialize PMS Store with 1,080 parking inventory slots
@@ -2243,10 +2244,11 @@ function displayRow(d: ReturnType<typeof getDisplays>[number], now = Date.now())
     selectionSummary: selectionSummary(d),
     slotCount: covered.length,
     missingSlots: missingSlotIds(d, siteSlots).length,
-    freeNow: covered.filter((s) => s.status === 'VACANT').length,
+    freeNow: countSlots(covered).free, // v1.5: the shared helper (AC-42)
     hiddenCount: selected.length - covered.length, // selected slots hidden on this display
     pageSeconds: d.pageSeconds,
     hours: d.hours,
+    layout: d.layout || 'SLOT_CARDS', // v1.5: absent = slot cards
     status: d.status,
     setUp: d.tokenHash !== null,
     online: d.status === 'ACTIVE' && !!lastSeenAt && now - Date.parse(lastSeenAt) <= ONLINE_WINDOW_MS,

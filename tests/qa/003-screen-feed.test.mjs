@@ -34,7 +34,8 @@ after(() => srv?.stop());
 
 // ------------------------------------------------------------------ B3
 const ALLOWED = new Set(['v', 'serverTime', 'state', 'place', 'siteName', 'hours', 'mode', 'on', 'off', 'pageSeconds', 'counts', 'free', 'total', 'groups', 'label',
-  'override', 'message', 'forcedFull', 'slots', 'code', 'level', 'area', 'type', 'ev', 'parkingType', 'puzzleNumber', 'palletLevel', 'status', 'heightM', 'lengthM', 'plate', 'pinned']); // + override.message's id, text, mode, endsAt (003-overrides)
+  'override', 'message', 'forcedFull', 'slots', 'code', 'level', 'area', 'type', 'ev', 'parkingType', 'puzzleNumber', 'palletLevel', 'status', 'heightM', 'lengthM', 'plate', 'pinned',
+  'layout']); // + override.message's id, text, mode, endsAt (003-overrides); v1.5 adds `layout` (summary keys: 003-summary)
 
 test('B3 NFR-5: the feed carries only allow-listed keys; plate only on Occupied; no ids, people, times or free text', async () => {
   const d = await mkDisplay(sel({ levels: ['B1', 'B2'] }));

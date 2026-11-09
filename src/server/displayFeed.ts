@@ -2,7 +2,10 @@
 // Pure functions over the in-memory store. 03-tech-design v1.2 "The feed",
 // "Zones" (areas = level + parking type, no free-text matching).
 import crypto from 'node:crypto';
-import { LiveDisplay, ParkingSlot, ParkingType, DisplayFeed, FeedSlot, DisplayHours, SlotStatus } from '../types';
+import { LiveDisplay, ParkingSlot, ParkingType, DisplayFeed, FeedSlot, DisplayHours, SlotStatus, FeedSummary } from '../types';
+import { countSlots, isVacant, LEVEL_ORDER } from '../utils/slotCounts';
+
+export { LEVEL_ORDER };
 
 export const ONLINE_WINDOW_MS = 120 * 1000; // AC-17: offline = not seen for 2 minutes
 
@@ -12,7 +15,6 @@ const CODE_COLLATOR = new Intl.Collator('en', { numeric: true, sensitivity: 'bas
 export const byCode = (a: string, b: string): number => CODE_COLLATOR.compare(a, b);
 export const sortByCode = (slots: ParkingSlot[]): ParkingSlot[] => [...slots].sort((a, b) => byCode(a.slotNumber, b.slotNumber));
 
-export const LEVEL_ORDER: ParkingSlot['basement'][] = ['B1', 'B2', 'B3', 'Ground', 'Driveway'];
 const PARKING_TYPE_LABEL: Record<ParkingType, string> = { PUZZLE: 'Puzzles', STACK: 'Stackers', GROUND: 'Open bays' };
 
 export const areaLabel = (level: string, parkingType: ParkingType): string => `${level} · ${PARKING_TYPE_LABEL[parkingType] || parkingType}`;
@@ -119,6 +121,17 @@ export function toFeedSlot(s: ParkingSlot, pinned: boolean): FeedSlot {
   return out;
 }
 
+/** v1.5 (AC-39..AC-42): the summary grid, counted with the shared countSlots. */
+export function feedSummary(slots: ParkingSlot[]): FeedSummary {
+  const c = countSlots(slots);
+  const cell = (type: FeedSummary['types'][number], x?: { free: number; total: number }) => ({ type, free: x ? x.free : 0, total: x ? x.total : 0 });
+  return {
+    types: c.types,
+    rows: c.rows.map((r) => ({ level: r.level, cells: c.types.map((t) => cell(t, r.byType[t])), free: r.free, total: r.total })),
+    totals: c.types.map((t) => cell(t, c.byType[t])),
+  };
+}
+
 export interface FeedInputs {
   display: LiveDisplay;
   slots: ParkingSlot[]; // the display's selected slots, SORTED BY CODE (sortByCode), hidden ones removed
@@ -135,12 +148,16 @@ export interface FeedInputs {
  */
 export function buildFeed(i: FeedInputs): { feed: Omit<DisplayFeed, 'serverTime'>; json: string } {
   const d = i.display;
+  const layout = d.layout || 'SLOT_CARDS';
+  // v1.5: `layout` sits after `override`, so a SLOT_CARDS body is the 9d5596d
+  // body with only `"layout":"SLOT_CARDS"` added (regression guard).
   const base = {
     place: d.location || '',
     siteName: i.siteName,
     hours: d.hours,
     pageSeconds: d.pageSeconds,
     override: i.override,
+    layout,
   };
   let body: Omit<DisplayFeed, 'serverTime' | 'v'>;
   if (!isOpenAt(d.hours, i.nowMs)) {
@@ -160,7 +177,7 @@ export function buildFeed(i: FeedInputs): { feed: Omit<DisplayFeed, 'serverTime'
       const key = useArea ? `a:${areaKey}` : `l:${s.basement}`;
       const g = groups.get(key) || { label: useArea ? areaLabel(s.basement, s.parkingType) : s.basement, rank: levelRank(s.basement), sub: useArea ? 1 : 0, free: 0, total: 0 };
       g.total++;
-      if (s.status === 'VACANT') g.free++;
+      if (isVacant(s)) g.free++;
       groups.set(key, g);
     }
     // Input is already in code order: bucket by status, pinned first within
@@ -173,17 +190,20 @@ export function buildFeed(i: FeedInputs): { feed: Omit<DisplayFeed, 'serverTime'
     }
     const sorted: ParkingSlot[] = [];
     STATUS_ORDER.forEach((_, k) => { sorted.push(...pinnedBuckets[k], ...buckets[k]); });
+    const all = countSlots(i.slots);
     body = {
       state: 'OPEN',
       ...base,
       counts: {
-        free: i.slots.filter((s) => s.status === 'VACANT').length,
-        total: i.slots.length,
+        free: all.free,
+        total: all.total,
         groups: [...groups.values()]
           .sort((a, b) => a.rank - b.rank || a.sub - b.sub || byCode(a.label, b.label))
           .map(({ label, free, total }) => ({ label, free, total })),
       },
-      slots: sorted.map((s) => toFeedSlot(s, i.pinned.has(s.id))),
+      // v1.5 (AC-45): SUMMARY sends counts only, never the slots.
+      ...(layout === 'SLOT_CARDS' ? {} : { summary: feedSummary(i.slots) }),
+      ...(layout === 'SUMMARY' ? {} : { slots: sorted.map((s) => toFeedSlot(s, i.pinned.has(s.id))) }),
     };
   }
   const json = JSON.stringify(body);

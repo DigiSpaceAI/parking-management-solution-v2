@@ -25,6 +25,13 @@
         "**/.*"
       ],
       "trailingSlash": true,
+      "redirects": [
+        {
+          "regex": "^/tv/?$",
+          "destination": "https://admin.parkflows.in/tv",
+          "type": 302
+        }
+      ],
       "headers": [
         {
           "source": "**",

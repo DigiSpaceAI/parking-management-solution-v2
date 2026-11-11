@@ -11,6 +11,9 @@ import { displaysApi, type Level, type DisplayInput, type DisplayOptions, type D
 import { areaLabel, draftFeed, isEmptySelection, levelLabel, selectedSlots } from './draft';
 import { TvPreview } from './TvPreview';
 import { SlotRulesSection, type SlotRules } from './SlotRules';
+import { LayoutPicker, SUMMARY_CARDS_MAX_LEVELS, tooManyForCards } from './LayoutPicker';
+import { countSlots } from '../../utils/slotCounts';
+import type { DisplayLayout } from './api';
 
 export interface DisplayEditorProps {
   /** Edit this display; null = create. */
@@ -63,6 +66,8 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
   // US-17 hide / pin on this display only (C11). A copy keeps the rules of the display it copies.
   const initialRules: SlotRules = seed?.slotRules ? { hidden: [...seed.slotRules.hidden], pinned: [...seed.slotRules.pinned] } : { hidden: [], pinned: [] };
   const [rules, setRules] = useState<SlotRules>(initialRules);
+  // 03 v1.5 (AC-38): default Slot cards; a copy keeps the layout of the display it copies.
+  const [layout, setLayout] = useState<DisplayLayout>(seed?.layout ?? 'SLOT_CARDS');
 
   // Options (levels, zones, slots) once; the site's live slots with the same 15 s refresh as the console.
   useEffect(() => {
@@ -90,14 +95,16 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
   // The selection before hiding (listed in "Slots on this display"), and what can appear on screen.
   const inSel = useMemo(() => selectedSlots(slots, sel), [slots, sel]);
   const chosen = useMemo(() => inSel.filter((s) => !rules.hidden.includes(s.id)), [inSel, rules.hidden]);
-  const freeNow = chosen.filter((s) => s.status === 'VACANT').length;
+  // 03 v1.5 (AC-42, S-3): the same countSlots as the TV feed and Live parking.
+  const counts = useMemo(() => countSlots(chosen), [chosen]);
+  const freeNow = counts.free;
   const feed = useMemo(
     () =>
       live.updatedAt
-        ? draftFeed({ slots, selection: sel, place: location, siteName: ctx.activeSite?.siteName, hours, pageSeconds: Number(pageSeconds) || 8, hidden: rules.hidden, pinned: rules.pinned })
+        ? draftFeed({ slots, selection: sel, place: location, siteName: ctx.activeSite?.siteName, hours, pageSeconds: Number(pageSeconds) || 8, hidden: rules.hidden, pinned: rules.pinned, layout })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [slots, sel, location, ctx.activeSite?.siteName, hoursMode, on, off, pageSeconds, live.updatedAt, rules]
+    [slots, sel, location, ctx.activeSite?.siteName, hoursMode, on, off, pageSeconds, live.updatedAt, rules, layout]
   );
 
   const toggleLevel = (level: Level) =>
@@ -136,6 +143,7 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
       if (!HHMM.test(off)) e.off = 'Use 24-hour time, like 23:00.';
       if (HHMM.test(on) && on === off) e.off = 'Choose an off time different from the on time.';
     }
+    if (layout === 'SUMMARY_CARDS' && counts.rows.length > SUMMARY_CARDS_MAX_LEVELS) e.layout = tooManyForCards(counts.rows.length);
     return e;
   };
 
@@ -145,7 +153,7 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
     setErrors(e);
     setFormError(null);
     if (Object.keys(e).length) return;
-    const input: DisplayInput = { name: name.trim(), location: location.trim(), selection: sel, pageSeconds: Number(pageSeconds), hours };
+    const input: DisplayInput = { name: name.trim(), location: location.trim(), selection: sel, pageSeconds: Number(pageSeconds), hours, layout };
     setSaving(true);
     try {
       const r = display ? await displaysApi.update(display.id, input) : await displaysApi.create(input);
@@ -318,6 +326,17 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
             )}
           </fieldset>
 
+          <LayoutPicker
+            value={layout}
+            counts={counts}
+            readOnly={ctx.canWrite ? null : ctx.writeDisabledReason}
+            error={errors.layout}
+            onChange={(l) => {
+              setLayout(l);
+              clear('layout');
+            }}
+          />
+
           <div className="pf-form-grid">
             <div className="pf-field">
               <span className="pf-field-label" id="pf-vc-label">
@@ -388,10 +407,14 @@ export const DisplayEditor: React.FC<DisplayEditorProps> = ({ display, from, oth
             </b>{' '}
             in this selection · <b>{formatNumber(freeNow)} free now</b>
           </p>
-          <p className="pf-card-note">
-            The screen fits 12 slot cards. Free slots come first by slot code; when more than 12 are free, only free slots are shown, on pages that change every{' '}
-            {Number(pageSeconds) >= 5 && Number(pageSeconds) <= 30 ? Number(pageSeconds) : 8} s.
-          </p>
+          {layout === 'SUMMARY' ? (
+            <p className="pf-card-note">Free = vacant slots only. Up to 6 basements fit on one screen; more change page every {Number(pageSeconds) >= 5 && Number(pageSeconds) <= 30 ? Number(pageSeconds) : 8} s, and the totals always cover all of them.</p>
+          ) : (
+            <p className="pf-card-note">
+              The screen fits {layout === 'SUMMARY_CARDS' ? 8 : 12} slot cards. Free slots come first by slot code; when more are free, only free slots are shown, on pages that change every{' '}
+              {Number(pageSeconds) >= 5 && Number(pageSeconds) <= 30 ? Number(pageSeconds) : 8} s.
+            </p>
+          )}
         </aside>
       </div>
     </>

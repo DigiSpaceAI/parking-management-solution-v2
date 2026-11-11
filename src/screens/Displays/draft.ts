@@ -9,7 +9,8 @@
 import type { ParkingSlot, SlotStatus } from '../../types';
 import type { LiveSlot } from '../../utils/slots';
 import { heightOf } from '../../utils/slots';
-import type { DisplayFeed, DisplayHours, FeedSlot } from '../../display/types';
+import type { DisplayFeed, DisplayHours, FeedLayout, FeedSlot, FeedSummary } from '../../display/types';
+import { countSlots, isVacant, type SlotLike } from '../../utils/slotCounts';
 import type { DisplaySelection } from './api';
 
 const ORDER: Record<SlotStatus, number> = { VACANT: 0, OCCUPIED: 1, RESERVED: 2, MAINTENANCE: 3 };
@@ -40,6 +41,20 @@ export function isEmptySelection(sel: DisplaySelection): boolean {
   return !sel.levels.length && !sel.areas.length && !sel.slotIds.length;
 }
 
+/**
+ * 003 v1.5 (AC-39..AC-42): the summary grid, counted with the shared countSlots — the same shape
+ * and numbers as the server's feedSummary (src/server/displayFeed.ts; 003-console checks parity).
+ */
+export function summaryOf(slots: SlotLike[]): FeedSummary {
+  const c = countSlots(slots);
+  const cell = (type: string, x?: { free: number; total: number }) => ({ type, free: x ? x.free : 0, total: x ? x.total : 0 });
+  return {
+    types: c.types,
+    rows: c.rows.map((r) => ({ level: r.level, cells: c.types.map((t) => cell(t, r.byType[t])), free: r.free, total: r.total })),
+    totals: c.types.map((t) => cell(t, c.byType[t])),
+  };
+}
+
 export function draftFeed(input: {
   slots: LiveSlot[];
   selection: DisplaySelection;
@@ -50,7 +65,10 @@ export function draftFeed(input: {
   hidden?: string[];
   pinned?: string[];
   now?: number;
+  /** 03 v1.5: the layout being edited (default slot cards). */
+  layout?: FeedLayout;
 }): DisplayFeed {
+  const layout: FeedLayout = input.layout || 'SLOT_CARDS';
   const pinned = new Set(input.pinned || []);
   const chosen = selectedSlots(input.slots, input.selection, input.hidden).sort(
     (a, b) =>
@@ -70,7 +88,7 @@ export function draftFeed(input: {
       groups.push(g);
     }
     g.total += 1;
-    if (s.status === 'VACANT') g.free += 1;
+    if (isVacant(s)) g.free += 1;
   }
   const feedSlots: FeedSlot[] = chosen.map((s) => {
     const f: FeedSlot = {
@@ -100,12 +118,16 @@ export function draftFeed(input: {
     hours: input.hours,
     pageSeconds: input.pageSeconds,
     override: { message: null, forcedFull: null },
+    layout,
   };
   if (!feedSlots.length) return { ...base, state: 'EMPTY', counts: { free: 0, total: 0, groups: [] } };
+  const all = countSlots(chosen);
   return {
     ...base,
     state: 'OPEN', // the preview always shows the slots, even outside display hours, so the selection can be checked
-    counts: { free: feedSlots.filter((s) => s.status === 'VACANT').length, total: feedSlots.length, groups: groups.filter((g) => g.total > 0).map(({ label, free, total }) => ({ label, free, total })) },
-    slots: feedSlots,
+    counts: { free: all.free, total: all.total, groups: groups.filter((g) => g.total > 0).map(({ label, free, total }) => ({ label, free, total })) },
+    // 03 v1.5 (AC-45): Summary carries counts only, never the slots; the other summary layout carries both.
+    ...(layout === 'SLOT_CARDS' ? {} : { summary: summaryOf(chosen) }),
+    ...(layout === 'SUMMARY' ? {} : { slots: feedSlots }),
   };
 }

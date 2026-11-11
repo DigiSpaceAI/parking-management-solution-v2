@@ -698,6 +698,31 @@
   .pf-field-warning { font: var(--type-small); color: var(--warning-700); margin: 0; }
   .pf-indent { padding-left: var(--space-6); }
   .pf-text-muted { color: var(--text-muted); }
+  /* 003 F10 (UX E1): Layout — three radio cards with a small picture each. */
+  .pf-layout-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+  .pf-layout-card { display: flex; flex-direction: column; gap: var(--space-2); position: relative; padding: var(--space-3); border: 1px solid var(--line-300); border-radius: var(--radius-md); cursor: pointer; background: var(--surface-0); }
+  /* The native radio covers the whole card (the card is the target); the dot shows its state. */
+  .pf-layout-card input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+  .pf-layout-dot { position: absolute; top: var(--space-3); right: var(--space-3); width: var(--space-5); height: var(--space-5); border-radius: var(--radius-full); border: 2px solid var(--line-300); background: var(--surface-0); box-sizing: border-box; }
+  .pf-layout-card.is-selected .pf-layout-dot { border: 6px solid var(--teal-600); }
+  .pf-layout-card.is-disabled .pf-layout-dot { background: var(--surface-50); }
+  .pf-layout-card:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+  .pf-layout-card.is-selected { border-color: var(--teal-600); box-shadow: inset 0 0 0 1px var(--teal-600); background: var(--teal-50); }
+  .pf-layout-card.is-disabled { cursor: not-allowed; background: var(--surface-25); }
+  .pf-layout-card-text { display: flex; flex-direction: column; gap: var(--space-1); }
+  .pf-layout-card-name { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font: var(--type-body-strong); color: var(--ink); padding-right: var(--space-6); }
+  .pf-layout-card-desc { font: var(--type-small); color: var(--text-secondary); }
+  .pf-layout-card-note { font: var(--type-small); color: var(--warning-700); font-weight: 600; }
+  .pf-layout-pic { display: flex; flex-direction: column; gap: var(--space-1); width: calc(var(--space-16) + var(--space-8)); height: calc(var(--space-12) + var(--space-1)); padding: var(--space-1); border-radius: var(--radius-sm); background: var(--ink); }
+  .pf-layout-pic-grid, .pf-layout-pic-cards { display: grid; gap: 2px; flex: 1 1 0; min-height: 0; }
+  .pf-layout-pic-grid { grid-template-columns: repeat(3, 1fr); }
+  .pf-layout-pic-cards { grid-template-columns: repeat(3, 1fr); }
+  .pf-layout-pic--summary_cards .pf-layout-pic-cards { grid-template-columns: repeat(4, 1fr); }
+  .pf-layout-pic-grid i { background: var(--navy-100); border-radius: 1px; }
+  .pf-layout-pic-cards i { background: var(--surface-0); border-radius: 1px; }
+  @media (max-width: 767.98px) {
+    .pf-layout-cards { grid-template-columns: minmax(0, 1fr); }
+  }
   @media (max-width: 1279.98px) {
     .pf-display-edit { flex-direction: column; align-items: stretch; }
     .pf-display-preview { width: 100%; position: static; }

@@ -27,6 +27,18 @@ export function selectionText(d: Pick<DisplayRow, 'selection' | 'slotCount'>): s
   return parts.join(' · ');
 }
 
+/** 03 v1.5 (UX E1): the layout words. */
+export const LAYOUT_WORD: Record<NonNullable<DisplayRow['layout']>, string> = { SLOT_CARDS: 'Slot cards', SUMMARY: 'Summary', SUMMARY_CARDS: 'Summary + slot cards' };
+
+/**
+ * The Displays list "Shows" line with the layout (UX E1: "Summary · B1–B6 · 360 slots"). Slot
+ * cards, the default, isn't named, so existing displays read exactly as before.
+ */
+export function showsText(d: Pick<DisplayRow, 'selection' | 'slotCount' | 'layout'>): string {
+  const what = selectionText(d);
+  return d.layout && d.layout !== 'SLOT_CARDS' ? `${LAYOUT_WORD[d.layout]} · ${what}` : what;
+}
+
 /** "seen 3s ago" / "last seen 18 min ago" / "no screen yet" / "link switched off". */
 export function seenText(d: DisplayRow, now: number): string {
   const st = displayState(d);

@@ -6,10 +6,10 @@
  * Stored shapes come from src/types.ts (backend B1/B7); the row, options and summary shapes
  * below are what the console routes in server.ts return.
  */
-import type { DisplayArea, DisplayMessage as StoredDisplayMessage, DisplaySelection, ParkingSlot, ParkingType, SlotType } from '../../types';
+import type { DisplayArea, DisplayLayout, DisplayMessage as StoredDisplayMessage, DisplaySelection, ParkingSlot, ParkingType, SlotType } from '../../types';
 import type { DisplayFeed, DisplayHours } from '../../display/types';
 
-export type { DisplayArea, DisplaySelection };
+export type { DisplayArea, DisplayLayout, DisplaySelection };
 export type VehicleClass = DisplaySelection['vehicleClass'];
 /** A level (B1, B2, …, Ground, Driveway). */
 export type Level = ParkingSlot['basement'];
@@ -46,6 +46,8 @@ export interface DisplayRow {
   /** US-17 (C11): the ids, so the editor can show and change the rules. */
   slotRules?: { hidden: string[]; pinned: string[] };
   override?: DisplayOverrideSummary | null;
+  /** 03 v1.5 (AC-38): absent = 'SLOT_CARDS'. */
+  layout?: DisplayLayout;
 }
 
 export interface DisplayOptions {
@@ -60,6 +62,8 @@ export interface DisplayInput {
   selection: DisplaySelection;
   pageSeconds: number;
   hours: DisplayHours;
+  /** 03 v1.5 (AC-38). */
+  layout: DisplayLayout;
 }
 
 /** A DisplayMessage as GET /displays/messages lists it. */

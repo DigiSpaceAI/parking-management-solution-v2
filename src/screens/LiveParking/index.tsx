@@ -5,6 +5,7 @@ import { formatNumber } from '../../utils/format';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
 import { compareSlots, isPuzzle, puzzleIdOf, slotInLevel, type LevelId, type LiveSlot } from '../../utils/slots';
+import { countSlots } from '../../utils/slotCounts';
 import { SlotsView, type Layout } from './SlotsView';
 import { PuzzleView, type PuzzleModule } from './PuzzleView';
 import { SlotModal } from './SlotModal';
@@ -128,20 +129,28 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
 
   const sum = {
     total: levelSlots.length,
-    vacant: levelSlots.filter((s) => s.status === 'VACANT').length,
+    vacant: countSlots(levelSlots).free,
     occupied: levelSlots.filter((s) => s.status === 'OCCUPIED').length,
     reserved: levelSlots.filter((s) => s.status === 'RESERVED').length,
     maintenance: levelSlots.filter((s) => s.status === 'MAINTENANCE').length,
   };
-  const summary = data?.summary;
-  const levels = summary
-    ? [
-        { id: 'ALL', label: 'All parking', free: slots.filter((s) => s.status === 'VACANT').length, total: summary.total },
-        { id: 'B1', label: 'Basement B1', ...summary.b1 },
-        { id: 'B2', label: 'Basement B2', ...summary.b2 },
-        { id: 'B3', label: 'Basement B3', ...summary.b3 },
-        { id: 'Ground', label: 'Ground / driveway', ...summary.ground },
-      ].filter((l) => l.id === 'ALL' || l.total > 0)
+  // 003 v1.5 (AC-42, S-3): every free count goes through the shared countSlots, over the same
+  // slots this page shows, so the level buttons match the TV for the same slots.
+  const levels = data
+    ? (
+        [
+          { id: 'ALL', label: 'All parking' },
+          { id: 'B1', label: 'Basement B1' },
+          { id: 'B2', label: 'Basement B2' },
+          { id: 'B3', label: 'Basement B3' },
+          { id: 'Ground', label: 'Ground / driveway' },
+        ] as const
+      )
+        .map((l) => {
+          const c = countSlots(slots.filter((s) => slotInLevel(s, l.id)));
+          return { id: l.id, label: l.label, free: c.free, total: c.total };
+        })
+        .filter((l) => l.id === 'ALL' || l.total > 0)
     : [];
 
   // Any filter change goes back to page 1 (AC-14).

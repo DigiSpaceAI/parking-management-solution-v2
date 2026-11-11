@@ -111,3 +111,40 @@ test('end times are sent as the IST wall time with +05:30; the date list starts 
   assert.match(days[1].label, /^Tomorrow, 23 Oct 2026$/);
   assert.equal(istDays(31).length, 31, 'up to 31 days ahead');
 });
+
+// ---- 003 v1.5 F10 (US-19/20, AC-38, AC-42, AC-45) ------------------------------------------
+test('F10 draft preview: layout is sent; Summary carries counts only, Summary + slot cards both (AC-38, AC-45)', () => {
+  const base = feedOf(sel({ levels: ['B1', 'B2'] }));
+  assert.equal(base.layout, 'SLOT_CARDS', 'default slot cards');
+  assert.equal(base.summary, undefined);
+  const sum = feedOf(sel({ levels: ['B1', 'B2'] }), { layout: 'SUMMARY' });
+  assert.equal(sum.layout, 'SUMMARY');
+  assert.equal('slots' in sum, false, 'no slots key at all');
+  assert.ok(!/B1-0|B2-0|KA01|MH12/.test(JSON.stringify(sum)), 'no slot code or plate anywhere');
+  assert.deepEqual(sum.summary.types, ['SEDAN', 'TWO_WHEELER', 'EV']);
+  assert.deepEqual(sum.summary.rows.map((r) => [r.level, r.free, r.total]), [['B1', 1, 4], ['B2', 2, 3]]);
+  assert.deepEqual(sum.summary.rows[0].cells, [{ type: 'SEDAN', free: 1, total: 4 }, { type: 'TWO_WHEELER', free: 0, total: 0 }, { type: 'EV', free: 0, total: 0 }]);
+  assert.deepEqual(sum.summary.totals, [{ type: 'SEDAN', free: 1, total: 5 }, { type: 'TWO_WHEELER', free: 1, total: 1 }, { type: 'EV', free: 1, total: 1 }]);
+  const both = feedOf(sel({ levels: ['B1', 'B2'] }), { layout: 'SUMMARY_CARDS' });
+  assert.deepEqual(both.slots, base.slots);
+  assert.deepEqual(both.summary, sum.summary);
+  assert.deepEqual(both.counts, base.counts, 'counts unchanged by the layout');
+  const hidden = feedOf(sel({ levels: ['B2'] }), { layout: 'SUMMARY', hidden: ['6'] });
+  assert.deepEqual(hidden.summary.types, ['SEDAN', 'EV'], 'a hidden slot is left out of the summary (and its type column)');
+});
+
+test('F10 the console preview summary equals the server feed summary (one countSlots, AC-42)', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'pf-console-srv-'));
+  await esbuild.build({ entryPoints: [join(ROOT, 'src/server/displayFeed.ts')], bundle: true, format: 'esm', platform: 'node', packages: 'external', outfile: join(out, 'feed.mjs'), logLevel: 'silent' });
+  const { feedSummary } = await import(pathToFileURL(join(out, 'feed.mjs')).href);
+  for (const pick of [SLOTS, SLOTS.slice(0, 4), SLOTS.filter((x) => x.basement === 'B2')]) assert.deepEqual(mod.draft.summaryOf(pick), feedSummary(pick));
+});
+
+test('F10 Displays "Shows" line names a non-default layout (UX E1)', () => {
+  const { showsText } = mod.status;
+  const d = { selection: sel({ levels: ['B1', 'B2'] }), slotCount: 360 };
+  assert.equal(showsText(d), 'B1, B2 · 360 slots', 'slot cards (default) reads as before');
+  assert.equal(showsText({ ...d, layout: 'SLOT_CARDS' }), 'B1, B2 · 360 slots');
+  assert.equal(showsText({ ...d, layout: 'SUMMARY' }), 'Summary · B1, B2 · 360 slots');
+  assert.equal(showsText({ ...d, layout: 'SUMMARY_CARDS' }), 'Summary + slot cards · B1, B2 · 360 slots');
+});

@@ -668,6 +668,86 @@ test('summary stale (AC-44): the grid stays at 30 s; at 120 s no summary and no 
   assert.equal(m.grid, null);
 });
 
+// ---- a tiny DOM, enough for render.ts (no dependency) ---------------------------------------
+class FakeNode {
+  constructor(tag) { this.tagName = tag; this.childNodes = []; this.attrs = {}; this.parentNode = null; this._text = ''; this.style = { setProperty() {} }; }
+  get firstChild() { return this.childNodes[0] || null; }
+  get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; }
+  appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.childNodes.push(c); return c; }
+  insertBefore(c, ref) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; const i = ref ? this.childNodes.indexOf(ref) : -1; if (i < 0) this.childNodes.push(c); else this.childNodes.splice(i, 0, c); return c; }
+  removeChild(c) { const i = this.childNodes.indexOf(c); if (i >= 0) this.childNodes.splice(i, 1); c.parentNode = null; return c; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  hasAttribute(k) { return k in this.attrs; }
+  removeAttribute(k) { delete this.attrs[k]; }
+  set className(v) { this.attrs.class = v; }
+  get className() { return this.attrs.class || ''; }
+  set id(v) { this.attrs.id = v; }
+  set textContent(v) { this.childNodes = []; this._text = String(v); }
+  get textContent() { return this._text + this.childNodes.map((c) => c.textContent).join(''); }
+  get hidden() { let n = this; while (n) { if (n.hasAttribute && n.hasAttribute('hidden')) return true; n = n.parentNode; } return false; }
+  find(pred, out = []) { if (pred(this)) out.push(this); for (const c of this.childNodes) c.find(pred, out); return out; }
+}
+const byClass = (root, c) => root.find((n) => (' ' + n.className + ' ').indexOf(' ' + c + ' ') >= 0);
+let renderMod = null;
+async function loadRender() {
+  if (renderMod) return renderMod;
+  globalThis.document = { createElement: (t) => new FakeNode(t), createElementNS: (ns, t) => new FakeNode(t) };
+  const out = mkdtempSync(join(tmpdir(), 'pf-tv-render-'));
+  await esbuild.build({ entryPoints: [join(ROOT, 'src/display/render.ts')], bundle: true, format: 'esm', platform: 'neutral', outdir: out, logLevel: 'silent', loader: { '.svg': 'dataurl' } });
+  renderMod = await import(pathToFileURL(join(out, 'render.js')).href);
+  return renderMod;
+}
+
+test('BUG-2: after a reload with no network the cached banner shows over "Connecting…" and over "Live status unavailable"', async () => {
+  const { createRenderer } = await loadRender();
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  start(env, () => ({ status: 200, body: withOverride({ message: msg('BANNER'), forcedFull: null }) }));
+  const again = fakeEnv({ hash: '' });
+  again.data.set(mod.credential.TOKEN_KEY, TOKEN);
+  again.data.set(mod.override.OVERRIDE_KEY, env.data.get(mod.override.OVERRIDE_KEY));
+  again.respond = () => ({ status: 0, body: null });
+  const root = new FakeNode('div');
+  const app = new mod.app.TvApp(again, createRenderer(root));
+  app.start();
+  const bar = () => byClass(root, 'tv-msgbar')[0];
+  const page = () => byClass(root, 'tv-message')[0];
+  assert.equal(app.model().view, 'STARTING');
+  assert.equal(bar().hidden, false, 'banner strip shown while connecting');
+  assert.match(bar().textContent, /Level B2 closed/);
+  assert.match(page().textContent, /Connecting/);
+  assert.ok(!byClass(root, 'tv-head')[0] || byClass(root, 'tv-head')[0].hidden, 'no header or slot data');
+  again.advance(121000);
+  app.render();
+  assert.equal(app.model().view, 'UNAVAILABLE');
+  assert.equal(bar().hidden, false, 'still shown over "Live status unavailable"');
+  assert.match(page().textContent, /Live status unavailable/);
+  assert.equal(byClass(root, 'pf-slot--tv').filter((n) => !n.hidden && n.parentNode).length, 0, 'no slot cards');
+});
+
+test('summary render: the grid, "none here" and Full in the DOM; nothing of it at 120 s (AC-44)', async () => {
+  const { createRenderer } = await loadRender();
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let up = true;
+  const rows = [sumRow('B1', [cell('SEDAN', 2, 4), cell('HATCHBACK', 0, 2), cell('EV', 0, 0)]), sumRow('B2', [cell('SEDAN', 0, 3), cell('HATCHBACK', 1, 1), cell('EV', 1, 2)])];
+  env.respond = () => (up ? { status: 200, body: summaryFeed('SUMMARY', rows) } : { status: 0, body: null });
+  const root = new FakeNode('div');
+  const app = new mod.app.TvApp(env, createRenderer(root));
+  app.start();
+  const table = root.find((n) => n.tagName === 'table')[0];
+  assert.ok(table && !table.hidden);
+  const heads = root.find((n) => n.tagName === 'th' && (n.attrs.class || '').indexOf('tv-sum-colhead') >= 0).map((n) => n.textContent);
+  assert.deepEqual(heads, ['Sedan', 'Hatchback', 'EV', 'Total']);
+  const cells = byClass(root, 'tv-sum-cell').map((n) => n.textContent.replace('free', '').trim());
+  assert.deepEqual(cells.slice(0, 4), ['2', 'Full', 'none here', '2']);
+  assert.ok(byClass(root, 'tv-sum-cell--full').length >= 2, 'Full cells carry the danger class');
+  up = false;
+  env.advance(121000);
+  app.render();
+  assert.equal(byClass(root, 'tv-sum')[0].hidden, true, 'the grid is gone at 120 s');
+  assert.equal(byClass(root, 'tv-total-count')[0].textContent.indexOf('—'), 0, 'Free now shows —');
+});
+
 test('build:display output is ES2015 for Chromium 53 (syntax, runtime APIs, CSS, classic script)', (t) => {
   // Its own temp folder, so two test runs at the same time (e.g. review and QA) can't collide.
   const dist = mkdtempSync(join(tmpdir(), 'pf-tv-dist-'));

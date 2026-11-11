@@ -365,7 +365,11 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
       const sumLayout = m.layout !== 'SLOT_CARDS' && (!!sum || unavailable || !!m.cardsHidden);
       const oneLevel = !!sum && m.layout === 'SUMMARY' && sum.allRows === 1;
       const msgData = message(m);
-      cls(root, 'tv' + (m.view === 'CLOSED' ? ' tv--dim' : '') + (m.banner && withHead ? ' tv--banner' : ''));
+      // BUG-2 (AC-28): a cached banner message also shows before the first feed after a reload with
+      // no network ("Connecting…", then "Live status unavailable"), as the full-screen message and
+      // forced full already do. decideScreen hands it over for those views.
+      const bannerOn = !!m.banner && (withHead || m.view === 'STARTING' || m.view === 'UNAVAILABLE');
+      cls(root, 'tv' + (m.view === 'CLOSED' ? ' tv--dim' : '') + (bannerOn ? ' tv--banner' : ''));
       if (lastView !== m.view) {
         attr(root, 'data-view', m.view.toLowerCase());
         lastView = m.view;
@@ -419,7 +423,6 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
       }
 
       // ---- banner message (AC-23): over live slots, forced full or "unavailable" (03 O-2)
-      const bannerOn = !!m.banner && withHead;
       show(msgbar, bannerOn);
       if (bannerOn) {
         text(msgbarText, m.banner!.text);

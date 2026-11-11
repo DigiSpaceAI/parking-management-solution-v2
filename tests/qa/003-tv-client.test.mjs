@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(join(ROOT, 'package.json'));
 const esbuild = require('esbuild');
 
-const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload', 'layout', 'decide', 'override'];
+const MODULES = ['app', 'poll', 'hours', 'time', 'credential', 'reload', 'layout', 'decide', 'override', 'summary'];
 const mod = {};
 
 before(async () => {
@@ -558,6 +558,115 @@ function walk(node, visit) {
     else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, visit);
   }
 }
+
+// ---- 003 v1.5 summary layouts (03 tests 9–12; UX S1–S13) ----------------------------------
+const sumRow = (level, cells) => ({ level, cells, free: cells.reduce((a, c) => a + c.free, 0), total: cells.reduce((a, c) => a + c.total, 0) });
+const cell = (type, free, total) => ({ type, free, total });
+function summaryFeed(layout, rows, over = {}) {
+  const types = rows[0].cells.map((c) => c.type);
+  const totals = types.map((t, i) => cell(t, rows.reduce((a, r) => a + r.cells[i].free, 0), rows.reduce((a, r) => a + r.cells[i].total, 0)));
+  const free = rows.reduce((a, r) => a + r.free, 0);
+  const total = rows.reduce((a, r) => a + r.total, 0);
+  const f = feed({ layout, summary: { types, rows, totals }, counts: { free, total, groups: rows.map((r) => ({ label: r.level, free: r.free, total: r.total })) }, ...over });
+  if (layout === 'SUMMARY') delete f.slots;
+  return f;
+}
+const levels = (n) => Array.from({ length: n }, (_, i) => sumRow('L' + (i + 1), [cell('SEDAN', 2, 4), cell('HATCHBACK', 1, 2), cell('EV', 0, 1)]));
+
+test('summary paging (AC-46): 7 rows → 2 pages, 13 → 3, ≤ 6 → none; 4 rows a page under a banner; totals always cover every row', () => {
+  const { summaryModel, pagesOf } = mod.app;
+  const run = (n, banner, page) => {
+    const f = summaryFeed('SUMMARY', levels(n));
+    return summaryModel(f.summary, 'SUMMARY', f.counts, false, banner, page);
+  };
+  assert.equal(run(7, false, 0).pages, 2);
+  assert.equal(run(13, false, 0).pages, 3);
+  assert.equal(run(6, false, 0).pages, 1);
+  assert.equal(run(6, true, 0).pages, 2, 'banner: 4 basements a page (UX decision 3)');
+  const p2 = run(13, false, 1);
+  assert.deepEqual(p2.rows.map((r) => r.level), ['L7', 'L8', 'L9', 'L10', 'L11', 'L12']);
+  assert.equal(p2.first, 7);
+  assert.equal(p2.free, 13 * 3, 'Free now covers all 13 rows on every page');
+  assert.deepEqual(p2.totals.map((t) => t.total), [52, 26, 13]);
+  assert.equal(run(13, false, 5).page, 3, 'the page index wraps');
+  assert.equal(pagesOf({ grid: null, summary: run(13, false, 0) }), 3);
+  // Summary + slot cards: the compact summary never pages (the cards do)
+  const f = summaryFeed('SUMMARY_CARDS', levels(8));
+  assert.equal(summaryModel(f.summary, 'SUMMARY_CARDS', f.counts, false, false, 3).pages, 1);
+});
+
+test('summary on the TV: types come from the feed (Hatchback too); Summary has no cards; Summary + slot cards 8 cards (4 under a banner)', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let body = summaryFeed('SUMMARY', levels(3));
+  const { app } = start(env, () => ({ status: 200, body }));
+  let m = app.model();
+  assert.equal(m.view, 'LIVE');
+  assert.equal(m.layout, 'SUMMARY');
+  assert.equal(m.grid, null, 'Summary draws no slot cards (AC-45)');
+  assert.deepEqual(m.summary.types, ['SEDAN', 'HATCHBACK', 'EV']);
+  assert.equal(mod.summary.typeWord('HATCHBACK'), 'Hatchback');
+  assert.equal(mod.summary.typeWord('MINI_TRUCK'), 'Mini truck', 'an unknown future type still reads as words');
+  assert.equal(m.summary.full, false);
+  const many = Array.from({ length: 20 }, (_, i) => ({ code: 'B1-' + (100 + i), level: 'B1', area: 'B1 · Open bays', type: 'SEDAN', ev: false, parkingType: 'GROUND', status: 'VACANT' }));
+  body = summaryFeed('SUMMARY_CARDS', levels(2), { v: 'v2', slots: many });
+  env.advance(3000);
+  m = app.model();
+  assert.equal(m.grid.cards.length, 8);
+  assert.equal(m.grid.pages, 3, '20 vacant at 8 per page');
+  assert.equal(m.summary.pages, 1);
+  body = summaryFeed('SUMMARY_CARDS', levels(2), { v: 'v3', slots: many, override: { message: msg('BANNER'), forcedFull: null } });
+  env.advance(3000);
+  assert.equal(app.model().grid.cards.length, 4, 'banner + compact summary: one row of cards');
+  // a feed from before B12 (no layout) is slot cards
+  body = feed({ v: 'v4' });
+  env.advance(3000);
+  assert.equal(app.model().layout, 'SLOT_CARDS');
+  assert.equal(app.model().summary, null);
+});
+
+test('summary Full / none here (AC-43): cells, a whole selection full, and forced full shows Full, not the real numbers', () => {
+  const { cellText, cellState, sizeClass, summaryMode } = mod.summary;
+  assert.equal(cellText({ free: 3, total: 4 }, false), '3');
+  assert.equal(cellText({ free: 0, total: 4 }, false), 'Full');
+  assert.equal(cellText({ free: 0, total: 0 }, false), 'none here', 'no slot of that type: not Full, not 0');
+  assert.equal(cellText({ free: 0, total: 0 }, true), 'none here', 'still "none here" under forced full');
+  assert.equal(cellState({ free: 5, total: 9 }, true), 'FULL', 'forced full hides real vacancy');
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map((n) => sizeClass(n, false)), ['n2', 'n2', 'n4', 'n4', 'n6', 'n6']);
+  assert.equal(sizeClass(2, true), 'n4', 'one size smaller under a banner');
+  assert.equal(summaryMode('SUMMARY', 1), 'TILES');
+  assert.equal(summaryMode('SUMMARY', 3), 'GRID');
+  assert.equal(summaryMode('SUMMARY_CARDS', 1), 'COMPACT_TILES');
+  assert.equal(summaryMode('SUMMARY_CARDS', 2), 'COMPACT_GRID');
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  const full = levels(2).map((r) => sumRow(r.level, r.cells.map((c) => cell(c.type, 0, c.total))));
+  let body = summaryFeed('SUMMARY', full);
+  const { app } = start(env, () => ({ status: 200, body }));
+  assert.equal(app.model().summary.full, true, 'whole selection 0 free → the Parking full grid');
+  assert.equal(app.model().grid, null, 'no slot cards');
+  body = summaryFeed('SUMMARY', levels(2), { v: 'f2', override: { message: null, forcedFull: { endsAt: null } } });
+  env.advance(3000);
+  const m = app.model();
+  assert.equal(m.view, 'FORCED_FULL');
+  assert.equal(m.summary.full, true);
+  assert.equal(m.summary.forced, true);
+  assert.equal(m.summary.free, 6, 'the real numbers stay in the model for when forced full ends');
+});
+
+test('summary stale (AC-44): the grid stays at 30 s; at 120 s no summary and no counts in the model', () => {
+  const env = fakeEnv({ hash: `#k=${TOKEN}` });
+  let up = true;
+  const { app } = start(env, () => (up ? { status: 200, body: summaryFeed('SUMMARY', levels(2)) } : { status: 0, body: null }));
+  up = false;
+  env.advance(31500);
+  let m = app.model();
+  assert.equal(m.stale, true);
+  assert.ok(m.summary, 'the grid stays while stale');
+  env.advance(90000);
+  m = app.model();
+  assert.equal(m.view, 'UNAVAILABLE');
+  assert.equal(m.summary, null, 'numbers hidden after 2 minutes');
+  assert.equal(m.grid, null);
+});
 
 test('build:display output is ES2015 for Chromium 53 (syntax, runtime APIs, CSS, classic script)', (t) => {
   // Its own temp folder, so two test runs at the same time (e.g. review and QA) can't collide.

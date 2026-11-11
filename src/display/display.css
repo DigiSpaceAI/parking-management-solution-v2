@@ -153,3 +153,100 @@ body { font-family: var(--font-text); color: var(--on-navy); -webkit-font-smooth
 .tv-takeover-body p { margin: 0; min-width: 0; font: 700 var(--tv-message-size)/calc(var(--tv-px) * 88) var(--font-display); overflow-wrap: break-word; }
 .tv-takeover-foot { display: flex; align-items: center; justify-content: space-between; height: var(--tv-footer-h-vw); font: 500 var(--tv-text-size)/var(--tv-text-line) var(--font-text); color: var(--navy-100); }
 .tv-takeover-foot b { color: var(--on-navy); font-weight: 600; }
+
+/* ---- Summary layouts (003 v1.5, PRD US-19/20, AC-39..AC-46; UX boards S1–S13) ----
+   Numbers and type words use the tv-sum-* tokens (vw twins); no new colours. A table (not CSS
+   grid, which Chromium 53 lacks) lays out the basement × type grid; border-spacing is the gap. */
+.tv-sum { display: flex; flex-direction: column; min-height: 0; }
+.tv-sum--page { flex: 1 1 auto; }
+.tv-sum--compact { flex: none; }
+.tv-sum-caption { flex: none; margin: 0 0 calc(var(--tv-px) * 8); font: 600 var(--tv-sum-head-size)/var(--tv-sum-head-line) var(--font-text); color: var(--navy-100); }
+.tv-sum-body { flex: 1 1 auto; min-height: 0; display: flex; }
+.tv-sum-cell { text-align: center; vertical-align: middle; border-radius: calc(var(--tv-px) * 16); background: var(--surface-0); color: var(--ink); }
+.tv-sum-cell svg { display: inline-block; vertical-align: middle; color: var(--on-navy); }
+.tv-sum-val { display: inline-block; white-space: nowrap; }
+.tv-sum-num { font-family: var(--font-display); font-weight: 700; white-space: nowrap; }
+.tv-sum-word { font: 500 var(--tv-text-size)/var(--tv-text-line) var(--font-text); color: var(--text-secondary); margin-left: calc(var(--tv-px) * 8); }
+/* Full: the word, an icon and the danger colour, never colour alone (AC-43). White on danger-700 is 8.3:1. */
+.tv-sum-cell--full { background: var(--danger-700); color: var(--on-navy); }
+/* No slot of that type in this basement: a dashed "none here", not Full and not 0 (UX decision 2). */
+.tv-sum-cell--none { background: transparent; color: var(--navy-100); box-shadow: inset 0 0 0 calc(var(--tv-px) * 3) var(--navy-100); }
+.tv-sum-body .tv-sum-cell--none .tv-sum-num { font: 500 var(--tv-sum-head-size)/var(--tv-sum-head-line) var(--font-text); }
+.tv-sum-cell--full .tv-sum-num { vertical-align: middle; }
+.tv-sum-cell--full .tv-sum-val svg { margin-right: calc(var(--tv-px) * 10); }
+.tv-sum-cell--sum { background: var(--navy-50); }
+.tv-sum-cell--sum.tv-sum-cell--full { background: var(--danger-700); }
+
+/* Main-gate grid (S1–S4) */
+.tv-sum-table { width: calc(100% + var(--tv-px) * 24); height: calc(100% + var(--tv-px) * 24); margin: calc(var(--tv-px) * -12); border-collapse: separate;
+  border-spacing: calc(var(--tv-px) * 12); table-layout: fixed; }
+.tv-sum-corner, .tv-sum-colhead { font: 600 var(--tv-sum-head-size)/var(--tv-sum-head-line) var(--font-text); color: var(--on-navy); vertical-align: bottom;
+  padding: 0 calc(var(--tv-px) * 4) calc(var(--tv-px) * 4); }
+.tv-sum-corner { width: calc(var(--tv-px) * 260); text-align: left; color: var(--navy-100); }
+.tv-sum-colhead { text-align: center; }
+.tv-sum-colhead svg { display: block; width: calc(var(--tv-px) * 40); height: calc(var(--tv-px) * 40); margin: 0 auto calc(var(--tv-px) * 4); }
+.tv-sum-colhead--total { width: calc(var(--tv-px) * 260); }
+.tv-sum-type { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tv-sum-rowhead { text-align: left; vertical-align: middle; padding: 0 calc(var(--tv-px) * 24); border-radius: calc(var(--tv-px) * 16); background: var(--navy-700);
+  color: var(--on-navy); font: 600 var(--tv-sum-row-size)/var(--tv-sum-row-line) var(--font-display); white-space: nowrap; }
+.tv-sum-rowhead--total { background: var(--navy-50); color: var(--ink); }
+.tv-sum-rowhead--total small { display: block; font: 500 var(--tv-text-size)/var(--tv-text-line) var(--font-text); color: var(--text-secondary); white-space: normal; }
+/* Equal body rows: the head row takes about 14%, the rest is shared (no inline styles). */
+.tv-sum-rows-2 tbody th, .tv-sum-rows-2 tbody td { height: 43%; }
+.tv-sum-rows-3 tbody th, .tv-sum-rows-3 tbody td { height: 28.6%; }
+.tv-sum-rows-4 tbody th, .tv-sum-rows-4 tbody td { height: 21.5%; }
+.tv-sum-rows-5 tbody th, .tv-sum-rows-5 tbody td { height: 17.2%; }
+.tv-sum-rows-6 tbody th, .tv-sum-rows-6 tbody td { height: 14.3%; }
+.tv-sum-rows-7 tbody th, .tv-sum-rows-7 tbody td { height: 12.3%; }
+.tv-sum--n2 .tv-sum-num { font-size: var(--tv-sum-num-2-size); line-height: var(--tv-sum-num-2-line); }
+.tv-sum--n4 .tv-sum-num { font-size: var(--tv-sum-num-4-size); line-height: var(--tv-sum-num-4-line); }
+.tv-sum--n6 .tv-sum-num { font-size: var(--tv-sum-num-6-size); line-height: var(--tv-sum-num-6-line); }
+.tv-sum-table .tv-sum-cell--full .tv-sum-num { font-size: var(--tv-count-size); line-height: var(--tv-count-line); }
+.tv-sum--n6 .tv-sum-cell--full .tv-sum-num { font-size: var(--tv-title-size); line-height: var(--tv-title-line); }
+.tv-sum-table .tv-sum-cell--full svg { width: calc(var(--tv-px) * 56); height: calc(var(--tv-px) * 56); margin-right: calc(var(--tv-px) * 14); }
+.tv-sum--n6 .tv-sum-cell--full svg { width: calc(var(--tv-px) * 40); height: calc(var(--tv-px) * 40); }
+
+/* Compact grid above the slot cards (S7): rows 56 px, numbers 40/48 */
+.tv-sum-table--compact { height: auto; }
+.tv-sum-table--compact th, .tv-sum-table--compact td { height: calc(var(--tv-px) * 56); }
+.tv-sum-table--compact .tv-sum-corner, .tv-sum-table--compact .tv-sum-colhead { font: 600 var(--tv-text-size)/var(--tv-text-line) var(--font-text); vertical-align: middle; height: calc(var(--tv-px) * 44); }
+.tv-sum-table--compact .tv-sum-colhead svg { display: inline-block; vertical-align: middle; width: calc(var(--tv-px) * 28); height: calc(var(--tv-px) * 28); margin: 0 calc(var(--tv-px) * 8) 0 0; }
+.tv-sum-table--compact .tv-sum-type { display: inline; }
+.tv-sum-table--compact .tv-sum-rowhead { font: 600 var(--tv-text-size)/var(--tv-text-line) var(--font-display); }
+.tv-sum-table--compact .tv-sum-rowhead--total small { display: none; }
+.tv-sum-table--compact .tv-sum-num, .tv-sum-table--compact .tv-sum-cell--full .tv-sum-num { font: 700 var(--tv-sum-row-size)/var(--tv-sum-row-line) var(--font-display); }
+.tv-sum-table--compact .tv-sum-cell--full svg { width: calc(var(--tv-px) * 32); height: calc(var(--tv-px) * 32); margin-right: calc(var(--tv-px) * 10); }
+.tv-sum-body .tv-sum-table--compact .tv-sum-cell--none .tv-sum-num { font: 500 var(--tv-text-size)/var(--tv-text-line) var(--font-text); }
+
+/* One basement (S5): "All of Basement B1" + one tile per vehicle type */
+.tv-sum-tiles { flex: 1 1 auto; display: flex; min-height: 0; }
+.tv-sum-alltile { flex: none; width: calc(var(--tv-px) * 520); margin-right: var(--tv-gap-vw); display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--navy-600); color: var(--on-navy); }
+.tv-sum-label { font: 600 var(--tv-title-size)/var(--tv-title-line) var(--font-display); color: var(--on-navy); }
+.tv-sum-tiles .tv-sum-alltile .tv-sum-num { font-size: calc(var(--tv-px) * 240); line-height: calc(var(--tv-px) * 248); }
+.tv-sum-tiles .tv-sum-alltile .tv-sum-word { color: var(--on-navy); margin-left: 0; }
+.tv-sum-typetiles { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-content: stretch; margin: calc(var(--tv-px) * -10); }
+.tv-sum-typetile { margin: calc(var(--tv-px) * 10); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.tv-sum-typetiles--c1 .tv-sum-typetile { width: calc(100% - var(--tv-px) * 20); }
+.tv-sum-typetiles--c2 .tv-sum-typetile { width: calc(50% - var(--tv-px) * 20); }
+.tv-sum-typetiles--c3 .tv-sum-typetile { width: calc(33.333% - var(--tv-px) * 20); }
+.tv-sum-tilehead { display: flex; align-items: center; font: 600 calc(var(--tv-px) * 48)/calc(var(--tv-px) * 56) var(--font-text); }
+.tv-sum-tilehead svg { width: calc(var(--tv-px) * 64); height: calc(var(--tv-px) * 64); margin-right: calc(var(--tv-px) * 16); color: inherit; }
+.tv-sum-tiles .tv-sum-typetile .tv-sum-num { font-size: var(--tv-sum-tile-size); line-height: var(--tv-sum-tile-line); }
+.tv-sum-tiles .tv-sum-cell--full .tv-sum-val svg { width: calc(var(--tv-px) * 72); height: calc(var(--tv-px) * 72); }
+.tv-sum-tiles .tv-sum-cell--full .tv-sum-num { font-size: var(--tv-message-size); line-height: var(--tv-message-line); }
+.tv-sum-alltile.tv-sum-cell--full { background: var(--danger-700); }
+.tv-sum-cell--full .tv-sum-label, .tv-sum-cell--full .tv-sum-tilehead { color: var(--on-navy); }
+
+/* Compact tile row above the slot cards (S6): 150 px, numbers 64/72 */
+.tv-sum-ctiles { flex: 1 1 auto; display: flex; height: calc(var(--tv-px) * 150); }
+.tv-sum-ctiles .tv-sum-typetile { margin: 0; }
+.tv-sum-ctiles .tv-sum-cell { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.tv-sum-ctiles .tv-sum-cell + .tv-sum-cell { margin-left: calc(var(--tv-px) * 16); }
+.tv-sum-ctiles .tv-sum-alltile { flex: 1.4 1 0; width: auto; margin-right: 0; }
+.tv-sum-ctiles .tv-sum-label, .tv-sum-ctiles .tv-sum-tilehead { font: 600 var(--tv-text-size)/var(--tv-text-line) var(--font-text); white-space: nowrap; }
+.tv-sum-ctiles .tv-sum-tilehead svg { width: calc(var(--tv-px) * 28); height: calc(var(--tv-px) * 28); margin-right: calc(var(--tv-px) * 8); }
+.tv-sum-ctiles .tv-sum-num { font-size: var(--tv-sum-num-6-size); line-height: var(--tv-sum-num-6-line); }
+.tv-sum-ctiles .tv-sum-cell--full .tv-sum-num { font-size: var(--tv-title-size); line-height: var(--tv-title-line); }
+.tv-sum-ctiles .tv-sum-cell--full .tv-sum-val svg { width: calc(var(--tv-px) * 32); height: calc(var(--tv-px) * 32); }
+.tv-sum-ctiles .tv-sum-word { display: none; }

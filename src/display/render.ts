@@ -14,11 +14,12 @@ import { fmtTime, fmtTimeSeconds, untilText } from './time';
 import { hoursLabel, opensAt } from './hours';
 import { footerText, groupIndian, joinLabels } from './layout';
 import { setIcon, svgIcon } from './icons';
+import { createSummary, levelName } from './summary';
 import { decodeSlot } from '../utils/slots';
 import markUrl from '../design-system/brand/parkflows-mark.svg';
 
 const MAX_TILES = 4;
-const TYPE_WORD: { [t: string]: string } = { SEDAN: 'Sedan', SUV: 'SUV', CSUV: 'Compact SUV', TWO_WHEELER: 'Two-wheeler', EV: 'EV' };
+const TYPE_WORD: { [t: string]: string } = { SEDAN: 'Sedan', SUV: 'SUV', CSUV: 'Compact SUV', HATCHBACK: 'Hatchback', TWO_WHEELER: 'Two-wheeler', EV: 'EV' };
 const STATUS_WORD: { [s: string]: string } = { VACANT: 'Vacant', OCCUPIED: 'Occupied', RESERVED: 'Reserved', MAINTENANCE: 'Maintenance' };
 
 // ---- tiny DOM helpers ------------------------------------------------------------------------
@@ -218,6 +219,10 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
   toBrand.appendChild(logo(''));
   add(toBrand, el('span', '', 'ParkFlows'));
 
+  // 003 v1.5 summary (UX S1–S8): the grid, the one-basement tiles, or the compact summary above the cards
+  const summary = createSummary();
+  root.appendChild(summary.root);
+
   // cards
   const grid = add(root, el('section', 'tv-grid'));
   grid.setAttribute('aria-label', 'Slots');
@@ -351,8 +356,14 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
       const forced = m.view === 'FORCED_FULL';
       const slotsView = (m.view === 'LIVE' || forced) && !!m.feed;
       const live = slotsView && !!m.grid;
+      const sum = slotsView ? m.summary : null;
+      // 03 v1.5: live data on screen = cards and/or the summary.
+      const liveData = live || !!sum;
       const unavailable = m.view === 'UNAVAILABLE' && !!m.feed;
       const withHead = slotsView || unavailable;
+      // A summary layout (also while unavailable, when the numbers are hidden): no level tiles in the header.
+      const sumLayout = m.layout !== 'SLOT_CARDS' && (!!sum || unavailable || !!m.cardsHidden);
+      const oneLevel = !!sum && m.layout === 'SUMMARY' && sum.allRows === 1;
       const msgData = message(m);
       cls(root, 'tv' + (m.view === 'CLOSED' ? ' tv--dim' : '') + (m.banner && withHead ? ' tv--banner' : ''));
       if (lastView !== m.view) {
@@ -365,26 +376,41 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
       if (withHead) {
         const feed = m.feed!;
         const labels = feed.counts.groups.map((g) => g.label);
-        const full = forced || (live && m.grid!.mode === 'FULL');
-        text(placeName, labels.length ? 'Parking · ' + joinLabels(labels) : 'Parking');
+        const full = forced || (sum ? sum.full : live && m.grid!.mode === 'FULL');
+        // UX S1 "Parking · all basements"; S5 one basement: "Basement B1" (the tile below is its total).
+        text(
+          placeName,
+          oneLevel ? levelName(sum!.rows[0] ? sum!.rows[0].level : labels[0] || '') : labels.length ? 'Parking · ' + (sumLayout && labels.length > 3 ? 'all basements' : joinLabels(labels)) : 'Parking'
+        );
         text(placeSub, [feed.siteName, feed.place].filter(Boolean).join(' · '));
         // Forced full keeps its banner even when stale (it is the admin's instruction); real full gives way to "Updating…".
-        const banner = forced ? 'FULL' : live && m.stale ? 'STALE' : full ? 'FULL' : '';
+        const banner = forced ? 'FULL' : liveData && m.stale ? 'STALE' : full ? 'FULL' : '';
         show(place, banner === '');
         show(headBanner, banner !== '');
         if (banner === 'STALE') {
           cls(headBanner, 'tv-headbanner tv-headbanner--stale');
           setIcon(headBannerIcon, 'stale');
           text(headBannerTitle, 'Updating… last updated ' + (m.lastOkMs !== null ? fmtTime(m.lastOkMs) : '—'));
-          text(headBannerSub, 'Slots may have changed');
+          text(headBannerSub, sumLayout ? 'Numbers may have changed' : 'Slots may have changed');
         } else if (banner === 'FULL') {
           cls(headBanner, 'tv-headbanner tv-headbanner--full');
           setIcon(headBannerIcon, 'full');
           text(headBannerTitle, 'Parking full');
           // Forced: "Not accepting cars right now" (UX board 14; "No free slots…" would be untrue). Nothing says it was forced.
-          text(headBannerSub, forced ? 'Not accepting cars right now' : labels.length && labels.length <= 3 ? 'No free slots on ' + joinLabels(labels, 'or') : 'No free slots right now');
+          text(
+            headBannerSub,
+            forced
+              ? 'Not accepting cars right now'
+              : sum && sum.allRows > 1
+                ? 'No free spaces in any basement'
+                : labels.length && labels.length <= 3
+                  ? 'No free slots on ' + joinLabels(labels, 'or')
+                  : 'No free slots right now'
+          );
         }
-        setTiles(m, unavailable, forced);
+        show(levels, !sumLayout);
+        if (!sumLayout) setTiles(m, unavailable, forced);
+        show(total, !oneLevel);
         cls(total, 'tv-total' + (full ? ' tv-total--full' : ''));
         text(totalN, unavailable ? '—' : forced ? '0' : groupIndian(feed.counts.free));
         text(totalWord, unavailable ? '' : 'of ' + groupIndian(feed.counts.total));
@@ -412,6 +438,9 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
         const until = untilText(m.takeover!.endsAt, m.nowMs);
         text(toUntil, until ? ' · until ' + until : '');
       }
+
+      // ---- 003 v1.5 summary (hidden at 120 s with every count: AC-44)
+      summary.render(sum, m.layout, !!m.banner);
 
       // ---- cards
       show(grid, live);
@@ -448,7 +477,25 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
 
       // ---- footer
       show(foot, withHead);
-      if (live) {
+      if (sum && !live) {
+        // Summary (UX S1–S4): the counting rule, or the basement pages with totals over all (AC-46).
+        const paging = sum.pages > 1;
+        const last = sum.first + sum.rows.length - 1;
+        text(
+          footText,
+          paging
+            ? 'Basements ' + sum.first + '–' + last + ' of ' + sum.allRows + ' · totals cover all ' + sum.allRows
+            : 'Free = vacant slots only · reserved and maintenance not counted'
+        );
+        show(pager, paging);
+        cls(brand, paging ? 'tv-brand' : 'tv-brand tv-brand--end');
+        if (paging) {
+          text(pagerLabel, 'Page ' + sum.page + ' of ' + sum.pages);
+          attr(pager, 'aria-label', 'Page ' + sum.page + ' of ' + sum.pages);
+          text(pagerNext, 'Next page in ' + m.nextPageS + ' s');
+          setSegments(sum.pages, sum.page - 1, m.pageProgress);
+        }
+      } else if (live) {
         const g = m.grid!;
         text(footText, footerText(g, m.feed!.counts.total, { banner: !!m.banner, forced: forced }));
         const paging = g.mode === 'PAGING';
@@ -461,7 +508,7 @@ export function createRenderer(root: HTMLElement, host?: string): Renderer {
           setSegments(g.pages, g.page - 1, m.pageProgress);
         }
       } else if (withHead) {
-        text(footText, 'Slot list hidden after 2 minutes without an update');
+        text(footText, sumLayout ? 'Numbers hidden after 2 minutes without an update' : 'Slot list hidden after 2 minutes without an update');
         show(pager, false);
         cls(brand, 'tv-brand tv-brand--end');
       }

@@ -6,7 +6,7 @@
  * One timer for polling, one 1 s tick, one request in flight; the feed object is replaced, never
  * grown (NFR-4: 7 days without a reload).
  */
-import type { DisplayFeed, FeedMessage, FeedOverride, FeedResponse, FeedSlot } from './types';
+import type { DisplayFeed, FeedLayout, FeedMessage, FeedOverride, FeedResponse, FeedSlot, FeedSummaryCell, FeedSummaryRow } from './types';
 import { isUnchanged } from './types';
 import type { HttpResult, Store } from './env';
 import { readCredential, TOKEN_KEY, tokenTag } from './credential';
@@ -14,7 +14,7 @@ import { isOpenAt } from './hours';
 import { freshness, nextDelayMs, outcomeOf, POLL_MS, REQUEST_TIMEOUT_MS, BACKOFF_MAX_MS, type Freshness, type PollOutcome } from './poll';
 import { istParts, parseIso, ServerClock } from './time';
 import { pickReloadMinute, RELOAD_KEY, shouldReload } from './reload';
-import { gridLayout, newlyVacant, type GridLayout } from './layout';
+import { gridLayout, newlyVacant, summaryPages, type GridLayout } from './layout';
 import { decideScreen, type DecidedView } from './decide';
 import { clearOverride, loadOverride, NO_OVERRIDE, saveOverride } from './override';
 
@@ -33,6 +33,35 @@ export const JUST_FREED_MS = 10000;
 export const CARDS_PER_PAGE = 12;
 /** UX board 11: 4 × 2 cards while a banner message is shown. */
 export const CARDS_PER_PAGE_BANNER = 8;
+/** 03 v1.5 (AC-46, UX S4): up to 6 basements on one Summary page; UX decision 3: 4 while a banner message is on. */
+export const SUMMARY_ROWS_PER_PAGE = 6;
+export const SUMMARY_ROWS_PER_PAGE_BANNER = 4;
+/** UX S6/S7: Summary + slot cards shows 8 cards (4 × 2) under the compact summary; 4 while a banner message is on. */
+export const CARDS_PER_PAGE_SUMMARY = 8;
+export const CARDS_PER_PAGE_SUMMARY_BANNER = 4;
+
+/**
+ * 03 v1.5 (AC-39..AC-46): the summary for one frame. Totals and Free now always cover every row
+ * (never a page); `full` = every cell with slots shows "Full" (forced full, or no free slot in
+ * the whole selection, AC-43).
+ */
+export interface SummaryModel {
+  /** Column order as the feed sends it (never a fixed list). */
+  types: string[];
+  /** The rows on this page. */
+  rows: FeedSummaryRow[];
+  /** Rows in the whole selection. */
+  allRows: number;
+  /** 1-based number of the first row on this page. */
+  first: number;
+  totals: FeedSummaryCell[];
+  free: number;
+  total: number;
+  page: number;
+  pages: number;
+  full: boolean;
+  forced: boolean;
+}
 
 export interface TvEnv {
   mono(): number;
@@ -76,6 +105,10 @@ export interface ScreenModel {
   justFreed: { [code: string]: boolean };
   /** PAIRING: the 6-character code to show, or null while fetching one. */
   pairCode: string | null;
+  /** 03 v1.5: the display's layout (the last feed's; slot cards when it has none). */
+  layout: FeedLayout;
+  /** 03 v1.5: LIVE / FORCED_FULL with a summary layout. */
+  summary: SummaryModel | null;
 }
 
 export interface Renderer {
@@ -179,10 +212,12 @@ export class TvApp {
       this.env.reload();
       return;
     }
-    // Paging: one step every pageSeconds, while there is more than one page of vacant slots.
-    if (model.grid && model.grid.mode === 'PAGING' && this.feed) {
+    // Paging: one step every pageSeconds, while there is more than one page of vacant slots,
+    // or (Summary layout, AC-46) more than one page of basements.
+    const pages = pagesOf(model);
+    if (pages > 1 && this.feed) {
       if (mono - this.pageStartMono >= this.feed.pageSeconds * 1000) {
-        this.pageIndex = (this.pageIndex + 1) % model.grid.pages;
+        this.pageIndex = (this.pageIndex + 1) % pages;
         this.pageStartMono = mono;
       }
     } else {
@@ -339,16 +374,25 @@ export class TvApp {
       nextPageS: 0,
       justFreed: justFreed,
       pairCode: this.pairCode,
+      layout: (feed && feed.layout) || 'SLOT_CARDS',
+      summary: null,
     };
     if ((m.view === 'LIVE' || m.view === 'FORCED_FULL') && !m.cardsHidden && feed) {
-      const perPage = m.banner ? CARDS_PER_PAGE_BANNER : CARDS_PER_PAGE;
       const forced = m.view === 'FORCED_FULL';
-      const grid = gridLayout(feed.slots || [], perPage, forced ? 0 : this.pageIndex, forced ? {} : justFreed, forced);
-      const pageMs = Math.max(1, feed.pageSeconds) * 1000;
-      const inPage = Math.min(pageMs, Math.max(0, mono - this.pageStartMono));
-      m.grid = grid;
-      m.pageProgress = grid.mode === 'PAGING' ? inPage / pageMs : 0;
-      m.nextPageS = grid.mode === 'PAGING' ? Math.max(1, Math.ceil((pageMs - inPage) / 1000)) : 0;
+      // 03 v1.5: a summary layout draws the summary when the feed carries one (an OPEN feed always does).
+      const sum = m.layout !== 'SLOT_CARDS' && feed.summary ? feed.summary : null;
+      if (sum) m.summary = summaryModel(sum, m.layout, feed.counts, forced, !!m.banner, this.pageIndex);
+      // Summary: counts only, no cards (AC-45). Summary + slot cards: 8 cards under the summary (UX S6/S7).
+      if (!(sum && m.layout === 'SUMMARY')) {
+        const perPage = sum ? (m.banner ? CARDS_PER_PAGE_SUMMARY_BANNER : CARDS_PER_PAGE_SUMMARY) : m.banner ? CARDS_PER_PAGE_BANNER : CARDS_PER_PAGE;
+        m.grid = gridLayout(feed.slots || [], perPage, forced ? 0 : this.pageIndex, forced ? {} : justFreed, forced);
+      }
+      if (pagesOf(m) > 1) {
+        const pageMs = Math.max(1, feed.pageSeconds) * 1000;
+        const inPage = Math.min(pageMs, Math.max(0, mono - this.pageStartMono));
+        m.pageProgress = inPage / pageMs;
+        m.nextPageS = Math.max(1, Math.ceil((pageMs - inPage) / 1000));
+      }
     }
     return m;
   }
@@ -356,4 +400,41 @@ export class TvApp {
   render(): void {
     this.renderer.render(this.model());
   }
+}
+
+/** Pages that turn by themselves: the vacant cards, or (Summary only) the basement rows. */
+export function pagesOf(m: Pick<ScreenModel, 'grid' | 'summary'>): number {
+  if (m.grid) return m.grid.mode === 'PAGING' ? m.grid.pages : 1;
+  return m.summary ? m.summary.pages : 1;
+}
+
+/**
+ * 03 v1.5 (AC-39, AC-43, AC-46): one frame of the summary. Summary pages its rows (6, or 4 under a
+ * banner message); Summary + slot cards never pages its summary (the cards page). Totals come
+ * from the feed, so they always cover every row.
+ */
+export function summaryModel(
+  sum: { types: string[]; rows: FeedSummaryRow[]; totals: FeedSummaryCell[] },
+  layout: FeedLayout,
+  counts: { free: number; total: number },
+  forced: boolean,
+  banner: boolean,
+  pageIndex: number
+): SummaryModel {
+  const perPage = layout === 'SUMMARY' ? (banner ? SUMMARY_ROWS_PER_PAGE_BANNER : SUMMARY_ROWS_PER_PAGE) : Math.max(1, sum.rows.length);
+  const pages = summaryPages(sum.rows, perPage);
+  const page = layout === 'SUMMARY' ? ((pageIndex % pages.length) + pages.length) % pages.length : 0;
+  return {
+    types: sum.types,
+    rows: pages[page],
+    allRows: sum.rows.length,
+    first: page * perPage + 1,
+    totals: sum.totals,
+    free: counts.free,
+    total: counts.total,
+    page: page + 1,
+    pages: pages.length,
+    full: forced || counts.free === 0,
+    forced: forced,
+  };
 }

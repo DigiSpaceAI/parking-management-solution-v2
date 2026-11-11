@@ -39,7 +39,11 @@ test('every tv-* type style and size has a vw twin (value / 1920 x 100vw)', () =
   const names = [
     ...tokens.type.groups.flatMap((g) => g.styles.map((s) => s.name)),
   ].filter((n) => n.startsWith('tv-'));
-  assert.equal(names.length, 9);
+  // 9 from 003 F1 + the 6 tv-sum-* styles of 003 v1.5 (UX "Proposed tokens", F11).
+  assert.equal(names.length, 15);
+  assert.equal(varOf('--tv-sum-num-2-size'), '6.25vw');
+  assert.equal(varOf('--tv-sum-tile-size'), '8.3333vw');
+  assert.equal(varOf('--type-tv-sum-head'), '600 32px/40px var(--font-text)');
   for (const n of names) {
     assert.match(varOf(`--${n}-size`) || '', /^\d+(\.\d+)?vw$/, `${n} size twin`);
     assert.match(varOf(`--${n}-line`) || '', /^\d+(\.\d+)?vw$/, `${n} line twin`);

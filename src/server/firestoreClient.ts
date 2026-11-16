@@ -32,6 +32,18 @@ export function isFirestoreConfigured(): boolean {
   return !!resolveProjectId();
 }
 
+// 006 D1: records carry optional fields that are `undefined` in memory (a slot
+// that became vacant, a removed puzzle number). Firestore rejects the WHOLE
+// batch for one undefined value unless this is set; it must run once, before
+// the first use (settings() throws if called twice, hence the try/catch).
+export function applyFirestoreSettings(db: unknown): void {
+  try {
+    (db as admin.firestore.Firestore).settings({ ignoreUndefinedProperties: true });
+  } catch (err: any) {
+    console.warn(`[firestore] settings() not applied: ${err?.message || err}`);
+  }
+}
+
 export function getFirestoreDb(): admin.firestore.Firestore | null {
   if (initAttempted) return firestoreDb;
   initAttempted = true;
@@ -46,6 +58,7 @@ export function getFirestoreDb(): admin.firestore.Firestore | null {
       });
     }
     firestoreDb = admin.firestore();
+    applyFirestoreSettings(firestoreDb);
     console.log(
       `[firestore] Connected${projectId ? ` (project: ${projectId})` : ''}.`
     );
@@ -88,6 +101,7 @@ export function markFirestoreUnavailable(reason: string) {
 // a test process replace the Firestore client with an in-memory fake before
 // the store boots. Not reachable from any request; nothing in the app calls it.
 export function __setFirestoreDbForTests(fake: unknown) {
+  applyFirestoreSettings(fake);
   firestoreDb = fake as admin.firestore.Firestore;
   initAttempted = true;
   initError = null;

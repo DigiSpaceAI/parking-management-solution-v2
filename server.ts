@@ -9,6 +9,9 @@ import {
   saveDB,
   bootstrapFirestore,
   isStoreReady,
+  newPersistCtx,
+  runInPersistContext,
+  settlePersistCtx,
   rotateKnownDefaultPasswords,
   DEFAULT_SITE_ID,
   processVehicleEntry,
@@ -289,6 +292,31 @@ app.use((req, res, next) => {
     return sendApiError(res, 503, 'ERR_STARTING', 'ParkFlows is starting up. Try again in a moment.');
   }
   next();
+});
+
+// 006 B5 (D5, AC-04): an API write answers only after its saves have settled.
+// A save that fails is rolled back from Firestore and the caller gets 503
+// ERR_PERSIST_FAILED, never "success" for a change that was not stored.
+app.use('/api/', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const ctx = newPersistCtx();
+  const origSend = res.send.bind(res);
+  res.send = ((body?: any) => {
+    if (ctx.responded) return origSend(body);
+    ctx.responded = true; // later saves (timers, after-response work) are background saves
+    if (ctx.pending.length === 0) return origSend(body);
+    const route = `${req.baseUrl || ''}${req.route?.path ?? ''}` || req.path;
+    void settlePersistCtx(ctx, { method: req.method, route }).then((r) => {
+      if (r.ok) return origSend(body);
+      res.setHeader('Retry-After', '5');
+      res.status(503).type('application/json');
+      return origSend(JSON.stringify((r as { notReady: boolean }).notReady
+        ? { success: false, message: 'ParkFlows is starting up. Try again in a moment.', errorCode: 'ERR_STARTING' }
+        : { success: false, message: "Couldn't save — try again.", errorCode: 'ERR_PERSIST_FAILED' }));
+    });
+    return res;
+  }) as typeof res.send;
+  runInPersistContext(ctx, () => next());
 });
 
 // Global API Rate Limiter (Anti-DDoS & Brute Force Protection - 600 req/min for high-volume ANPR & Gate Ops)
@@ -2261,7 +2289,7 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
 
   slot.status = newStatus;
   slot.updatedAt = new Date().toISOString();
-  saveDB();
+  saveDB([{ collection: 'slots', ids: [slot.id] }]);
 
   logSecurityEvent({
     action: 'SLOT_STATUS_OVERRIDE',
@@ -2573,7 +2601,7 @@ const handleLoginRequest = (req: express.Request, res: express.Response) => {
   // 5. Successful Authentication: Reset failed attempt tracker
   clearLoginFailures(ip, cleanId);
   user.lastLoginAt = new Date().toISOString();
-  saveDB();
+  saveDB([{ collection: 'appUsers', ids: [user.id] }], { bestEffort: true }); // D-3: never blocks sign-in
 
   // 6. Regenerate Cryptographic Session Token & Set Secure Cookies
   const sessionEntropy = crypto.randomBytes(32).toString('hex');

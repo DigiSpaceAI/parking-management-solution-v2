@@ -1634,22 +1634,14 @@ function writeLocalCopy() {
   }
 }
 
-// 002 B6: targeted Firestore delete (a full sync never deletes, so a removed
-// record would otherwise come back on the next cold start). Same "no write
-// before the store is loaded" rule as every sync (2 Oct hotfix).
-async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): Promise<void> {
+// 002 B6 / 006 D3: delete records that were already removed from memory.
+// A thin wrapper over the persistence core (kept for callers on other branches).
+export async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): Promise<void> {
   if (!storeReady || ids.length === 0) return;
-  const db = getFirestoreDb();
-  if (!db) return;
   try {
-    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
-      const batch = db.batch();
-      for (const id of ids.slice(i, i + FIRESTORE_BATCH_CHUNK)) batch.delete(db.collection(collection).doc(id));
-      await batch.commit();
-    }
+    await persistIds([{ collection, ids }]);
   } catch (err) {
-    if (isFatalFirestoreConfigError(err)) markFirestoreUnavailable(String((err as any)?.message || err));
-    else console.error('[firestore] Targeted delete failed:', err);
+    logPersistFailed('background', err);
   }
 }
 
@@ -1707,17 +1699,10 @@ export async function clearHistoricalRecords(
 ): Promise<ClearHistoryResult> {
   const storeData = getStore();
   const result: ClearHistoryResult = {};
-  const db = getFirestoreDb();
-
-  const deleteFromFirestore = async (collectionName: string, ids: string[]) => {
-    if (!db || ids.length === 0) return;
-    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
-      const chunk = ids.slice(i, i + FIRESTORE_BATCH_CHUNK);
-      const batch = db.batch();
-      chunk.forEach((id) => batch.delete(db.collection(collectionName).doc(id)));
-      await batch.commit();
-    }
-  };
+  // 006 D3: the removed ids are deleted in Firestore through the persistence
+  // core (chunked; a failure is reported by the request's reply gate, which
+  // restores the records from Firestore).
+  const targets: PersistTarget[] = [];
 
   try {
     if (collections.includes('logs')) {
@@ -1726,7 +1711,7 @@ export async function clearHistoricalRecords(
       );
       const removeIds = new Set(toRemove.map((l) => l.id));
       storeData.logs = storeData.logs.filter((l) => !removeIds.has(l.id));
-      await deleteFromFirestore('logs', [...removeIds]);
+      targets.push({ collection: 'logs', ids: [...removeIds] });
       result.logs = removeIds.size;
     }
 
@@ -1736,7 +1721,7 @@ export async function clearHistoricalRecords(
       );
       const removeIds = new Set(toRemove.map((n) => n.id));
       storeData.slotChangeNotifications = storeData.slotChangeNotifications.filter((n) => !removeIds.has(n.id));
-      await deleteFromFirestore('slotChangeNotifications', [...removeIds]);
+      targets.push({ collection: 'slotChangeNotifications', ids: [...removeIds] });
       result.slotChangeNotifications = removeIds.size;
     }
 
@@ -1747,14 +1732,14 @@ export async function clearHistoricalRecords(
       );
       const removeIds = new Set(toRemove.map((t) => t.id));
       storeData.valetTickets = storeData.valetTickets.filter((t) => !removeIds.has(t.id));
-      await deleteFromFirestore('valetTickets', [...removeIds]);
+      targets.push({ collection: 'valetTickets', ids: [...removeIds] });
       result.valetTickets = removeIds.size;
     }
   } catch (err: any) {
-    console.error('[firestore] clearHistoricalRecords failed partway through:', err?.message || err);
+    console.error('[clearHistoricalRecords] failed partway through:', err?.message || err);
   }
 
-  saveDB();
+  saveDB(targets.filter((t) => t.ids.length > 0));
   return result;
 }
 
@@ -1899,7 +1884,9 @@ export function processVehicleEntry(params: {
 
   storeData.logs.unshift(newLog);
 
-  // Clear non-parked alert if previously flagged
+  // Clear non-parked alert if previously flagged (006 D3: those alert documents
+  // are deleted in Firestore too, in the same save as the slot and log).
+  const clearedAlertIds = storeData.alerts.filter(a => a.vehicleNumber.toUpperCase() === cleanVehicleNum).map(a => a.id);
   storeData.alerts = storeData.alerts.filter(a => a.vehicleNumber.toUpperCase() !== cleanVehicleNum);
 
   // Targeted sync: only push the exact slot and log this request just
@@ -1908,6 +1895,7 @@ export function processVehicleEntry(params: {
   saveDB([
     { collection: 'slots', ids: [targetSlot.id] },
     { collection: 'logs', ids: [newLog.id] },
+    ...(clearedAlertIds.length > 0 ? [{ collection: 'alerts' as const, ids: clearedAlertIds }] : []),
   ]);
 
   return {
@@ -2095,8 +2083,10 @@ export function runNonParkedRosterScan(): { scanTime: string; totalActiveEmploye
       if (existing) {
         newAlerts.push(existing);
       } else {
+        let alertId = `alert-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+        while (newAlerts.some((a) => a.id === alertId)) alertId = `alert-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         const createdAlert: NonParkedAlert = {
-          id: `alert-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+          id: alertId,
           siteId: emp.siteId,
           employeeId: emp.employeeId,
           employeeName: emp.name,
@@ -2114,8 +2104,10 @@ export function runNonParkedRosterScan(): { scanTime: string; totalActiveEmploye
     }
   });
 
+  // 006 D3: alerts that are no longer raised are deleted in Firestore too.
+  const oldAlertIds = storeData.alerts.map((a) => a.id);
   storeData.alerts = newAlerts;
-  saveDB();
+  saveDB([{ collection: 'alerts', ids: [...oldAlertIds, ...newAlerts.map((a) => a.id)] }]);
 
   return {
     scanTime: new Date().toLocaleTimeString(),
@@ -2448,7 +2440,7 @@ export function deleteSlot(slotId: string, force: boolean = false): { success: b
   }
 
   storeData.slots = storeData.slots.filter((s) => s.id !== slotId);
-  saveDB();
+  saveDB([{ collection: 'slots', ids: [slotId] }]); // 006 D3: removed from Firestore too
 
   return { success: true, message: `Slot ${slot.slotNumber} deleted.` };
 }
@@ -2619,22 +2611,20 @@ export function updateDemoRequestStatus(id: string, status: DemoRequestStatus, n
 // copy are the only copies.
 export async function deleteDemoRequest(id: string): Promise<'deleted' | 'not-found' | 'failed'> {
   const storeData = getStore();
-  if (!(storeData.demoRequests || []).some((r) => r.id === id)) return 'not-found';
-  if (isFirestoreConfigured()) {
-    const db = getFirestoreDb();
-    if (!db || !storeReady) return 'failed';
-    try {
-      const batch = db.batch();
-      batch.delete(db.collection('demoRequests').doc(id));
-      await batch.commit();
-    } catch (err) {
-      console.error('[firestore] Demo request delete failed; record kept:', (err as Error)?.message || err);
-      return 'failed';
-    }
+  const index = (storeData.demoRequests || []).findIndex((r) => r.id === id);
+  if (index < 0) return 'not-found';
+  if (isFirestoreConfigured() && (!getFirestoreDb() || !storeReady)) return 'failed';
+  // 006 D3: remove from memory, delete through the persistence core; on a
+  // failed delete put the record back (kept) and say so.
+  const [removed] = storeData.demoRequests.splice(index, 1);
+  try {
+    await persistIds([{ collection: 'demoRequests', ids: [id] }]);
+  } catch (err) {
+    console.error('[firestore] Demo request delete failed; record kept:', (err as Error)?.message || err);
+    const current = getStore();
+    if (!current.demoRequests.some((r) => r.id === id)) current.demoRequests.splice(Math.min(index, current.demoRequests.length), 0, removed);
+    return 'failed';
   }
-  // Re-read: the list may have changed while the delete was awaited.
-  const current = getStore();
-  current.demoRequests = (current.demoRequests || []).filter((r) => r.id !== id);
   writeLocalCopy();
   return 'deleted';
 }
@@ -2650,8 +2640,7 @@ export function expireDemoRequests(now: Date = new Date()): number {
   if (expired.length === 0) return 0;
   const gone = new Set(expired);
   storeData.demoRequests = storeData.demoRequests.filter((r) => !gone.has(r.id));
-  writeLocalCopy();
-  void deleteFirestoreDocs('demoRequests', expired);
+  saveDB([{ collection: 'demoRequests', ids: expired }]); // local copy + Firestore delete (006 D3)
   return expired.length;
 }
 
@@ -2735,7 +2724,7 @@ export function removeWhitelistedDomain(domainId: string): { success: boolean; m
 
   const removed = storeData.whitelistedDomains[idx];
   storeData.whitelistedDomains.splice(idx, 1);
-  saveDB();
+  saveDB([{ collection: 'whitelistedDomains', ids: [removed.id] }]); // 006 D3
 
   return {
     success: true,
@@ -3807,7 +3796,7 @@ export function deleteSite(siteId: string): { success: boolean; message: string 
   const removed = storeData.sites[idx];
   storeData.sites.splice(idx, 1);
 
-  saveDB();
+  saveDB([{ collection: 'sites', ids: [removed.id] }]); // 006 D3
 
   return {
     success: true,
@@ -4191,7 +4180,7 @@ export function deleteAppRole(roleId: string): { success: boolean; message: stri
   }
 
   storeData.appRoles = storeData.appRoles.filter((r) => r.id !== roleId);
-  saveDB();
+  saveDB([{ collection: 'appRoles', ids: [roleId] }]); // 006 D3
 
   return { success: true, message: `Role '${role.roleName}' removed successfully.` };
 }
@@ -4530,7 +4519,7 @@ export function deleteAppUser(userId: string, requestingUserId?: string): { succ
   }
 
   storeData.appUsers = storeData.appUsers.filter((u) => u.id !== userId);
-  saveDB();
+  saveDB([{ collection: 'appUsers', ids: [userId] }]); // 006 D3
 
   return { success: true, message: `User '${user.fullName}' removed from the system.` };
 }

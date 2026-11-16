@@ -57,3 +57,25 @@ test('T-1 [D1, AC-01] the fake rejects undefined like Firestore; a vacated/edite
     } finally { fx.stop(); }
   }
 });
+
+test('T-2 [D2, AC-02] a 1,080-row slot upload is written in batches of at most 400 and all 1,080 documents are stored', async () => {
+  const fx = await persistentServer();
+  try {
+    const c = fx.c;
+    const site = await c.onboard('T2', 'T2 site');
+    const before = (await fx.srv.report()).commits.length;
+    const rows = Array.from({ length: 1080 }, (_, i) => fullSlot(`T2-${String(i + 1).padStart(4, '0')}`));
+    const up = await c.post('master', '/slots/bulk-upload', { slots: rows }, { site: site.id });
+    assert.ok(up.body.success, JSON.stringify(up.body).slice(0, 300));
+    assert.equal(up.body.result.added, 1080);
+    await sleep(SETTLE);
+    const slotCommits = (await fx.srv.report()).commits.slice(before).filter((cm) => cm.collections.includes('slots'));
+    assert.equal(slotCommits.length, 3, JSON.stringify(slotCommits));
+    assert.ok(slotCommits.every((cm) => cm.ops <= 400), 'each batch is <= 400 writes');
+    assert.equal(slotCommits.reduce((n, cm) => n + cm.ops, 0), 1080);
+    const stored = fx.ids('slots');
+    assert.equal(stored.length, 1080, 'all rows stored (ids unique within the upload)');
+    assert.equal(new Set(stored).size, 1080);
+    assert.equal((await c.slots(site.id)).length, 1080);
+  } finally { fx.stop(); }
+});

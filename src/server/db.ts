@@ -1264,6 +1264,19 @@ const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch lim
  * drops every `undefined` at any depth and changes nothing else. Belt and
  * braces with `ignoreUndefinedProperties` on the client.
  */
+/**
+ * Ids made from the clock plus 3 random digits collide inside a bulk upload
+ * (hundreds of rows in the same millisecond); two records with one id become
+ * ONE document in Firestore. Pick an id that no record in `existing` has.
+ */
+function uniqueRecordId(prefix: string, existing: Array<{ id?: string }>): string {
+  const taken = new Set(existing.map((r) => r?.id));
+  for (;;) {
+    const id = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
 export function toFirestoreDoc<T>(record: T): T {
   return JSON.parse(JSON.stringify(record)) as T;
 }
@@ -1472,65 +1485,114 @@ export async function bootstrapFirestore(): Promise<void> {
 // two functions directly implicated in this bug: vehicle entry and exit,
 // which mutate ParkingLog and ParkingSlot records — the exact data this
 // bug was destroying.
-async function syncSpecificRecords(
-  updates: { collection: keyof StoreData; ids: string[] }[]
-): Promise<void> {
+// 006 B2 (D2): the persistence core. Writes or deletes exactly the ids it is
+// given, in order, in batches of at most FIRESTORE_BATCH_CHUNK (400) operations,
+// and THROWS when a batch fails (it used to only log, and one batch held every
+// id, so an upload of more than 500 slots was never saved).
+//   - id found in memory      -> set(doc, toFirestoreDoc(record))   (full replace)
+//   - id not in memory        -> delete(doc)                        (D3)
+//   - ACTIVE log whose stored copy is COMPLETED -> not written (status guard)
+// Runs one call at a time (a queue) and reads memory when its turn comes, so
+// two overlapping saves of the same record always end with the newest state.
+export interface PersistTarget { collection: keyof StoreData; ids: string[] }
+
+export class PersistError extends Error {
+  collections: Record<string, string[]>;
+  constructor(reason: string, collections: Record<string, string[]>) {
+    super(reason);
+    this.name = 'PersistError';
+    this.collections = collections;
+  }
+}
+
+let persistQueue: Promise<unknown> = Promise.resolve();
+export function persistIds(targets: PersistTarget[]): Promise<void> {
+  const run = persistQueue.then(() => persistIdsNow(targets));
+  persistQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function persistIdsNow(targets: PersistTarget[]): Promise<void> {
+  // Local demo mode (no Firestore project): the local JSON copy is the store.
+  if (!isFirestoreConfigured()) return;
   const db = getFirestoreDb();
-  if (!db) return;
+  if (!db) {
+    throw new PersistError('Firestore unavailable', Object.fromEntries(targets.map((t) => [String(t.collection), t.ids.slice(0, 20)])));
+  }
 
-  try {
-    for (const { collection, ids } of updates) {
-      if (ids.length === 0) continue;
-      const items = store[collection] as unknown as Array<{ id: string }>;
-      if (!Array.isArray(items)) continue;
-
-      const collectionRef = db.collection(collection);
-      const batch = db.batch();
-      for (const id of ids) {
-        const record = items.find((item) => item?.id === id);
-        if (!record) continue;
-
-        // Anomaly detection (checklist requirement: alert on any
-        // COMPLETED -> ACTIVE reversion, since this should never happen
-        // during normal operation). Only meaningful for ParkingLog
-        // records, which carry a 'status' field with these exact values.
-        if (collection === 'logs' && (record as any).status === 'ACTIVE') {
-          try {
-            const existingDoc = await collectionRef.doc(id).get();
-            const existingData = existingDoc.data();
-            if (existingData?.status === 'COMPLETED') {
-              logSecurityEvent({
-                action: 'LOG_STATUS_REVERSION_BLOCKED',
-                actor: 'SYSTEM',
-                actorRole: 'SYSTEM',
-                ipAddress: '127.0.0.1',
-                targetResource: `logs/${id}`,
-                status: 'BLOCKED_UNAUTHORIZED',
-                details: `Prevented a completed parking log (${id}) from being overwritten back to ACTIVE status. This indicates a stale in-memory copy on this server instance — investigate multi-instance divergence.`,
-              });
-              // Do not write this record — the existing COMPLETED state
-              // in Firestore is more authoritative than this instance's
-              // stale in-memory copy.
-              continue;
-            }
-          } catch {
-            // If the anomaly check itself fails, fall through to the
-            // write rather than silently dropping a legitimate update —
-            // the check is a safety net, not a hard gate.
-          }
-        }
-
-        // 006 D1/D-4: full replace of the cleaned record (see toFirestoreDoc).
-        batch.set(collectionRef.doc(id), toFirestoreDoc(record));
+  type Op = { collection: string; id: string; record: object | null };
+  const ops: Op[] = [];
+  for (const target of targets) {
+    const wanted = new Set(target.ids.map(String));
+    if (wanted.size === 0) continue;
+    const items = store[target.collection] as unknown as Array<{ id: string }>;
+    const found = new Map<string, object>();
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (item && wanted.has(String(item.id)) && !found.has(String(item.id))) found.set(String(item.id), item);
       }
-      await batch.commit();
     }
-  } catch (err) {
-    if (isFatalFirestoreConfigError(err)) {
-      markFirestoreUnavailable(String((err as any)?.message || err));
-    } else {
-      console.error('[firestore] Targeted sync failed:', err);
+    wanted.forEach((id) => ops.push({ collection: String(target.collection), id, record: found.get(id) || null }));
+  }
+
+  for (let i = 0; i < ops.length; i += FIRESTORE_BATCH_CHUNK) {
+    const chunk = ops.slice(i, i + FIRESTORE_BATCH_CHUNK);
+    try {
+      // Anomaly guard (checklist requirement): never overwrite a COMPLETED log
+      // with a stale ACTIVE copy. One getAll per chunk, not one get per log.
+      const activeLogs = chunk.filter((o) => o.collection === 'logs' && o.record && (o.record as any).status === 'ACTIVE');
+      const blocked = new Set<string>();
+      if (activeLogs.length > 0) {
+        try {
+          const snaps = await db.getAll(...activeLogs.map((o) => db.collection('logs').doc(o.id)));
+          snaps.forEach((snap, k) => {
+            if (snap.exists && (snap.data() as any)?.status === 'COMPLETED') blocked.add(activeLogs[k].id);
+          });
+        } catch {
+          // The check is a safety net, not a gate: if it fails, write.
+        }
+        blocked.forEach((id) => logSecurityEvent({
+          action: 'LOG_STATUS_REVERSION_BLOCKED',
+          actor: 'SYSTEM',
+          actorRole: 'SYSTEM',
+          ipAddress: '127.0.0.1',
+          targetResource: `logs/${id}`,
+          status: 'BLOCKED_UNAUTHORIZED',
+          details: `Prevented a completed parking log (${id}) from being overwritten back to ACTIVE status. This indicates a stale in-memory copy on this server instance — investigate multi-instance divergence.`,
+        }));
+      }
+
+      const batch = db.batch();
+      let n = 0;
+      for (const op of chunk) {
+        if (blocked.has(op.id) && op.collection === 'logs') continue;
+        const ref = db.collection(op.collection).doc(op.id);
+        if (op.record) batch.set(ref, toFirestoreDoc(op.record));
+        else batch.delete(ref);
+        n++;
+      }
+      if (n > 0) await batch.commit();
+    } catch (err: any) {
+      if (isFatalFirestoreConfigError(err)) markFirestoreUnavailable(String(err?.message || err));
+      const failed: Record<string, string[]> = {};
+      for (const op of chunk) (failed[op.collection] = failed[op.collection] || []).push(op.id);
+      throw new PersistError(String(err?.message || err), failed);
     }
+  }
+}
+
+/** One structured line on stderr (Cloud Logging parses it as JSON). Ids only: no names, plates, emails, bodies. */
+export function logPersistFailed(scope: 'request' | 'background' | 'full-sync', err: unknown, extra: { method?: string; route?: string; rolledBack?: boolean; collection?: string } = {}): void {
+  const reason = String((err as any)?.message || err).replace(/\s+/g, ' ').slice(0, 200);
+  const cols = err instanceof PersistError ? err.collections : extra.collection ? { [extra.collection]: [] as string[] } : {};
+  const names = Object.keys(cols);
+  const lines = names.length > 0 ? names : [''];
+  for (const collection of lines) {
+    const ids = (cols as Record<string, string[]>)[collection] || [];
+    console.error(JSON.stringify({
+      severity: 'ERROR', event: 'PERSIST_FAILED', scope, ...(extra.method ? { method: extra.method } : {}), ...(extra.route ? { route: extra.route } : {}),
+      collection, count: ids.length, ids: ids.slice(0, 20), reason, ...(extra.rolledBack !== undefined ? { rolledBack: extra.rolledBack } : {}),
+    }));
   }
 }
 
@@ -1602,7 +1664,7 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
   }
 
   if (targetedSync && targetedSync.length > 0) {
-    void syncSpecificRecords(targetedSync);
+    persistIds(targetedSync).catch((err) => logPersistFailed('background', err));
   } else {
     scheduleDebouncedFullSync();
   }
@@ -2115,7 +2177,7 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>, deferSync: bool
     return updated;
   } else {
     const newEmp: Employee = {
-      id: empData.id || `emp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: empData.id || uniqueRecordId('emp', storeData.employees),
       siteId: empData.siteId || DEFAULT_SITE_ID,
       employeeId: empData.employeeId || `EMP-${1000 + storeData.employees.length + 1}`,
       name: empData.name || 'New Whitelist Employee',
@@ -2348,7 +2410,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
     return updated;
   } else {
     const newSlot: ParkingSlot = {
-      id: slotData.id || `slot-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: slotData.id || uniqueRecordId('slot', storeData.slots),
       siteId: slotData.siteId || DEFAULT_SITE_ID,
       slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
       basement: slotData.basement || 'B1',
@@ -3385,7 +3447,7 @@ export function bulkUploadRegistrations(
       updated++;
     } else {
       const newReq: RegistrationRequest = {
-        id: `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        id: uniqueRecordId('req', storeData.registrationRequests),
         siteId: item.siteId || DEFAULT_SITE_ID,
         employeeId: item.employeeId || `EMP-${2000 + Math.floor(Math.random() * 8000)}`,
         name: name,

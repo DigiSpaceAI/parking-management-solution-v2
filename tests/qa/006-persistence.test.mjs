@@ -266,3 +266,66 @@ test('T-8 [AC-08] the drift check logs only when Firestore and memory disagree, 
     assert.ok(drift(fx.srv.getLog()).every((x) => x.collection === 'slots'), 'only the collection that differs');
   } finally { fx.stop(); }
 });
+
+test('T-9 [AC-02, AC-10] the restart test: site, Site Admin, 1,080 slots, an edit and a delete all survive a restart', async () => {
+  const fx = await persistentServer();
+  try {
+    let c = fx.c;
+    const site = await c.onboard('T9', 'T9 site');
+    const user = await c.call('master', 'POST', '/rbac/users', { body: { username: 't9.admin', fullName: 'T9 Admin', email: 't9.admin@d6-parkflows.test',
+      roleId: 'role-site-manager', siteScopeType: 'SPECIFIC_SITES', assignedSiteIds: [site.id], status: 'ACTIVE', plainPassword: PW } });
+    assert.ok(user.body.success, JSON.stringify(user.body));
+    const rows = Array.from({ length: 1080 }, (_, i) => fullSlot(`T9-${String(i + 1).padStart(4, '0')}`));
+    const up = await c.post('master', '/slots/bulk-upload', { slots: rows }, { site: site.id });
+    assert.ok(up.body.success, JSON.stringify(up.body).slice(0, 300));
+    const all = await c.slots(site.id);
+    assert.equal(all.length, 1080);
+    const edit = await c.post('master', '/slots/save', { slot: { id: all[0].id, slotNumber: all[0].slotNumber, status: 'VACANT', floorLocation: 'T9 edited floor' } }, { site: site.id });
+    assert.equal(edit.status, 200, JSON.stringify(edit.body));
+    const del = await c.post('master', '/slots/delete', { slotId: all[1].id }, { site: site.id });
+    assert.ok(del.status < 300, JSON.stringify(del.body));
+    // no waiting for a timer: the replies above already waited for the saves
+    const counters = await fx.srv.counters();
+    assert.equal(counters.untargetedAfterReady, 0, 'no untargeted save: ' + counters.lastUntargetedCaller);
+    ({ c } = await fx.restart());
+    const sites = (await c.get('master', '/sites')).body.sites;
+    assert.ok(sites.some((x) => x.id === site.id), 'site survived');
+    const users = (await c.get('master', '/rbac/users')).body.users;
+    assert.ok(users.some((x) => x.username === 't9.admin'), 'Site Admin survived');
+    const after = await c.slots(site.id);
+    assert.equal(after.length, 1079, '1,080 uploaded, one deleted');
+    assert.equal(after.find((x) => x.id === all[0].id).floorLocation, 'T9 edited floor', 'the edit survived');
+    assert.ok(!after.some((x) => x.id === all[1].id), 'the deleted slot stayed deleted');
+    // and the Site Admin can sign in again after the restart
+    await c.login('t9', 't9.admin@d6-parkflows.test', PW);
+  } finally { fx.stop(); }
+});
+
+test('T-10 [AC-09] regression: the gate adds no noticeable wait, and nothing leaks into responses or logs', async () => {
+  const fx = await persistentServer();
+  try {
+    const c = fx.c;
+    const site = await c.onboard('T10', 'T10 site');
+    const up = await c.post('master', '/slots/bulk-upload', { slots: Array.from({ length: 12 }, (_, i) => fullSlot(`T10-${String(i + 1).padStart(2, '0')}`)) }, { site: site.id });
+    assert.ok(up.body.success, JSON.stringify(up.body));
+    const times = [];
+    for (let i = 0; i < 6; i++) {
+      const plate = `KA01AB${1000 + i}`;
+      const t0 = Date.now();
+      const e = await c.post('master', '/vehicles/entry', { vehicleNumber: plate, vehicleType: 'SEDAN', entryType: 'MANUAL' }, { site: site.id });
+      times.push(Date.now() - t0);
+      assert.ok(e.body.success, JSON.stringify(e.body));
+      const t1 = Date.now();
+      const x = await c.post('master', '/vehicles/exit', { vehicleNumber: plate }, { site: site.id });
+      times.push(Date.now() - t1);
+      assert.ok(x.status < 500, JSON.stringify(x.body));
+    }
+    const avg = times.reduce((a, b) => a + b, 0) / times.length;
+    assert.ok(avg < 400, `average entry/exit ${Math.round(avg)} ms (fake Firestore)`);
+    await sleep(SETTLE);
+    const log = fx.srv.getLog();
+    assert.ok(!/PERSIST_FAILED|PERSIST_DRIFT|untargeted saveDB/.test(log), 'a healthy run logs no persistence problem');
+    for (const body of c.responses) assert.ok(!/passwordHash|passwordSalt/.test(body), 'no password hash in any response');
+    assert.ok(!/passwordHash|passwordSalt/.test(log), 'no password hash in the log');
+  } finally { fx.stop(); }
+});

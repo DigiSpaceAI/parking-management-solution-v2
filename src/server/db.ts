@@ -1292,15 +1292,19 @@ function isFatalFirestoreConfigError(err: any): boolean {
   );
 }
 
+// 006 D4/AC-06: the full sync (empty-database seed and the fallback for an
+// untargeted save) writes ONE COLLECTION AT A TIME, each in its own try, so one
+// bad record can no longer stop sites, users, roles, domains and invoices from
+// being written. A failing collection is logged as PERSIST_FAILED
+// (scope full-sync) and the rest continue. It still never deletes.
 async function syncStoreToFirestore(snapshot: StoreData) {
   const db = getFirestoreDb();
   if (!db) return;
 
-  try {
-    for (const key of FIRESTORE_COLLECTIONS) {
-      const items = snapshot[key] as unknown as Array<{ id: string }>;
-      if (!Array.isArray(items)) continue;
-
+  for (const key of FIRESTORE_COLLECTIONS) {
+    const items = snapshot[key] as unknown as Array<{ id: string }>;
+    if (!Array.isArray(items)) continue;
+    try {
       const collectionRef = db.collection(key);
       for (let i = 0; i < items.length; i += FIRESTORE_BATCH_CHUNK) {
         const chunk = items.slice(i, i + FIRESTORE_BATCH_CHUNK);
@@ -1313,16 +1317,19 @@ async function syncStoreToFirestore(snapshot: StoreData) {
         }
         await batch.commit();
       }
+    } catch (err) {
+      const fatal = isFatalFirestoreConfigError(err);
+      if (fatal) markFirestoreUnavailable(String((err as any)?.message || err));
+      logPersistFailed('full-sync', err, { collection: String(key) });
+      if (fatal) return; // the client is unusable for every collection
     }
+  }
+  try {
     await db.collection('_meta').doc('store').set({
       lastUpdated: snapshot.lastUpdated,
     });
   } catch (err) {
-    if (isFatalFirestoreConfigError(err)) {
-      markFirestoreUnavailable(String((err as any)?.message || err));
-    } else {
-      console.error('[firestore] Sync failed, local JSON copy is still up to date:', err);
-    }
+    logPersistFailed('full-sync', err, { collection: '_meta' });
   }
 }
 
@@ -1645,7 +1652,21 @@ export async function deleteFirestoreDocs(collection: keyof StoreData, ids: stri
   }
 }
 
-export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+// 006 AC-03: after ready, every save names the records it changed. A call with
+// no targets is a bug on that call site: it is counted and logged (with its
+// caller) and still falls back to the debounced full sync so nothing is lost.
+let untargetedAfterReady = 0;
+let lastUntargetedCaller = '';
+export function __persistCountersForTests() {
+  return { untargetedAfterReady, lastUntargetedCaller };
+}
+
+export interface SaveOptions {
+  /** D-3: never blocks or fails the request (sign-in's lastLoginAt). A failure is only logged. */
+  bestEffort?: boolean;
+}
+
+export function saveDB(targetedSync?: PersistTarget[], _opts: SaveOptions = {}) {
   writeLocalCopy();
 
   // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
@@ -1655,11 +1676,18 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
     return;
   }
 
-  if (targetedSync && targetedSync.length > 0) {
-    persistIds(targetedSync).catch((err) => logPersistFailed('background', err));
-  } else {
-    scheduleDebouncedFullSync();
+  if (targetedSync) {
+    if (targetedSync.length > 0) {
+      persistIds(targetedSync).catch((err) => logPersistFailed('background', err));
+    }
+    return;
   }
+  // No Firestore project configured (local demo): the local copy is the store.
+  if (!isFirestoreConfigured()) return;
+  untargetedAfterReady++;
+  lastUntargetedCaller = (new Error().stack || '').split('\n')[2]?.trim() || '';
+  console.warn(`[persist] untargeted saveDB() after ready — falling back to a full sync. Caller: ${lastUntargetedCaller}`);
+  scheduleDebouncedFullSync();
 }
 
 export type ClearableCollection = 'logs' | 'slotChangeNotifications' | 'valetTickets';
@@ -2679,7 +2707,7 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
   if (existing) {
     if (!existing.isActive) {
       existing.isActive = true;
-      saveDB();
+      saveDB([{ collection: 'whitelistedDomains', ids: [existing.id] }]);
       return { success: true, message: `Domain @${cleanDomain} re-activated on Whitelist.`, domain: existing };
     }
     return { success: false, message: `Domain @${cleanDomain} is ALREADY on the Whitelist.` };
@@ -2695,7 +2723,7 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
   };
 
   storeData.whitelistedDomains.push(newDom);
-  saveDB();
+  saveDB([{ collection: 'whitelistedDomains', ids: [newDom.id] }]);
 
   return {
     success: true,
@@ -2819,7 +2847,7 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
     storeData.registrationRequests = [];
   }
   storeData.registrationRequests.unshift(newRequest);
-  saveDB();
+  saveDB([{ collection: 'registrationRequests', ids: [newRequest.id] }]);
 
   return {
     success: true,
@@ -2878,7 +2906,10 @@ export function approveRegistrationRequest(requestId: string): { success: boolea
     registrationType: req.registrationType || 'EMPLOYEE_SELF',
   });
 
-  saveDB();
+  saveDB([
+    { collection: 'registrationRequests', ids: [req.id] },
+    { collection: 'employees', ids: [newEmp.id] },
+  ]);
 
   return {
     success: true,
@@ -2902,7 +2933,7 @@ export function rejectRegistrationRequest(requestId: string, reason?: string): {
   req.reviewedAt = new Date().toISOString();
   req.rejectionReason = reason || 'Rejected by Parking Admin';
 
-  saveDB();
+  saveDB([{ collection: 'registrationRequests', ids: [req.id] }]);
 
   return {
     success: true,
@@ -3139,16 +3170,20 @@ export function migrateSiteData(fromSiteId: string, toSiteId: string): { success
   const storeData = getStore();
   const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
   const migrated: Record<string, number> = {};
+  const movedIds: PersistTarget[] = []; // 006 D4: every moved record is written as itself
 
-  const migrateCollection = <T extends { siteId?: string }>(items: T[], label: string) => {
+  const migrateCollection = <T extends { siteId?: string; id?: string }>(items: T[], label: string) => {
     let count = 0;
+    const ids: string[] = [];
     for (const item of items) {
       if (resolveSiteId(item) === fromSiteId) {
         item.siteId = toSiteId;
         count++;
+        if (item.id) ids.push(item.id);
       }
     }
     migrated[label] = count;
+    if (ids.length > 0) movedIds.push({ collection: label as keyof StoreData, ids });
   };
 
   migrateCollection(storeData.slots, 'slots');
@@ -3165,7 +3200,7 @@ export function migrateSiteData(fromSiteId: string, toSiteId: string): { success
     return { success: false, message: `No records found under site '${fromSiteId}' — nothing to migrate.`, migrated };
   }
 
-  saveDB();
+  saveDB(movedIds);
 
   return {
     success: true,
@@ -3368,7 +3403,8 @@ export function bulkUploadRegistrations(
   let added = 0;
   let updated = 0;
   const errors: string[] = [];
-
+  const touchedRequests: string[] = [];
+  const touchedEmployees: string[] = [];
 
   items.forEach((item, index) => {
     const email = (item.email || '').trim().toLowerCase();
@@ -3417,7 +3453,7 @@ export function bulkUploadRegistrations(
       if (autoApprove) {
         existing.status = 'APPROVED';
         existing.reviewedAt = now;
-        saveOrUpdateEmployee({
+        touchedEmployees.push(saveOrUpdateEmployee({
           employeeId: existing.employeeId,
           siteId: existing.siteId,
           name: existing.name,
@@ -3431,8 +3467,9 @@ export function bulkUploadRegistrations(
           status: 'ACTIVE',
           isActive: true,
           registrationType: reqType,
-        });
+        }, true).id);
       }
+      touchedRequests.push(existing.id);
       updated++;
     } else {
       const newReq: RegistrationRequest = {
@@ -3454,7 +3491,7 @@ export function bulkUploadRegistrations(
       };
 
       if (isApproved) {
-        saveOrUpdateEmployee({
+        touchedEmployees.push(saveOrUpdateEmployee({
           siteId: newReq.siteId,
           employeeId: newReq.employeeId,
           name: newReq.name,
@@ -3468,15 +3505,21 @@ export function bulkUploadRegistrations(
           status: 'ACTIVE',
           isActive: true,
           registrationType: reqType,
-        });
+        }, true).id);
       }
 
       storeData.registrationRequests.unshift(newReq);
+      touchedRequests.push(newReq.id);
       added++;
     }
   });
 
-  saveDB();
+  // 006 D4: write exactly the records this upload touched (deferred employee
+  // saves above, one chunked write here).
+  saveDB([
+    { collection: 'registrationRequests', ids: touchedRequests },
+    { collection: 'employees', ids: touchedEmployees },
+  ]);
 
   return {
     success: true,
@@ -3671,7 +3714,7 @@ export function getSites(): SiteConfig[] {
         updatedAt: new Date().toISOString(),
       },
     ];
-    saveDB();
+    saveDB([{ collection: 'sites', ids: storeData.sites.map((x) => x.id) }]); // 006 D4 (005 removes this fill on live)
   }
   return storeData.sites;
 }
@@ -3748,7 +3791,10 @@ export function onboardSite(siteInput: Partial<SiteConfig>): { success: boolean;
   };
   storeData.invoices.unshift(initialInvoice);
 
-  saveDB();
+  saveDB([
+    { collection: 'sites', ids: [newSite.id] },
+    { collection: 'invoices', ids: [initialInvoice.id] },
+  ]);
 
   return {
     success: true,
@@ -3776,7 +3822,7 @@ export function updateSiteStatus(
     delete site.holdReason;
   }
 
-  saveDB();
+  saveDB([{ collection: 'sites', ids: [site.id] }]);
 
   const statusLabel = status === 'ACTIVE' ? 'RESUMED / ACTIVE' : status === 'ON_HOLD' ? 'PLACED ON HOLD' : 'DEACTIVATED';
   return {
@@ -3864,7 +3910,7 @@ export function updateSitePricing(siteId: string, pricing: SitePricing): { succe
   site.pricing = pricing;
   site.updatedAt = new Date().toISOString();
 
-  saveDB();
+  saveDB([{ collection: 'sites', ids: [site.id] }]);
 
   return {
     success: true,
@@ -3916,7 +3962,7 @@ export function generateSiteInvoice(data: {
   if (!storeData.invoices) storeData.invoices = [];
   storeData.invoices.unshift(newInvoice);
 
-  saveDB();
+  saveDB([{ collection: 'invoices', ids: [newInvoice.id] }]);
 
   return {
     success: true,
@@ -3936,7 +3982,7 @@ export function updateInvoiceStatus(
   if (!inv) return { success: false, message: 'Invoice not found.' };
 
   inv.status = status;
-  saveDB();
+  saveDB([{ collection: 'invoices', ids: [inv.id] }]);
 
   return {
     success: true,
@@ -3951,8 +3997,7 @@ export function updateInvoiceStatus(
 export function getValetTickets(): ValetTicket[] {
   const storeData = getStore();
   if (!storeData.valetTickets) {
-    storeData.valetTickets = [];
-    saveDB();
+    storeData.valetTickets = []; // an empty array, no record: nothing to save (006 D4)
   }
   return storeData.valetTickets;
 }
@@ -4104,7 +4149,7 @@ export function getAppRoles(): RolePermissionConfig[] {
   if (!storeData.appRoles || storeData.appRoles.length === 0) {
     const { roles: defaultRoles } = getDefaultRolesAndUsers();
     storeData.appRoles = defaultRoles;
-    saveDB();
+    saveDB([{ collection: 'appRoles', ids: defaultRoles.map((r) => r.id) }]); // 006 D4 (005 removes this fill on live)
   }
   return storeData.appRoles;
 }
@@ -4226,7 +4271,7 @@ export function getAppUsers(): AppUser[] {
   if (!storeData.appUsers || storeData.appUsers.length === 0) {
     const { users: defaultUsers } = getDefaultRolesAndUsers();
     storeData.appUsers = defaultUsers;
-    saveDB();
+    saveDB([{ collection: 'appUsers', ids: defaultUsers.map((u) => u.id) }]); // 006 D4 (005 removes this fill on live)
   }
   return storeData.appUsers;
 }

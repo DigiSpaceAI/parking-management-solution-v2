@@ -2261,7 +2261,7 @@ app.post('/api/v1/slots/update-status', requirePermission('INVENTORY', 'canEdit'
 
   slot.status = newStatus;
   slot.updatedAt = new Date().toISOString();
-  saveDB();
+  saveDB([{ collection: 'slots', ids: [slot.id] }]);
 
   logSecurityEvent({
     action: 'SLOT_STATUS_OVERRIDE',
@@ -2573,7 +2573,7 @@ const handleLoginRequest = (req: express.Request, res: express.Response) => {
   // 5. Successful Authentication: Reset failed attempt tracker
   clearLoginFailures(ip, cleanId);
   user.lastLoginAt = new Date().toISOString();
-  saveDB();
+  saveDB([{ collection: 'appUsers', ids: [user.id] }], { bestEffort: true }); // D-3: never blocks sign-in
 
   // 6. Regenerate Cryptographic Session Token & Set Secure Cookies
   const sessionEntropy = crypto.randomBytes(32).toString('hex');

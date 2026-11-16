@@ -122,3 +122,50 @@ test('T-3 [D3, AC-05] deleted slot, site, user, role, domain and cleared alert a
     assert.ok(!fx.read().alerts?.some((x) => x.id === 'alert-t3'));
   } finally { fx.stop(); }
 });
+
+test('T-4 [D4, AC-03] every admin write is stored by its own targeted save, with no full sync', async () => {
+  const fx = await persistentServer();
+  try {
+    const c = fx.c;
+    const before = await fx.srv.counters();
+    const site = await c.onboard('T4', 'T4 site');
+    await sleep(SETTLE);
+    assert.ok(fx.doc('sites', site.id), 'site stored');
+    const st = await c.post('master', '/sites/status', { siteId: site.id, status: 'ACTIVE' });
+    assert.ok(st.status < 300, JSON.stringify(st.body));
+    const pr = await c.post('master', '/sites/pricing', { siteId: site.id, pricing: { hourlyRate: 77, dailyMaxRate: 400, monthlyPassRate: 3000, currency: 'INR', taxPercentage: 18 } });
+    assert.ok(pr.status < 300, JSON.stringify(pr.body));
+    const user = await c.call('master', 'POST', '/rbac/users', { body: { username: 't4.user', fullName: 'T4 User', email: 't4.user@d6-parkflows.test', roleId: 'role-site-manager', siteScopeType: 'SPECIFIC_SITES', assignedSiteIds: [site.id], status: 'ACTIVE', plainPassword: 'Hotfix006Password#2026' } });
+    assert.ok(user.status < 300, JSON.stringify(user.body));
+    const role = await c.call('master', 'POST', '/rbac/roles', { body: { roleName: 'T4 role', description: 'x', siteScope: 'ASSIGNED_SITES_ONLY', modulePermissions: {} } });
+    assert.ok(role.status < 300, JSON.stringify(role.body));
+    const dom = await c.post('master', '/domains/add', { domain: 't4.example' });
+    assert.ok(dom.status < 300, JSON.stringify(dom.body));
+    const inv = await c.post('master', '/invoices/generate', { siteId: site.id, billingPeriod: '2026-10', baseAmount: 1000, notes: 't4' });
+    assert.ok(inv.status < 300, JSON.stringify(inv.body));
+    await sleep(SETTLE);
+    assert.equal(fx.doc('sites', site.id).pricing.hourlyRate, 77, 'pricing change stored');
+    assert.ok(fx.ids('appUsers').some((id) => fx.doc('appUsers', id).username === 't4.user'), 'user stored');
+    assert.ok(fx.ids('appRoles').some((id) => fx.doc('appRoles', id).roleName === 'T4 role'), 'role stored');
+    assert.ok(fx.ids('whitelistedDomains').some((id) => fx.doc('whitelistedDomains', id).domain === 't4.example'), 'domain stored');
+    assert.ok(fx.ids('invoices').length >= 1, 'invoice stored');
+    const after = await fx.srv.counters();
+    assert.equal(after.untargetedAfterReady - (before.untargetedAfterReady || 0), 0, 'no untargeted saveDB() after ready: ' + after.lastUntargetedCaller);
+    assert.ok(!/untargeted saveDB/.test(fx.srv.getLog()));
+  } finally { fx.stop(); }
+});
+
+test('T-5 [D4, AC-06] the full sync writes each collection on its own; one failing collection no longer stops the rest', async () => {
+  const fx = await persistentServer({ FAKE_FAIL_COMMITS: 'appRoles:1' });
+  try {
+    await sleep(SETTLE);
+    const log = fx.srv.getLog();
+    const lines = log.split('\n').filter((l) => l.includes('"event":"PERSIST_FAILED"'));
+    assert.equal(lines.length, 1, 'one PERSIST_FAILED line for the one failed collection:\n' + log.slice(-1500));
+    const j = JSON.parse(lines[0].slice(lines[0].indexOf('{')));
+    assert.equal(j.collection, 'appRoles');
+    assert.equal(j.scope, 'full-sync');
+    assert.ok(fx.ids('appUsers').length >= 1, 'users were still written after roles failed');
+    assert.equal(fx.ids('appRoles').length, 0, 'the failed collection is the only one missing');
+  } finally { fx.stop(); }
+});

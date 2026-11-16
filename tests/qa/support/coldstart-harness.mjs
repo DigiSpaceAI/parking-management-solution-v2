@@ -34,6 +34,10 @@ const fake = new FakeFirestore(seed, {
 });
 const client = await imp('src/server/firestoreClient.ts');
 client.__setFirestoreDbForTests(fake);
+// 006: FAKE_FAIL_COMMITS="appRoles:1,slots:2" arms commit failures before the store loads (full-sync test).
+for (const part of (process.env.FAKE_FAIL_COMMITS || '').split(',').filter(Boolean)) {
+  const [col, n] = part.split(':'); fake.failCommit(Number(n || 1), col);
+}
 
 if (mode === 'store') {
   const db = await imp('src/server/db.ts');

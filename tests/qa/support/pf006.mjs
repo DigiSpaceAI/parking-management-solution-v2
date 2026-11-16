@@ -155,11 +155,12 @@ export async function persistentServer(env = {}) {
   let srv = await startServer({ fake: true, env: all });
   let c = client(srv);
   await c.login('master', MASTER_EMAIL);
+  // The fake rewrites the file on every commit: retry a read that catches it mid-write.
+  const read = () => { for (let i = 0; ; i++) { try { return JSON.parse(readFileSync(dataFile, 'utf-8')); } catch (e) { if (i > 20) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); } } };
   return {
-    get srv() { return srv; }, get c() { return c; }, dataFile,
-    read: () => JSON.parse(readFileSync(dataFile, 'utf-8')),
-    ids: (coll) => (JSON.parse(readFileSync(dataFile, 'utf-8'))[coll] || []).map((d) => d.id),
-    doc: (coll, id) => (JSON.parse(readFileSync(dataFile, 'utf-8'))[coll] || []).find((d) => d.id === id),
+    get srv() { return srv; }, get c() { return c; }, dataFile, read,
+    ids: (coll) => (read()[coll] || []).map((d) => d.id),
+    doc: (coll, id) => (read()[coll] || []).find((d) => d.id === id),
     async restart(extra = {}) { srv.stop(); srv = await startServer({ fake: true, env: { ...all, ...extra } }); c = client(srv); await c.login('master', MASTER_EMAIL); return { srv, c }; },
     stop: () => { srv.stop(); try { rmSync(dir, { recursive: true, force: true }); } catch {} },
   };

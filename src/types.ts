@@ -350,7 +350,8 @@ export type ApiErrorCode =
   | 'ERR_MASTER_ONLY'
   | 'ERR_SESSION_EXPIRED'
   | 'ERR_ACCOUNT_INACTIVE'
-  | 'ERR_STARTING';
+  | 'ERR_STARTING'
+  | 'ERR_PERSIST_FAILED';
 
 export interface SecurityComplianceSummary {
   encryptionAtRest: boolean;

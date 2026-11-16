@@ -169,3 +169,100 @@ test('T-5 [D4, AC-06] the full sync writes each collection on its own; one faili
     assert.equal(fx.ids('appRoles').length, 0, 'the failed collection is the only one missing');
   } finally { fx.stop(); }
 });
+
+const persistLines = (log) => log.split('\n').filter((l) => l.includes('"event":"PERSIST_FAILED"')).map((l) => JSON.parse(l.slice(l.indexOf('{'))));
+
+test('T-6 [D5, AC-04/07] a write that cannot be saved answers 503, is rolled back, and is logged with ids only', async () => {
+  const fx = await persistentServer();
+  try {
+    const c = fx.c;
+    const site = await c.onboard('T6', 'T6 Secret Site Name');
+    const up = await c.post('master', '/slots/bulk-upload', { slots: [fullSlot('T6-01'), fullSlot('T6-02')] }, { site: site.id });
+    assert.ok(up.body.success, JSON.stringify(up.body));
+    const [s1, s2] = await c.slots(site.id);
+    // (a) edit fails: 503, memory shows the old values, Firestore unchanged
+    await fx.srv.fail('slots', 1);
+    const edit = await c.post('master', '/slots/save', { slot: { id: s1.id, slotNumber: s1.slotNumber, floorLocation: 'T6 changed floor' } }, { site: site.id });
+    assert.equal(edit.status, 503, JSON.stringify(edit.body));
+    assert.equal(edit.body.success, false);
+    assert.equal(edit.body.errorCode, 'ERR_PERSIST_FAILED');
+    assert.equal(edit.body.message, "Couldn't save — try again.");
+    assert.equal((await c.slots(site.id)).find((x) => x.id === s1.id).floorLocation, s1.floorLocation, 'old value is back');
+    assert.equal(fx.doc('slots', s1.id).floorLocation, s1.floorLocation);
+    // (b) a new site that cannot be stored is not kept in memory
+    await fx.srv.fail('sites', 1);
+    const on = await c.call('master', 'POST', '/sites/onboard', { body: { siteName: 'T6 Ghost', siteCode: 'T6G', city: 'Pune', totalSlots: 2,
+      pricing: { hourlyRate: 40, dailyMaxRate: 300, monthlyPassRate: 2500, currency: 'INR', taxPercentage: 18 } } });
+    assert.equal(on.status, 503, JSON.stringify(on.body));
+    assert.ok(!(await c.get('master', '/sites')).body.sites.some((x) => x.siteCode === 'T6G'), 'failed create is not in memory');
+    // (c) a failed delete brings the slot back
+    await fx.srv.fail('slots', 1);
+    const del = await c.post('master', '/slots/delete', { slotId: s2.id }, { site: site.id });
+    assert.equal(del.status, 503, JSON.stringify(del.body));
+    assert.ok((await c.slots(site.id)).some((x) => x.id === s2.id), 'slot is back');
+    assert.ok(fx.doc('slots', s2.id), 'still stored');
+    // the log: one PERSIST_FAILED per failure, ids and route, no personal or business text
+    const lines = persistLines(fx.srv.getLog());
+    assert.ok(lines.length >= 3, `expected 3 PERSIST_FAILED lines, got ${lines.length}`);
+    for (const l of lines) {
+      assert.equal(l.scope, 'request');
+      assert.equal(l.rolledBack, true);
+      assert.ok(/^\/api\/v1\//.test(l.route) && !l.route.includes('?'), l.route);
+    }
+    assert.ok(lines.some((l) => l.collection === 'slots' && l.ids.includes(s1.id)));
+    const raw = fx.srv.getLog();
+    assert.ok(!/T6 Secret Site Name|T6 changed floor|T6 Ghost/.test(raw.split('\n').filter((l) => l.includes('PERSIST_FAILED')).join('\n')), 'no names in the failure lines');
+    // a retry succeeds and is stored
+    const ok = await c.post('master', '/slots/save', { slot: { id: s1.id, slotNumber: s1.slotNumber, floorLocation: 'T6 changed floor' } }, { site: site.id });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(fx.doc('slots', s1.id).floorLocation, 'T6 changed floor');
+  } finally { fx.stop(); }
+});
+
+test('T-7 [D5, AC-04] if the write fails and the refresh read fails too, the API holds at ERR_STARTING until the store is reloaded', async () => {
+  const fx = await persistentServer();
+  try {
+    const c = fx.c;
+    const site = await c.onboard('T7', 'T7 site');
+    const up = await c.post('master', '/slots/bulk-upload', { slots: [fullSlot('T7-01')] }, { site: site.id });
+    assert.ok(up.body.success, JSON.stringify(up.body));
+    const [s1] = await c.slots(site.id);
+    await fx.srv.fail('slots', 1);
+    await fx.srv.failGetAll(1);
+    const edit = await c.post('master', '/slots/save', { slot: { id: s1.id, slotNumber: s1.slotNumber, floorLocation: 'T7 unsaved' } }, { site: site.id });
+    assert.equal(edit.status, 503);
+    assert.equal(edit.body.errorCode, 'ERR_STARTING');
+    const during = await c.get('master', '/sites');
+    assert.equal(during.status, 503);
+    assert.equal(during.body.errorCode, 'ERR_STARTING');
+    let ready = false;
+    for (let i = 0; i < 80 && !ready; i++) { await sleep(500); try { ready = (await (await fetch(fx.srv.origin + '/api/v1/health')).json()).ready === true; } catch {} }
+    assert.ok(ready, 'the bootstrap retry reloaded the store');
+    const after = await c.slots(site.id);
+    assert.equal(after.find((x) => x.id === s1.id).floorLocation, s1.floorLocation, 'the unsaved change is gone');
+    const l = persistLines(fx.srv.getLog());
+    assert.ok(l.some((x) => x.rolledBack === false), 'logged as not rolled back');
+  } finally { fx.stop(); }
+});
+
+test('T-8 [AC-08] the drift check logs only when Firestore and memory disagree, after a re-check', async () => {
+  const fx = await persistentServer({ FAKE_DRIFT_MS: '1500,300' });
+  try {
+    const c = fx.c;
+    const site = await c.onboard('T8', 'T8 site');
+    const up = await c.post('master', '/slots/bulk-upload', { slots: [fullSlot('T8-01'), fullSlot('T8-02')] }, { site: site.id });
+    assert.ok(up.body.success, JSON.stringify(up.body));
+    await sleep(4500); // a few checks while everything is in step
+    const drift = (log) => log.split('\n').filter((l) => l.includes('"event":"PERSIST_DRIFT"')).map((l) => JSON.parse(l.slice(l.indexOf('{'))));
+    assert.deepEqual(drift(fx.srv.getLog()), [], 'no drift logged while in step');
+    const [s1] = await c.slots(site.id);
+    await fx.srv.dropDoc('slots', s1.id); // Firestore loses a document behind the server's back
+    await sleep(4000);
+    const d = drift(fx.srv.getLog());
+    assert.ok(d.length >= 1, 'drift logged');
+    assert.equal(d[0].collection, 'slots');
+    assert.equal(d[0].severity, 'WARNING');
+    assert.equal(d[0].memory - d[0].firestore, 1);
+    assert.ok(drift(fx.srv.getLog()).every((x) => x.collection === 'slots'), 'only the collection that differs');
+  } finally { fx.stop(); }
+});

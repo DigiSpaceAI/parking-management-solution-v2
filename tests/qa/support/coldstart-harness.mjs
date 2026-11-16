@@ -120,6 +120,10 @@ if (mode === 'store') {
       res.end(JSON.stringify({ readFailures: fake.readFailures, writes: storeWrites, commits: fake.commits, getAllCalls: fake.getAllCalls }));
     }).listen(Number(process.env.FAKE_REPORT_PORT), '127.0.0.1');
   }
+  if (process.env.FAKE_DRIFT_MS) { // 006 T-8: shorten the drift timers (interval, re-check)
+    const [i, r] = process.env.FAKE_DRIFT_MS.split(',').map(Number);
+    (await imp('src/server/db.ts')).__setDriftTimersForTests(i, r);
+  }
   await imp('server.ts');
   // 002 B6 (AC-32b): make the next demo-request store write fail.
   if (process.env.FAIL_NEXT_DEMO_SAVE === '1') (await imp('src/server/db.ts')).__failNextDemoRequestSaveForTests();

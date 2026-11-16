@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
 
@@ -1447,6 +1448,7 @@ export async function bootstrapFirestore(): Promise<void> {
     storeReady = true;
     console.log('[firestore] Loaded existing data from Firestore.');
     rotateKnownDefaultPasswords();
+    startDriftWatch();
   } else if (failed) {
     // Loading genuinely failed (quota, timeout, network): do NOT reseed,
     // and do NOT go "ready" on the boot-time seed store (a later sync of it
@@ -1461,6 +1463,7 @@ export async function bootstrapFirestore(): Promise<void> {
     console.log('[firestore] No existing data found — seeding Firestore from local store.');
     await syncStoreToFirestore(store);
     storeReady = true;
+    startDriftWatch();
   }
 }
 
@@ -1652,6 +1655,112 @@ export async function deleteFirestoreDocs(collection: keyof StoreData, ids: stri
   }
 }
 
+// ---------------------------------------------------------------------------
+// 006 B5 (D5, AC-04/07): the reply waits for the save; a failed save is rolled
+// back and answered 503 instead of "success". The context lives for one API
+// write request (AsyncLocalStorage); saveDB() registers its save there.
+// ---------------------------------------------------------------------------
+export interface PersistCtx { pending: Promise<void>[]; ids: Map<string, Set<string>>; responded: boolean }
+const persistALS = new AsyncLocalStorage<PersistCtx>();
+export function newPersistCtx(): PersistCtx { return { pending: [], ids: new Map(), responded: false }; }
+export function runInPersistContext<T>(ctx: PersistCtx, fn: () => T): T { return persistALS.run(ctx, fn); }
+
+/** D-2: put memory back to what Firestore holds for these ids. Returns false if the read failed. */
+async function refreshIds(ids: Map<string, Set<string>>): Promise<boolean> {
+  const db = getFirestoreDb();
+  if (!db) return false;
+  try {
+    for (const [collection, set] of ids) {
+      const all = Array.from(set);
+      for (let i = 0; i < all.length; i += FIRESTORE_BATCH_CHUNK) {
+        const chunk = all.slice(i, i + FIRESTORE_BATCH_CHUNK);
+        const snaps = await db.getAll(...chunk.map((id) => db.collection(collection).doc(id)));
+        const arr = (store as any)[collection] as Array<{ id: string }> | undefined;
+        if (!Array.isArray(arr)) continue;
+        snaps.forEach((snap, k) => {
+          const id = chunk[k];
+          const idx = arr.findIndex((r) => String(r?.id) === id);
+          if (snap.exists) {
+            const rec = { ...(snap.data() as object), id } as any;
+            if (idx >= 0) arr[idx] = rec; else arr.push(rec);
+          } else {
+            for (let j = arr.length - 1; j >= 0; j--) if (String(arr[j]?.id) === id) arr.splice(j, 1);
+          }
+        });
+      }
+    }
+    writeLocalCopy();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Waits for the request's saves. ok:false = at least one failed (memory already rolled back or the API is held at ERR_STARTING). */
+export async function settlePersistCtx(ctx: PersistCtx, info: { method: string; route: string }): Promise<{ ok: true } | { ok: false; notReady: boolean }> {
+  const errors: unknown[] = [];
+  while (ctx.pending.length > 0) {
+    const batch = ctx.pending.splice(0);
+    const results = await Promise.allSettled(batch);
+    for (const r of results) if (r.status === 'rejected') errors.push(r.reason);
+  }
+  if (errors.length === 0) return { ok: true };
+  const refreshed = await refreshIds(ctx.ids);
+  for (const err of errors) logPersistFailed('request', err, { method: info.method, route: info.route, rolledBack: refreshed });
+  if (!refreshed) {
+    // Cannot even read Firestore: memory may differ from it. Stop serving and let
+    // the bootstrap retry reload the whole store.
+    storeReady = false;
+    setTimeout(() => {
+      bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
+    }, Math.min(bootstrapRetryMs, 5000)).unref?.();
+  }
+  return { ok: false, notReady: !refreshed };
+}
+
+// 006 D5: a drift watch. Compares the number of documents per collection with
+// the number of distinct ids in memory and logs a WARNING; it fixes nothing.
+let driftIntervalMs = 10 * 60_000;
+let driftRecheckMs = 30_000;
+let driftTimer: NodeJS.Timeout | null = null;
+export function __setDriftTimersForTests(intervalMs: number, recheckMs: number): void { driftIntervalMs = intervalMs; driftRecheckMs = recheckMs; }
+
+async function driftMismatches(): Promise<Array<{ collection: string; memory: number; firestore: number }>> {
+  const db = getFirestoreDb();
+  const out: Array<{ collection: string; memory: number; firestore: number }> = [];
+  if (!db) return out;
+  for (const key of FIRESTORE_COLLECTIONS) {
+    const items = (store as any)[key] as Array<{ id: string }> | undefined;
+    if (!Array.isArray(items)) continue;
+    const memory = new Set(items.map((r) => String(r?.id))).size;
+    const snap = await db.collection(key).count().get();
+    const firestore = Number(snap.data().count);
+    if (memory !== firestore) out.push({ collection: String(key), memory, firestore });
+  }
+  return out;
+}
+
+export async function checkPersistDrift(): Promise<void> {
+  if (!storeReady || !isFirestoreConfigured()) return;
+  try {
+    if ((await driftMismatches()).length === 0) return;
+    await new Promise((r) => setTimeout(r, driftRecheckMs)); // a save in flight is not drift
+    if (!storeReady) return;
+    for (const m of await driftMismatches()) {
+      console.warn(JSON.stringify({ severity: 'WARNING', event: 'PERSIST_DRIFT', collection: m.collection, memory: m.memory, firestore: m.firestore }));
+    }
+  } catch {
+    // a failed check is not a finding
+  }
+}
+
+function startDriftWatch(): void {
+  if (driftTimer || !isFirestoreConfigured()) return;
+  void checkPersistDrift();
+  driftTimer = setInterval(() => { void checkPersistDrift(); }, driftIntervalMs);
+  driftTimer.unref?.();
+}
+
 // 006 AC-03: after ready, every save names the records it changed. A call with
 // no targets is a bug on that call site: it is counted and logged (with its
 // caller) and still falls back to the debounced full sync so nothing is lost.
@@ -1678,7 +1787,20 @@ export function saveDB(targetedSync?: PersistTarget[], _opts: SaveOptions = {}) 
 
   if (targetedSync) {
     if (targetedSync.length > 0) {
-      persistIds(targetedSync).catch((err) => logPersistFailed('background', err));
+      const ctx = persistALS.getStore();
+      if (ctx && !_opts.bestEffort && !ctx.responded) {
+        // D-1: inside an API write the reply waits for this save (server.ts gate).
+        const p = persistIds(targetedSync);
+        p.catch(() => undefined); // the gate reads the outcome; never an unhandled rejection
+        ctx.pending.push(p);
+        for (const t of targetedSync) {
+          const set = ctx.ids.get(String(t.collection)) || new Set<string>();
+          t.ids.forEach((id) => set.add(String(id)));
+          ctx.ids.set(String(t.collection), set);
+        }
+      } else {
+        persistIds(targetedSync).catch((err) => logPersistFailed('background', err));
+      }
     }
     return;
   }

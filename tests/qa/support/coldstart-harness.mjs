@@ -30,6 +30,7 @@ const fake = new FakeFirestore(seed, {
   failReads: Number(process.env.FAKE_FAIL_READS || 0),
   persistFile: dataFile,
   failDeletes: Number(process.env.FAKE_FAIL_DELETES || 0),
+  ignoreSettings: process.env.FAKE_IGNORE_SETTINGS === '1', // 006: pretend the client never set ignoreUndefinedProperties
 });
 const client = await imp('src/server/firestoreClient.ts');
 client.__setFirestoreDbForTests(fake);
@@ -95,9 +96,24 @@ if (mode === 'store') {
   process.exit(0);
 } else {
   if (process.env.FAKE_REPORT_PORT) {
-    http.createServer((req, res) => {
+    // GET anything -> the fake's writes (002 tests). 006 control endpoints (QA only,
+    // 127.0.0.1, test processes only): POST /fail-commit, /fail-getall, /delete-doc;
+    // GET /report, /doc, /count, /counters.
+    http.createServer(async (req, res) => {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ readFailures: fake.readFailures, writes: fake.writes.filter((w) => w.collection !== 'securityAuditLogs') }));
+      const u = new URL(req.url, 'http://x');
+      const q = (k) => u.searchParams.get(k);
+      const storeWrites = fake.writes.filter((w) => w.collection !== 'securityAuditLogs');
+      if (u.pathname === '/fail-commit') { fake.failCommit(Number(q('n') || 1), q('collection') || null); return res.end('{"ok":true}'); }
+      if (u.pathname === '/fail-getall') { fake.failGetAll(Number(q('n') || 1)); return res.end('{"ok":true}'); }
+      if (u.pathname === '/delete-doc') { fake._coll(q('c')).delete(q('id')); fake._persist(); return res.end('{"ok":true}'); }
+      if (u.pathname === '/doc') return res.end(JSON.stringify(fake.data.get(q('c'))?.get(q('id')) || null));
+      if (u.pathname === '/count') return res.end(JSON.stringify({ count: fake._coll(q('c')).size }));
+      if (u.pathname === '/counters') {
+        const db = await imp('src/server/db.ts');
+        return res.end(JSON.stringify(typeof db.__persistCountersForTests === 'function' ? db.__persistCountersForTests() : {}));
+      }
+      res.end(JSON.stringify({ readFailures: fake.readFailures, writes: storeWrites, commits: fake.commits, getAllCalls: fake.getAllCalls }));
     }).listen(Number(process.env.FAKE_REPORT_PORT), '127.0.0.1');
   }
   await imp('server.ts');

@@ -10,8 +10,24 @@ export class FakeFirestore {
   // JSON file, so a later process can start from the same "Firestore" (re-load).
   // failDeletes (002 review m-1): the first n batch commits that contain a
   // delete throw `failMessage` and change nothing.
-  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded', persistFile = null, failDeletes = 0 } = {}) {
+  // 006 (INC-1) additions, so the tests can see the defects the old fake hid:
+  //  - undefined values are rejected like real Firestore, unless settings({
+  //    ignoreUndefinedProperties: true }) was called (ignoreSettings: pretend
+  //    the client never called it, to prove the app cleans records itself);
+  //  - commits[] records every successful batch (ops + collections), so a test
+  //    can check the 500-write limit and the chunking;
+  //  - failCommit(): the next n commits (optionally only those touching one
+  //    collection) throw and change nothing, like a rejected batch;
+  //  - failGetAll(): the next n getAll() calls throw (a failed refresh read);
+  //  - getAll() and collection().count() exist (rollback and drift check).
+  constructor(seed = {}, { loadDelayMs = 0, failReads = 0, failMessage = '4 DEADLINE_EXCEEDED: Deadline exceeded', persistFile = null, failDeletes = 0, ignoreSettings = false } = {}) {
     this.persistFile = persistFile;
+    this.ignoreUndefined = false;
+    this.ignoreSettings = ignoreSettings;
+    this.commits = [];
+    this.failCommits = [];
+    this.failGetAllLeft = 0;
+    this.getAllCalls = 0;
     this.failDeletesLeft = failDeletes;
     this.data = new Map();
     this.writes = [];
@@ -22,6 +38,22 @@ export class FakeFirestore {
     for (const [name, docs] of Object.entries(seed)) {
       this.data.set(name, new Map(docs.map((d) => [String(d.id), structuredClone(d)])));
     }
+  }
+  settings(s = {}) { if (!this.ignoreSettings) this.ignoreUndefined = !!s.ignoreUndefinedProperties; }
+  failCommit(n = 1, collection = null, message = '3 INVALID_ARGUMENT: injected write failure') { this.failCommits.push({ left: n, collection, message }); }
+  failGetAll(n = 1) { this.failGetAllLeft = n; }
+  _checkValue(value) {
+    const bad = (v, path) => {
+      if (v === undefined) return path;
+      if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) { const r = bad(v[i], `${path}[${i}]`); if (r) return r; } return null; }
+      if (v && typeof v === 'object') { for (const [k, x] of Object.entries(v)) { const r = bad(x, path ? `${path}.${k}` : k); if (r) return r; } }
+      return null;
+    };
+    const at = bad(value, '');
+    if (at === null) return value;
+    if (this.ignoreUndefined) return JSON.parse(JSON.stringify(value));
+    const err = new Error(`Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "${at}"). If you want to ignore undefined values, enable \`ignoreUndefinedProperties\`.`);
+    err.code = 3; throw err;
   }
   _coll(name) {
     if (!this.data.has(name)) this.data.set(name, new Map());
@@ -34,6 +66,7 @@ export class FakeFirestore {
     writeFileSync(this.persistFile, JSON.stringify(out));
   }
   _write(collection, id, value, merge) {
+    value = this._checkValue(value);
     this.writes.push({ collection, id: String(id) });
     const c = this._coll(collection);
     c.set(String(id), merge && c.has(String(id)) ? { ...c.get(String(id)), ...structuredClone(value) } : structuredClone(value));
@@ -54,28 +87,39 @@ export class FakeFirestore {
         const docs = [...fs._coll(name).values()].map((v) => ({ id: v.id, data: () => structuredClone(v), ref: { _c: name, _id: v.id } }));
         return { docs, empty: docs.length === 0, size: docs.length };
       },
+      count() { return { async get() { return { data: () => ({ count: fs._coll(name).size }) }; } }; },
       doc(id) {
         return {
           _c: name, _id: String(id),
           async set(value, opts) { fs._write(name, id, value, !!opts?.merge); },
-          async get() { const v = fs._coll(name).get(String(id)); return { exists: !!v, data: () => (v ? structuredClone(v) : undefined) }; },
+          async get() { const v = fs._coll(name).get(String(id)); return { id: String(id), exists: !!v, data: () => (v ? structuredClone(v) : undefined) }; },
           async delete() { fs.writes.push({ collection: name, id: String(id), deleted: true }); fs._coll(name).delete(String(id)); fs._persist(); },
         };
       },
     };
     return query;
   }
+  async getAll(...refs) {
+    this.getAllCalls++;
+    if (this.failGetAllLeft > 0) { this.failGetAllLeft--; const err = new Error('14 UNAVAILABLE: injected read failure'); err.code = 14; throw err; }
+    return refs.map((r) => { const v = this._coll(r._c).get(r._id); return { id: r._id, exists: !!v, data: () => (v ? structuredClone(v) : undefined) }; });
+  }
   batch() {
     const ops = [];
+    ops.cols = new Set();
     const fs = this;
     return {
-      set(ref, value, opts) { ops.push(() => fs._write(ref._c, ref._id, value, !!opts?.merge)); },
-      delete(ref) { ops.hasDelete = true; ops.push(() => { fs.writes.push({ collection: ref._c, id: ref._id, deleted: true }); fs._coll(ref._c).delete(ref._id); fs._persist(); }); },
+      set(ref, value, opts) { const v = fs._checkValue(value); ops.push(() => fs._write(ref._c, ref._id, v, !!opts?.merge)); ops.cols.add(ref._c); },
+      delete(ref) { ops.hasDelete = true; ops.cols.add(ref._c); ops.push(() => { fs.writes.push({ collection: ref._c, id: ref._id, deleted: true }); fs._coll(ref._c).delete(ref._id); fs._persist(); }); },
       async commit() {
         if (ops.hasDelete && fs.failDeletesLeft > 0) {
           fs.failDeletesLeft--;
           const err = new Error(fs.failMessage); err.code = 4; throw err;
         }
+        const inj = fs.failCommits.find((f) => f.left > 0 && (!f.collection || ops.cols.has(f.collection)));
+        if (inj) { inj.left--; const err = new Error(inj.message); err.code = 3; throw err; }
+        if (ops.length > 500) { const err = new Error('3 INVALID_ARGUMENT: maximum 500 writes allowed per request'); err.code = 3; throw err; }
+        fs.commits.push({ ops: ops.length, collections: [...ops.cols] });
         for (const op of ops) op();
       },
     };

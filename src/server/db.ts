@@ -1258,6 +1258,16 @@ const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
 
+/**
+ * 006 D1: the record exactly as Firestore may store it. Records are plain JSON
+ * (strings, numbers, booleans, arrays, nested objects), so a JSON round trip
+ * drops every `undefined` at any depth and changes nothing else. Belt and
+ * braces with `ignoreUndefinedProperties` on the client.
+ */
+export function toFirestoreDoc<T>(record: T): T {
+  return JSON.parse(JSON.stringify(record)) as T;
+}
+
 function isFatalFirestoreConfigError(err: any): boolean {
   const msg = String(err?.message || err);
   return (
@@ -1284,7 +1294,9 @@ async function syncStoreToFirestore(snapshot: StoreData) {
         const batch = db.batch();
         for (const item of chunk) {
           if (!item?.id) continue;
-          batch.set(collectionRef.doc(String(item.id)), item, { merge: true });
+          // 006 D1/D-4: a full replace of the cleaned record (merge would keep
+          // a field that was cleared in memory).
+          batch.set(collectionRef.doc(String(item.id)), toFirestoreDoc(item));
         }
         await batch.commit();
       }
@@ -1508,7 +1520,8 @@ async function syncSpecificRecords(
           }
         }
 
-        batch.set(collectionRef.doc(id), record, { merge: true });
+        // 006 D1/D-4: full replace of the cleaned record (see toFirestoreDoc).
+        batch.set(collectionRef.doc(id), toFirestoreDoc(record));
       }
       await batch.commit();
     }

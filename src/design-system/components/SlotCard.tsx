@@ -1,7 +1,8 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { CircleCheck, CircleX, Clock, Wrench, Zap, MoveVertical, MoveHorizontal } from 'lucide-react';
-import { enumLabel, formatNumber, formatPlate, formatSince } from '../../utils/format';
+import { formatNumber, formatPlate, formatSince } from '../../utils/format';
+import { labelFor } from '../../utils/slotFields';
 import { cx } from './cx';
 import { Icon } from './Icon';
 import { Button } from './Button';
@@ -55,7 +56,7 @@ export const SlotCard: React.FC<SlotCardProps> = ({
   code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, level, compact, onOpen, onMarkExit, selected, siteCode, className,
 }) => {
   const occupied = status === 'OCCUPIED';
-  const statusWord = enumLabel(status);
+  const statusWord = labelFor('status', status);
   const body = (
     <>
       <span className={cx('pf-slot-band', `pf-slot-band--${status.toLowerCase()}`)}>
@@ -70,7 +71,7 @@ export const SlotCard: React.FC<SlotCardProps> = ({
           {slotType && (
             <span className="pf-chip pf-chip--neutral">
               {ev && <Zap aria-hidden="true" strokeWidth={2} />}
-              {enumLabel(slotType)}
+              {labelFor('slotType', slotType)}
               {ev && <span className="pf-sr-only">, EV charging</span>}
             </span>
           )}
@@ -154,7 +155,7 @@ export const SlotRow: React.FC<SlotRowProps> = ({ code, status, decode, slotType
         </span>
       </td>
       <td className="is-secondary">
-        {slotType ? enumLabel(slotType) : '—'}
+        {slotType ? labelFor('slotType', slotType) : '—'}
         {ev && ' · EV'}
       </td>
       <td className="is-num pf-col-wide">{formatMetres(heightM)}</td>

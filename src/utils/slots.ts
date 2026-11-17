@@ -3,6 +3,7 @@
  * One rule each, so cards, list rows, the puzzle view and the modal agree.
  */
 import type { ParkingSlot, SlotStatus } from '../types';
+import { heightMetres } from './slotFields';
 
 /** /slots adds these to each slot (002 B1/B2); they are API extras, not stored fields. */
 export interface LiveSlot extends ParkingSlot {
@@ -30,10 +31,10 @@ export function isPuzzle(slot: Pick<ParkingSlot, 'parkingType'>): boolean {
   return slot.parkingType === 'PUZZLE';
 }
 
-/** Height in metres: the API's `heightM`, else parsed from the stored text ("2.0m"); null when unknown. */
+/** Height in metres: the API's `heightM`, else read by the shared parser (codes "2.5m" and old labels "High Clearance (2.5m)"); null when unknown. */
 export function heightOf(slot: Pick<LiveSlot, 'heightM' | 'height'>): number | null {
   if (typeof slot.heightM === 'number' && slot.heightM > 0) return slot.heightM;
-  const n = parseFloat(String(slot.height ?? '').replace(',', '.'));
+  const n = heightMetres(slot.height);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 

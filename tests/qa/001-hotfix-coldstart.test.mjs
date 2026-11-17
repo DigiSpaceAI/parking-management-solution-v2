@@ -107,11 +107,10 @@ for (const delay of ['0', '5000']) {
   });
 }
 
-test('HF-05 [regression] an EMPTY Firestore is still seeded (default roles, bootstrap Master)', async () => {
+test('HF-05 [regression, amended by 005 D-9] an EMPTY Firestore gets the bootstrap Master ONLY (no default roles, no company.com)', async () => {
   const { r } = await runHarness('store', { EMPTY_FIRESTORE: '1' });
   assert.equal(r.writesBeforeLoad, 0);
-  const roles = r.writes.filter((w) => w.collection === 'appRoles').map((w) => w.id);
-  assert.ok(roles.includes('role-site-manager') && roles.includes('role-master-admin'), 'default roles seeded: ' + JSON.stringify(roles));
-  assert.ok(r.writes.some((w) => w.collection === 'appUsers' && w.id === 'usr-digi-master'), 'bootstrap Master seeded');
+  assert.deepEqual([...new Set(r.writes.map((w) => `${w.collection}/${w.id}`))], ['appUsers/usr-digi-master'], 'only the bootstrap Master may be written');
+  assert.ok(!r.writes.some((w) => w.collection === 'appRoles' || w.collection === 'whitelistedDomains'), 'default roles or domains were written');
   assert.equal(r.ready, true);
 });

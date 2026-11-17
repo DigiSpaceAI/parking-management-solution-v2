@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
+import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -334,7 +335,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
   const adminCreds = hashPassword(bootstrapPw.length >= 12 && bootstrapPw.length <= 64 ? bootstrapPw : randomPw());
   const demoPw = process.env.DEMO_USER_PASSWORD || '';
   const demoPwOk = demoPw.length >= 12 && demoPw.length <= 64;
-  const seedDemo = process.env.SEED_DEMO_USERS === 'true';
+  const seedDemo = process.env.SEED_DEMO_USERS === 'true' && isLocalDemoMode(); // 005 AC-19: never on live
   const mkDemo = () => hashPassword(demoPwOk ? demoPw : randomPw());
   const siteCreds = mkDemo();
   const valetCreds = mkDemo();
@@ -462,6 +463,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
 
 // Generate 1,080 Parking Slots across multi-level basements, puzzle stackers, EV stations
 function generate1080Inventory(): StoreData {
+  assertLocalDemoMode(); // 005 AC-20: the one named guard for demo data
   const { roles: defaultRoles, users: defaultUsers } = getDefaultRolesAndUsers();
   const slots: ParkingSlot[] = [];
   const employees: Employee[] = [];
@@ -938,9 +940,41 @@ const BOOTSTRAP_RETRY_MIN_MS = 10_000;
 const BOOTSTRAP_RETRY_MAX_MS = 60_000;
 let bootstrapRetryMs = BOOTSTRAP_RETRY_MIN_MS;
 
+// 005 Part B: an empty store. Live mode starts from this and fills ONLY from Firestore.
+function emptyStore(): StoreData {
+  return {
+    slots: [], employees: [], logs: [], alerts: [], registrationRequests: [], whitelistedDomains: [], sites: [],
+    invoices: [], slotChangeNotifications: [], valetTickets: [], appRoles: [], appUsers: [], overnightRequests: [],
+    demoRequests: [], lastUpdated: new Date().toISOString(),
+  };
+}
+
+// 005 AC-20: paths that would have created records and were stopped (names only, no data).
+const seedingPrevented = new Set<string>();
+export function notePrevented(pathName: string): void {
+  if (seedingPrevented.has(pathName)) return;
+  seedingPrevented.add(pathName);
+  console.warn(`[startup][WARN] seeding prevented: ${pathName}`);
+}
+export function __seedingPreventedForTests(): string[] { return Array.from(seedingPrevented); }
+
 export function initDB(): StoreData {
   storeInitialized = true;
-  storeReady = !isFirestoreConfigured();
+  storeReady = isLocalDemoMode();
+  if (isLiveMode()) {
+    // 005 AC-16/18: on live the boot store is EMPTY and not ready until Firestore has been loaded.
+    // A local data file is never read for content (it could be a stale or demo copy).
+    try {
+      if (fs.existsSync(DATA_FILE)) {
+        console.warn('[startup] data/pms_store.json found and ignored on live');
+        notePrevented('local-file-ignored');
+      }
+    } catch {
+      // an unreadable data dir is the same: nothing is read
+    }
+    store = emptyStore();
+    return store;
+  }
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -965,16 +999,8 @@ export function initDB(): StoreData {
       // 2. Slots: Preserve all existing slots and user changes
       let finalSlots: ParkingSlot[] = [];
       if (loadedStore.slots && loadedStore.slots.length > 0) {
+        // 005 AC-17: no "< 1,080 slots" top-up (in any mode): a deleted slot stays deleted.
         finalSlots = loadedStore.slots;
-        // If some default slots were missing, fill only missing ones by slotNumber
-        if (finalSlots.length < 1080) {
-          const existingSlotNumbers = new Set(finalSlots.map(s => s.slotNumber.toUpperCase()));
-          for (const s of seeded.slots) {
-            if (!existingSlotNumbers.has(s.slotNumber.toUpperCase())) {
-              finalSlots.push(s);
-            }
-          }
-        }
       } else {
         finalSlots = seeded.slots;
       }
@@ -1190,58 +1216,16 @@ export function initDB(): StoreData {
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
-    } else if (isFirestoreConfigured()) {
-      // Local file is missing, but Firestore IS configured for this
-      // environment — this could mean a genuinely brand-new deployment,
-      // OR it could mean an existing site's data is sitting safely in
-      // Firestore and this is just an ephemeral container that lost its
-      // local disk copy. We can't tell the difference synchronously here.
-      // Seeding full demo data in that second case would be dangerous:
-      // it could get written back to Firestore later and silently
-      // clobber real data. So: seed only what's needed for the app to be
-      // usable at all (login accounts), leave operational data empty,
-      // and let bootstrapFirestore() (which runs right after this,
-      // before the server starts accepting requests) load the real data
-      // if it exists. If Firestore turns out to be unreachable this run
-      // too, the app stays visibly empty rather than showing fabricated
-      // demo content as if it were real.
-      console.log('[initDB] No local data file, but Firestore is configured — seeding accounts only and deferring to Firestore bootstrap for real data.');
-      const { roles: defaultRoles, users: defaultUsers } = getDefaultRolesAndUsers();
-      store = {
-        slots: [],
-        employees: [],
-        logs: [],
-        alerts: [],
-        registrationRequests: [],
-        whitelistedDomains: [
-          { id: 'dom-1', domain: 'company.com', addedBy: 'Parking Admin', createdAt: new Date().toISOString(), isActive: true },
-        ],
-        sites: [],
-        invoices: [],
-        slotChangeNotifications: [],
-        valetTickets: [],
-        appRoles: defaultRoles,
-        appUsers: defaultUsers,
-        overnightRequests: [],
-        demoRequests: [],
-        lastUpdated: new Date().toISOString(),
-      };
-      // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
-      // boot-time seed (default roles, bootstrap Master, dom-1 company.com)
-      // into Firestore with merge:true on every cold start, resetting changed
-      // default roles, re-adding removed domains and resetting the Master.
-      // An empty Firestore is still seeded from this store by
-      // bootstrapFirestore() ("No existing data found").
     } else {
-      // Firestore genuinely isn't configured for this environment (no
-      // project ID resolvable) — this is the local/dev case, where full
-      // demo data is expected and useful.
+      // Local demo mode only (no K_SERVICE, no project ID): full demo data is
+      // expected and useful here. Live mode returned above.
       console.log('Initializing fresh 1,080 slots database inventory...');
       const seeded = generate1080Inventory();
       store = { ...seeded, lastUpdated: new Date().toISOString() };
       saveDB();
     }
   } catch (err) {
+    // Local demo mode only (live returned above, so it can never build a demo store here).
     console.error('Error loading PMS database, initializing in-memory:', err);
     const seeded = generate1080Inventory();
     store = { ...seeded, lastUpdated: new Date().toISOString() };
@@ -1432,38 +1416,89 @@ export function rotateKnownDefaultPasswords(): void {
   }
 }
 
+/** The platform Master Admin rule used everywhere (src/utils/rbac.ts isMasterAdmin). */
+const isPlatformMaster = (u: AppUser): boolean => u.roleId === 'role-master-admin';
+
+/**
+ * 005 AC-16/D-6: the ONLY record the server creates by itself on live, and only
+ * when NO Platform Master Admin exists (a renamed or replaced Master counts).
+ * Writes that one document by id. Returns true when it was created.
+ */
+export async function ensureBootstrapMaster(): Promise<boolean> {
+  if (!Array.isArray(store.appUsers)) store.appUsers = [];
+  if (store.appUsers.some(isPlatformMaster)) return false;
+  const master = getDefaultRolesAndUsers().users.find((u) => u.id === 'usr-digi-master');
+  if (!master) return false;
+  store.appUsers.push(master);
+  console.log('[startup] bootstrap Master created (no Master Admin found)');
+  try {
+    await persistIds([{ collection: 'appUsers', ids: [master.id] }]);
+  } catch (err) {
+    logPersistFailed('background', err);
+  }
+  return true;
+}
+
+/** 005 AC-20: one line of counts (numbers only, no ids or names) once the store is ready. */
+function logStartupCounts(): void {
+  const n = (k: keyof StoreData) => (Array.isArray((store as any)[k]) ? ((store as any)[k] as unknown[]).length : 0);
+  const storedRoleIds = new Set((store.appRoles || []).map((r) => r.id));
+  const defaultsInMemory = getDefaultRolesAndUsers().roles.filter((r) => !storedRoleIds.has(r.id)).length;
+  const parts = FIRESTORE_COLLECTIONS.map((k) => `${String(k)}=${n(k)}${k === 'appRoles' && defaultsInMemory > 0 ? `(+${defaultsInMemory} default in memory)` : ''}`);
+  console.log(`[startup] mode=${isLiveMode() ? 'live' : 'local-demo'} store=${isLiveMode() ? 'firestore' : 'local'} counts: ${parts.join(' ')}`);
+  if (seedingPrevented.size > 0) console.warn(`[startup][WARN] seeding prevented: ${Array.from(seedingPrevented).join(', ')}`);
+}
+
+function scheduleBootstrapRetry(wait: number): void {
+  setTimeout(() => {
+    bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
+  }, wait).unref?.();
+}
+
 export async function bootstrapFirestore(): Promise<void> {
+  const live = isLiveMode();
   const db = getFirestoreDb();
-  if (!db) {
-    // Firestore unavailable this run (not configured, or disabled after a
-    // fatal config error): nothing can be written to it, so the local store
-    // is all there is.
+  if (!db || (live && !isFirestoreConfigured())) {
+    if (live) {
+      // 005 AC-18 (B-G4, B-G5): live without a usable Firestore never serves a demo or empty store as real.
+      storeReady = false;
+      console.error('[firestore][CRITICAL] live mode but Firestore unavailable — not serving');
+      scheduleBootstrapRetry(BOOTSTRAP_RETRY_MAX_MS);
+      return;
+    }
+    // Local demo: nothing can be written to Firestore, the local store is all there is.
     storeReady = true;
+    logStartupCounts();
     return;
   }
 
   const { data: remote, failed } = await loadStoreFromFirestore();
   if (remote) {
+    // 005 AC-16/17: exactly what Firestore holds. No merge with a seed, no top-up, no empty-collection fill.
     store = remote;
     storeReady = true;
     console.log('[firestore] Loaded existing data from Firestore.');
     rotateKnownDefaultPasswords();
+    await ensureBootstrapMaster();
     startDriftWatch();
+    logStartupCounts();
   } else if (failed) {
-    // Loading genuinely failed (quota, timeout, network): do NOT reseed,
-    // and do NOT go "ready" on the boot-time seed store (a later sync of it
+    // Loading genuinely failed (quota, timeout, network): do NOT seed,
+    // and do NOT go "ready" on the boot-time store (a later sync of it
     // would overwrite real data). Stay at 503 and retry with backoff.
     const wait = bootstrapRetryMs;
     bootstrapRetryMs = Math.min(bootstrapRetryMs * 2, BOOTSTRAP_RETRY_MAX_MS);
     console.warn(`[firestore] Load failed (see error above) — NOT reseeding; API stays at 503 ERR_STARTING; retrying in ${wait / 1000}s.`);
-    setTimeout(() => {
-      bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
-    }, wait).unref?.();
+    scheduleBootstrapRetry(wait);
   } else {
-    console.log('[firestore] No existing data found — seeding Firestore from local store.');
-    await syncStoreToFirestore(store);
+    // Firestore is genuinely empty (0 documents). D-9: write ONLY the bootstrap Master.
+    // No default roles (kept in memory by getAppRoles), no domain, no sites.
+    console.log('[firestore] No existing data found — creating the bootstrap Master Admin only.');
+    store = emptyStore();
     storeReady = true;
+    await ensureBootstrapMaster();
     startDriftWatch();
+    logStartupCounts();
   }
 }
 
@@ -1523,8 +1558,8 @@ export function persistIds(targets: PersistTarget[]): Promise<void> {
 }
 
 async function persistIdsNow(targets: PersistTarget[]): Promise<void> {
-  // Local demo mode (no Firestore project): the local JSON copy is the store.
-  if (!isFirestoreConfigured()) return;
+  // Local demo mode (no Firestore project, not on Cloud Run): the local JSON copy is the store.
+  if (isLocalDemoMode()) return;
   const db = getFirestoreDb();
   if (!db) {
     throw new PersistError('Firestore unavailable', Object.fromEntries(targets.map((t) => [String(t.collection), t.ids.slice(0, 20)])));
@@ -1804,8 +1839,8 @@ export function saveDB(targetedSync?: PersistTarget[], _opts: SaveOptions = {}) 
     }
     return;
   }
-  // No Firestore project configured (local demo): the local copy is the store.
-  if (!isFirestoreConfigured()) return;
+  // Local demo: the local copy is the store.
+  if (isLocalDemoMode()) return;
   untargetedAfterReady++;
   lastUntargetedCaller = (new Error().stack || '').split('\n')[2]?.trim() || '';
   console.warn(`[persist] untargeted saveDB() after ready — falling back to a full sync. Caller: ${lastUntargetedCaller}`);

@@ -122,14 +122,14 @@ import {
   loadAuditLogsFromFirestore
 } from './src/server/security';
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
-import { isFirestoreConfigured } from './src/server/firestoreClient';
+import { isLocalDemoMode } from './src/server/runtimeMode';
 import { isMasterAdmin } from './src/utils/rbac';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
 // With Firestore configured, rotation runs after the remote data is loaded
 // (bootstrapFirestore) — running it now would act on the boot-time seed store.
-if (!isFirestoreConfigured()) rotateKnownDefaultPasswords();
+if (isLocalDemoMode()) rotateKnownDefaultPasswords();
 void loadAuditLogsFromFirestore();
 
 const app = express();

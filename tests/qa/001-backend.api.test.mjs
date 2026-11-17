@@ -875,12 +875,10 @@ test('Hotfix-1 a cold start with existing Firestore data does not overwrite a ch
   assert.deepEqual(r.domains.map((d) => d.domain), ['parkflows.in'], 'removed company.com did not come back');
 });
 
-test('Hotfix-1 an EMPTY Firestore is still seeded by bootstrapFirestore (accounts and default roles)', async () => {
+test('Hotfix-1 [amended by 005 D-9] an EMPTY Firestore gets the bootstrap Master only (no default roles)', async () => {
   const r = await runColdStart({ EMPTY_FIRESTORE: '1' });
   assert.equal(r.writesBeforeLoad, 0, 'nothing written before bootstrap');
-  const roles = r.writes.filter((w) => w.collection === 'appRoles').map((w) => w.id);
-  assert.ok(roles.includes('role-site-manager') && roles.includes('role-master-admin'), 'default roles seeded: ' + JSON.stringify(roles));
-  assert.ok(r.writes.some((w) => w.collection === 'appUsers' && w.id === 'usr-digi-master'), 'bootstrap Master seeded');
+  assert.deepEqual([...new Set(r.writes.map((w) => `${w.collection}/${w.id}`))], ['appUsers/usr-digi-master'], 'only the bootstrap Master may be written');
 });
 
 test('Hotfix-2 no Firestore sync runs before the load finishes, even if something calls saveDB() early', async () => {

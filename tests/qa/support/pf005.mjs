@@ -44,11 +44,17 @@ if (mode === 'local') {
   await db.bootstrapFirestore();
   let rolesSeen = [];
   const migrations = [];
+  const finds = [];
   for (const a of (process.env.ACTIONS || '').split(',').filter(Boolean)) {
     if (a === 'fullsync') db.saveDB();
     else if (a.startsWith('delete-slot:')) db.deleteSlot(a.slice(12), true);
     else if (a.startsWith('delete-site:')) db.deleteSite(a.slice(12));
     else if (a === 'migrate-dry' || a === 'migrate-apply') { const before = storeWrites().length; const r = await db.migrateSlotFields(a === 'migrate-apply'); migrations.push({ slotsChanged: r.slotsChanged, ids: r.changedSlotIds, writes: storeWrites().slice(before) }); }
+    else if (a.startsWith('find:')) { // find:<TYPE>:<site>:<ids to mark OCCUPIED, joined by +>  (in memory only)
+      const [, type, site, occ] = a.split(':');
+      db.getStore().slots.forEach((x) => { x.status = (occ || '').split('+').includes(x.id) ? 'OCCUPIED' : 'VACANT'; });
+      const f = db.findBestSlot(type, '2.0m', 'EMPLOYEE', site); finds.push(f ? f.id : null);
+    }
     else if (a === 'roles') rolesSeen = db.getAppRoles().map((r) => r.id);
   }
   await sleep(4500); // > the 3 s full-sync debounce
@@ -64,7 +70,7 @@ if (mode === 'local') {
     ready: db.isStoreReady(), writes: storeWrites(), newDocs,
     counts: Object.fromEntries(Object.entries(after).map(([c, ids]) => [c, ids.length])),
     store: { slots: st.slots.length, sites: st.sites.length, appRoles: st.appRoles.length, appUsers: st.appUsers.length, domains: st.whitelistedDomains.length },
-    roleIds: rolesSeen, migrations, slotIds: st.slots.map((s) => s.id), siteIds: db.getSites().map((s) => s.id), prevented: db.__seedingPreventedForTests(),
+    roleIds: rolesSeen, migrations, finds, slotIds: st.slots.map((s) => s.id), siteIds: db.getSites().map((s) => s.id), prevented: db.__seedingPreventedForTests(),
   }));
   process.exit(0);
 } else {

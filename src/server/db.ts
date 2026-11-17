@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
-import { toCode, optionsFor, type SlotField } from '../utils/slotFields';
+import { toCode, optionsFor, heightMetres, HIGH_CLEARANCE_M, type SlotField } from '../utils/slotFields';
 import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
@@ -2041,7 +2041,7 @@ export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2
 
   // 2. Strict match for SUV height clearance (>= 2.5m)
   if (vehicleType === 'SUV') {
-    const suvSlot = vacantSlots.find(s => s.slotType === 'SUV' || (parseFloat(s.height) >= 2.5));
+    const suvSlot = vacantSlots.find(s => s.slotType === 'SUV' || heightMetres(s.height) >= HIGH_CLEARANCE_M);
     if (suvSlot) return suvSlot;
   }
 

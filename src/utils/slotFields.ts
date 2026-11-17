@@ -167,3 +167,12 @@ export function inventoryRow(slot: SlotLike): string[] {
     slot.palletLevel === undefined || slot.palletLevel === null ? '' : String(slot.palletLevel),
   ];
 }
+
+const STATUS_ORDER: { [status: string]: number } = { VACANT: 0, RESERVED: 1, MAINTENANCE: 2, OCCUPIED: 3 };
+/** The Inventory table's row order: vacant first, occupied last, then slot number (numeric-aware). Shared by the table and the CSV. */
+export function compareInventory(a: SlotLike, b: SlotLike): number {
+  const oa = STATUS_ORDER[a.status as string]; const ob = STATUS_ORDER[b.status as string];
+  const x = oa === undefined ? 4 : oa; const y = ob === undefined ? 4 : ob;
+  if (x !== y) return x - y;
+  return String(a.slotNumber || '').localeCompare(String(b.slotNumber || ''), undefined, { numeric: true });
+}

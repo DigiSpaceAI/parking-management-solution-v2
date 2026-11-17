@@ -124,3 +124,66 @@ test('T-6 [AC-15] startup logs the duplicate count (no numbers, ids or plates) a
   const r = await save('site-1', { id: 'dup-a', slotNumber: 'DUP-01', floorLocation: 'edited' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
 });
+
+// ------------------------------------------------------------------ B3: CSV import and export
+test('T-7 [AC-05/13] bulk upload: labels map to codes; unknown values are row errors naming field and value; in-file repeats and existing numbers never make a second slot', async () => {
+  const label = { slotNumber: 'imp-1', basement: 'b1', floorLocation: 'Lobby', slotType: 'Compact SUV', height: 'High clearance (2.5 m)', parkingType: 'puzzle', allocation: 'Car Pooling' };
+  const bad = { ...label, slotNumber: 'IMP-2', slotType: 'Truck' };
+  const r1 = await c.post('master', '/slots/bulk-upload', { slots: [label, bad, { ...label, slotNumber: 'IMP-3' }, { ...label, slotNumber: 'imp-3' }] }, { site: A.id });
+  assert.equal(r1.status, 200, JSON.stringify(r1.body));
+  const res = r1.body.result;
+  assert.equal(res.added, 1);
+  assert.deepEqual(res.rows.map((x) => [x.row, x.slotNumber, x.result]), [[1, 'IMP-1', 'added'], [2, 'IMP-2', 'error'], [3, 'IMP-3', 'error'], [4, 'IMP-3', 'error']]);
+  assert.match(res.rows[1].errors[0], /Vehicle type must be one of.*\(got "Truck"\)/);
+  assert.match(res.rows[2].errors[0], /Slot number repeated in this file \(rows 3, 4\)/);
+  const slots = await c.slots(A.id);
+  const imp1 = slots.find((s) => s.slotNumber === 'IMP-1');
+  assert.deepEqual([imp1.slotType, imp1.height, imp1.parkingType, imp1.allocation, imp1.basement], ['CSUV', '2.5m', 'PUZZLE', 'CAR_POOLING', 'B1']);
+  assert.ok(!slots.some((s) => s.slotNumber === 'IMP-2' || s.slotNumber === 'IMP-3'), 'refused rows saved nothing');
+  // an existing number updates that slot (row.id ignored), and never creates a second one
+  const n = slots.length;
+  const r2 = await c.post('master', '/slots/bulk-upload', { slots: [{ ...label, slotNumber: 'IMP-1', id: 'no-such-id', floorLocation: 'Moved', allocation: 'VIP' }] }, { site: A.id });
+  assert.equal(r2.status, 200, JSON.stringify(r2.body));
+  assert.deepEqual(r2.body.result.rows.map((x) => x.result), ['updated']);
+  const after = await c.slots(A.id);
+  assert.equal(after.length, n);
+  assert.equal(after.find((s) => s.slotNumber === 'IMP-1').allocation, 'VIP');
+  assert.equal(after.find((s) => s.slotNumber === 'IMP-1').id, imp1.id, 'same slot, same id');
+});
+
+test('T-9 [AC-06] export = the table: its columns, labels, filters, order, IST file name, formula guard', async () => {
+  await save(B, full('EXP-1', { basement: 'B2', floorLocation: '=SUM(A1)', slotType: 'EV', allocation: 'HANDICAP', height: '3.0m' }));
+  await save(B, full('EXP-2', { basement: 'B2', status: 'MAINTENANCE' }));
+  await save(B, full('EXP-3', { basement: 'B1' }));
+  const get = (qs) => c.get('master', `/export/reports?type=slots${qs}`, { site: B.id });
+  const all = await get('');
+  assert.equal(all.status, 200);
+  assert.match(all.headers.get('content-disposition'), /filename="inventory_IFB_\d{4}-\d{2}-\d{2}_\d{4}\.csv"/);
+  const lines = all.text.trim().split('\n');
+  const cols = '"Slot number","Level","Floor location","Vehicle type","Height","Parking type","Allocation","Status","Current occupant","Length (m)","Pallet level"';
+  assert.equal(lines[0], cols);
+  const slotsB = await c.slots(B.id);
+  assert.equal(lines.length - 1, slotsB.length);
+  const f = await get('&basement=B2&status=ALL&search=exp');
+  const fl = f.text.trim().split('\n').slice(1);
+  assert.equal(fl.length, 2, 'the table filter: level B2 and the search text');
+  assert.ok(fl[0].startsWith('"EXP-1"') && fl[1].startsWith('"EXP-2"') || fl[0].startsWith('"EXP-2"'), 'only the filtered rows');
+  const row1 = f.text.split('\n').find((l) => l.startsWith('"EXP-1"'));
+  assert.ok(row1.includes('"\'=SUM(A1)"'), 'formula guard: ' + row1);
+  assert.equal(row1, '"EXP-1","Basement B2","\'=SUM(A1)","EV","Extra high (3.0 m)","Ground","Handicap","Vacant","-","",""', 'labels, the dash for no occupant, empty length and pallet');
+  const none = await get('&status=OCCUPIED');
+  assert.equal(none.text.trim().split('\n').length, 1, 'header only when nothing matches');
+  assert.equal((await c.get('master', '/export/reports?type=slots', { site: B.id })).headers.get('content-type').split(';')[0], 'text/csv');
+});
+
+test('T-8 [AC-09] permissions and site scope unchanged on save, bulk and export', async () => {
+  const att = await c.mkUser('attI', 'role-gate-attendant', [A.id], 'if');
+  const adm = await c.mkUser('admI', 'role-site-manager', [A.id], 'if');
+  assert.equal((await save(A, full('PERM-1'), 'attI')).status, 403, 'attendant cannot save');
+  assert.equal((await c.post('attI', '/slots/bulk-upload', { slots: [full('PERM-2')] }, { site: A.id })).status, 403);
+  assert.equal((await save(B, full('PERM-3'), 'admI')).status, 403, 'a Site Admin cannot write another site');
+  assert.equal((await c.get('admI', '/export/reports?type=slots', { site: B.id })).status, 403);
+  assert.equal((await save(A, full('PERM-4'), 'admI')).status, 200);
+  assert.equal((await c.get('admI', '/export/reports?type=slots', { site: A.id })).status, 200);
+  assert.ok(att && adm);
+});

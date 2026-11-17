@@ -2562,7 +2562,7 @@ function applyDimensions(slot: ParkingSlot, dims: SlotDimensions) {
 //    On create every field is checked and nothing is defaulted (AC-14); status defaults to VACANT.
 //  - Slot numbers are unique per site (trim + upper-case): a create or a rename onto a used number is a 409 (AC-11/12).
 export type SlotSaveFailure = {
-  ok: false; status: 400 | 409; errorCode: 'ERR_VALIDATION' | 'ERR_DUPLICATE_SLOT'; field?: string; allowed?: string[]; message: string;
+  ok: false; status: 400 | 409; errorCode: 'ERR_VALIDATION' | 'ERR_DUPLICATE_SLOT'; field?: string; value?: string; allowed?: string[]; message: string;
 };
 export type SlotSaveSuccess = { ok: true; slot: ParkingSlot; created: boolean; changed: string[] };
 export type SlotSaveResult = SlotSaveFailure | SlotSaveSuccess;
@@ -2577,11 +2577,12 @@ const slotSiteOf = (s: { siteId?: string }): string => s.siteId || DEFAULT_SITE_
 
 export function slotNumberKey(n: unknown): string { return String(n === undefined || n === null ? '' : n).trim().toUpperCase(); }
 
-function fieldFailure(field: SlotField, missing: boolean): SlotSaveFailure {
+function fieldFailure(field: SlotField, missing: boolean, value?: unknown): SlotSaveFailure {
   const opts = optionsFor(field);
   const label = SLOT_FIELD_LABELS[field];
   return {
     ok: false, status: 400, errorCode: 'ERR_VALIDATION', field, allowed: opts.map((o) => o.code),
+    ...(value !== undefined && hasValue(value) ? { value: String(value).slice(0, 40) } : {}),
     message: missing ? `${label} is required. Choose one of: ${opts.map((o) => o.label).join(', ')}.` : `${label} must be one of: ${opts.map((o) => o.label).join(', ')}.`,
   };
 }
@@ -2614,7 +2615,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSy
       return fieldFailure(field, true);
     }
     const code = toCode(field, raw);
-    if (code === null) return fieldFailure(field, false);
+    if (code === null) return fieldFailure(field, false, raw);
     values[field] = code;
   }
   const floorLocation = typeof slotData.floorLocation === 'string' ? slotData.floorLocation.trim() : '';
@@ -2707,30 +2708,55 @@ export function deleteSlot(slotId: string, force: boolean = false): { success: b
   return { success: true, message: `Slot ${slot.slotNumber} deleted.` };
 }
 
-// Bulk Upload Slot Inventory
-export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[] } {
+// Bulk Upload Slot Inventory (005 B3, AC-05/AC-13)
+//  - Matching is by slot number at the site only: a row's own id is ignored.
+//  - Every field goes through toCode; an unknown value is a row error naming the field, and the row is skipped.
+//  - A number repeated INSIDE the file makes every occurrence a row error (none is saved).
+//  - A number that exists at the site updates that slot; never a second slot.
+export interface SlotUploadRow { row: number; slotNumber: string; result: 'added' | 'updated' | 'error'; errors?: string[] }
+export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[]; rows: SlotUploadRow[] } {
   let added = 0;
   let updated = 0;
   const changedIds: string[] = [];
   const errors: string[] = [];
+  const rows: SlotUploadRow[] = [];
+
+  // Numbers repeated inside the file (per site): row numbers of every occurrence.
+  const occurrences: Record<string, number[]> = {};
+  list.forEach((item, index) => {
+    if (!item || !item.slotNumber) return;
+    const key = `${item.siteId || DEFAULT_SITE_ID}|${slotNumberKey(item.slotNumber)}`;
+    (occurrences[key] = occurrences[key] || []).push(index + 1);
+  });
+
+  const fail = (index: number, num: string, messages: string[]) => {
+    for (const m of messages) errors.push(`Row ${index + 1} (${num}): ${m}`);
+    rows.push({ row: index + 1, slotNumber: num, result: 'error', errors: messages });
+  };
 
   for (const [index, item] of list.entries()) {
-    if (!item.slotNumber) continue;
+    if (!item || !item.slotNumber) continue;
+    const num = slotNumberKey(item.slotNumber);
+    const same = occurrences[`${item.siteId || DEFAULT_SITE_ID}|${num}`] || [];
+    if (same.length > 1) {
+      fail(index, num, [`Slot number repeated in this file (rows ${same.join(', ')}).`]);
+      continue;
+    }
     // 002 B1: a bad Length / Pallet level is a row error; the row is skipped.
     const dimErrors = parseSlotDimensions(item).errors;
     if (Object.keys(dimErrors).length > 0) {
-      errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${Object.values(dimErrors).join(' ')}`);
+      fail(index, num, Object.values(dimErrors));
       continue;
     }
     // deferSync=true: each row updates in memory and the local JSON backup;
     // the rows are written to Firestore in one targeted batch below.
-    // Matching is by number at the site only: a row's own id is ignored (AC-13).
     const r = saveOrUpdateSlot({ ...item, id: undefined }, { deferSync: true, matchByNumber: true });
     if (isSlotSaveFailure(r)) {
-      errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${r.message}`);
+      fail(index, num, [r.value ? `${r.message} (got "${r.value}")` : r.message]);
       continue;
     }
     if (r.created) added++; else updated++;
+    rows.push({ row: index + 1, slotNumber: num, result: r.created ? 'added' : 'updated' });
     changedIds.push(r.slot.id);
   }
 
@@ -2738,7 +2764,7 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
     saveDB([{ collection: 'slots', ids: changedIds }]);
   }
 
-  return { added, updated, total: getStore().slots.length, errors };
+  return { added, updated, total: getStore().slots.length, errors, rows };
 }
 
 // ==========================================

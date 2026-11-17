@@ -125,6 +125,7 @@ import {
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
 import { isLocalDemoMode } from './src/server/runtimeMode';
 import { isMasterAdmin } from './src/utils/rbac';
+import { slotMatchesFilters, compareInventory, inventoryRow, INVENTORY_CSV_COLUMNS } from './src/utils/slotFields';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
@@ -2359,12 +2360,17 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
   });
 
   if (type === 'slots') {
-    let csv = 'SlotNumber,Basement,FloorLocation,PuzzleNumber,SlotType,ParkingType,Height,Allocation,Status,CurrentVehicle\n';
-    siteFilter(store.slots).forEach(s => {
-      csv += [s.slotNumber, s.basement, s.floorLocation, s.puzzleNumber || '', s.slotType, s.parkingType, s.height, s.allocation, s.status, s.currentVehicle || ''].map(csvCell).join(',') + '\n';
-    });
+    // 005 B3 (AC-06): the Inventory table's columns, labels, row filter and order; the table's own filters come as query params.
+    const q = (k: string) => (typeof req.query[k] === 'string' ? (req.query[k] as string) : '');
+    const filters = { basement: q('basement'), status: q('status'), search: q('search') };
+    const rows = siteFilter(store.slots).filter((s) => slotMatchesFilters(s, filters)).sort(compareInventory);
+    let csv = INVENTORY_CSV_COLUMNS.map(csvCell).join(',') + '\n';
+    // a lone "-" (no occupant, as the table shows it) is not a formula: it is the one value the formula guard leaves alone
+    rows.forEach((s) => { csv += inventoryRow(s).map((v) => (v === '-' ? '"-"' : csvCell(v))).join(',') + '\n'; });
+    const siteCode = String(getSites().find((x) => x.id === siteId)?.siteCode || siteId).replace(/[^A-Za-z0-9_-]/g, '');
+    const ist = new Date(Date.now() + 330 * 60 * 1000).toISOString(); // IST wall clock (UTC+05:30, no DST)
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="pms_slots_inventory.csv"');
+    res.setHeader('Content-Disposition', `attachment; filename="inventory_${siteCode}_${ist.slice(0, 10)}_${ist.slice(11, 13)}${ist.slice(14, 16)}.csv"`);
     return res.send(csv);
   }
 

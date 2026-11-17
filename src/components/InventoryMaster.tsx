@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react';
 import { ParkingSlot, SlotStatus, SlotType, ParkingType, Allocation } from '../types';
 import { useWriteGuard } from '../utils/withSite';
 import { SiteCodeChip } from './SiteCodeChip';
+import type { SlotField as SlotFieldName } from '../utils/slotFields';
+import { emptyNewSlot, selectModel, missingRequired, buildSavePayload, mapSaveError } from '../utils/slotEditor';
 import {
   Cpu,
   Search,
@@ -23,6 +25,31 @@ import {
   Sparkles,
   Trash2
 } from 'lucide-react';
+
+// 005 F1: one select for every list field. Options, labels and codes come from slotFields (through selectModel).
+const FieldSelect: React.FC<{
+  id: string; label: string; field: SlotFieldName; value: unknown; error?: string; onChange: (code: string) => void;
+}> = ({ id, label, field, value, error, onChange }) => {
+  const model = selectModel(field, value);
+  return (
+    <div>
+      <label htmlFor={id} className="block text-slate-700 font-bold mb-1">{label}</label>
+      <select
+        id={id}
+        value={model.value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
+        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
+      >
+        {model.options.map((o) => (
+          <option key={o.value || 'placeholder'} value={o.value} disabled={o.disabled}>{o.label}</option>
+        ))}
+      </select>
+      {error && <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+    </div>
+  );
+};
 
 interface InventoryMasterProps {
   slots: ParkingSlot[];
@@ -50,6 +77,8 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const [editingSlot, setEditingSlot] = useState<Partial<ParkingSlot> | null>(null);
   const [slotFormSaving, setSlotFormSaving] = useState(false);
   const [slotFormError, setSlotFormError] = useState<string | null>(null);
+  // 005 F1: server errors shown next to the field they name (400 ERR_VALIDATION {field}, 409 on the slot number)
+  const [fieldErrors, setFieldErrors] = useState<{ [field: string]: string }>({});
   // 002 F5 (B1): optional slot length (m) and pallet level, typed as text so the server's own
   // validation message comes back for a bad value. Empty = not set.
   const [dimText, setDimText] = useState<{ lengthM: string; palletLevel: string }>({ lengthM: '', palletLevel: '' });
@@ -95,19 +124,12 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const handleOpenSlotEditModal = (slot?: ParkingSlot) => {
     setDimText({ lengthM: slot?.lengthM != null ? String(slot.lengthM) : '', palletLevel: slot?.palletLevel != null ? String(slot.palletLevel) : '' });
     setDimErrors({});
+    setFieldErrors({});
     if (slot) {
       setEditingSlot({ ...slot });
     } else {
-      setEditingSlot({
-        slotNumber: `B1-P01-S${Math.floor(Math.random() * 90 + 10)}`,
-        basement: 'B1',
-        floorLocation: 'Level 1 Stacker',
-        slotType: 'SEDAN',
-        height: 'Standard (2.0m)',
-        parkingType: 'PUZZLE',
-        allocation: 'EMPLOYEE',
-        status: 'VACANT',
-      });
+      // AC-14: the Add form starts empty (no made-up number, location, height or type)
+      setEditingSlot(emptyNewSlot() as unknown as Partial<ParkingSlot>);
     }
     setSlotFormError(null);
     setIsSlotEditModalOpen(true);
@@ -151,30 +173,30 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     }
   };
 
+  const isNewSlot = !!editingSlot && !editingSlot.id;
+  const missingFields = editingSlot ? missingRequired(editingSlot, isNewSlot) : [];
+  const setEditorField = (field: string, value: string) => {
+    if (!editingSlot) return;
+    setEditingSlot({ ...editingSlot, [field]: value } as Partial<ParkingSlot>);
+    if (fieldErrors[field]) setFieldErrors({ ...fieldErrors, [field]: '' });
+  };
+
   const handleSaveSlotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingSlot) {
       setSlotFormError('No slot selected.');
       return;
     }
-    const cleanSlotNumber = (editingSlot.slotNumber || editingSlot.id || '').trim().toUpperCase();
-    if (!cleanSlotNumber) {
-      setSlotFormError('Slot Identifier Number is required.');
-      return;
-    }
+    if (missingFields.length > 0) return;
 
     try {
       setSlotFormSaving(true);
       setSlotFormError(null);
-
-      const slotPayload = {
-        ...editingSlot,
-        id: editingSlot.id || cleanSlotNumber.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
-        slotNumber: cleanSlotNumber,
-        lengthM: dimText.lengthM.trim() === '' ? null : dimText.lengthM.trim(),
-        palletLevel: dimText.palletLevel.trim() === '' ? null : dimText.palletLevel.trim(),
-      };
+      setFieldErrors({});
       setDimErrors({});
+
+      // A new slot never carries an id: the server makes it (AC-11).
+      const slotPayload = buildSavePayload(editingSlot, dimText);
 
       const res = await fetch('/api/v1/slots/save', {
         method: 'POST',
@@ -186,14 +208,17 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (data.success) {
         setIsSlotEditModalOpen(false);
         setEditingSlot(null);
         onRefresh();
       } else {
-        if (data.errors && typeof data.errors === 'object') setDimErrors(data.errors);
-        setSlotFormError(data.message || 'Failed to save slot');
+        // Typed values stay in the form; the error is shown next to the field it names.
+        const view = mapSaveError(res.status, data);
+        setFieldErrors(view.fieldErrors);
+        setDimErrors(view.dimErrors);
+        setSlotFormError(view.banner);
       }
     } catch (err: any) {
       setSlotFormError(err.message || 'Error communicating with server');
@@ -621,105 +646,48 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
             <form onSubmit={handleSaveSlotSubmit} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1">Slot Identifier Number *</label>
+                  <label htmlFor="slot-number" className="block text-slate-700 font-bold mb-1">Slot Identifier Number *</label>
                   <input
+                    id="slot-number"
                     type="text"
-                    required
                     placeholder="e.g. B1-P01-S01"
                     value={editingSlot.slotNumber || ''}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, slotNumber: e.target.value.toUpperCase() })}
+                    onChange={(e) => setEditorField('slotNumber', e.target.value.toUpperCase())}
+                    aria-invalid={fieldErrors.slotNumber ? true : undefined}
+                    aria-describedby={fieldErrors.slotNumber ? 'slot-number-error' : undefined}
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
                   />
+                  {fieldErrors.slotNumber && <p id="slot-number-error" role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.slotNumber}</p>}
                 </div>
 
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Basement / Level *</label>
-                  <select
-                    value={editingSlot.basement || 'B1'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, basement: e.target.value as any })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-mono"
-                  >
-                    <option value="B1">Basement B1</option>
-                    <option value="B2">Basement B2</option>
-                    <option value="B3">Basement B3</option>
-                    <option value="Ground">Ground Floor</option>
-                    <option value="Driveway">Driveway</option>
-                  </select>
-                </div>
+                <FieldSelect id="slot-basement" label="Basement / Level *" field="basement" value={editingSlot.basement}
+                  error={fieldErrors.basement} onChange={(v) => setEditorField('basement', v)} />
               </div>
 
               <div>
-                <label className="block text-slate-700 font-bold mb-1">Floor Location Description</label>
+                <label htmlFor="slot-floor" className="block text-slate-700 font-bold mb-1">Floor Location Description *</label>
                 <input
+                  id="slot-floor"
                   type="text"
                   placeholder="e.g. North Wing Level 1 Stacker"
                   value={editingSlot.floorLocation || ''}
-                  onChange={(e) => setEditingSlot({ ...editingSlot, floorLocation: e.target.value })}
+                  onChange={(e) => setEditorField('floorLocation', e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Bound Vehicle Type</label>
-                  <select
-                    value={editingSlot.slotType || 'SEDAN'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, slotType: e.target.value as SlotType })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-mono"
-                  >
-                    <option value="SEDAN">Sedan</option>
-                    <option value="SUV">SUV (High Clearance)</option>
-                    <option value="EV">EV Charging Bay</option>
-                    <option value="TWO_WHEELER">Two Wheeler</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Clearance Height</label>
-                  <select
-                    value={editingSlot.height || 'Standard (2.0m)'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, height: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
-                  >
-                    <option value="Standard (2.0m)">Standard (2.0m)</option>
-                    <option value="High Clearance (2.5m)">High Clearance (2.5m)</option>
-                    <option value="Compact (1.8m)">Compact (1.8m)</option>
-                  </select>
-                </div>
+                <FieldSelect id="slot-type" label="Bound Vehicle Type *" field="slotType" value={editingSlot.slotType}
+                  error={fieldErrors.slotType} onChange={(v) => setEditorField('slotType', v)} />
+                <FieldSelect id="slot-height" label="Clearance Height *" field="height" value={editingSlot.height}
+                  error={fieldErrors.height} onChange={(v) => setEditorField('height', v)} />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Parking Type</label>
-                  <select
-                    value={(() => {
-                      const t = (editingSlot.parkingType || '').toUpperCase();
-                      if (t.includes('PUZZLE')) return 'PUZZLE';
-                      if (t.includes('STACK')) return 'STACK';
-                      return 'GROUND';
-                    })()}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, parkingType: e.target.value as any })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-medium"
-                  >
-                    <option value="GROUND">Ground</option>
-                    <option value="PUZZLE">Puzzle</option>
-                    <option value="STACK">Stack</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Allocation Rule</label>
-                  <select
-                    value={editingSlot.allocation || 'General Employee'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, allocation: e.target.value as any })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
-                  >
-                    <option value="General Employee">General Employee</option>
-                    <option value="Executive & VIP">Executive & VIP</option>
-                    <option value="Visitor / Guest">Visitor / Guest</option>
-                    <option value="EV Charging Only">EV Charging Only</option>
-                  </select>
-                </div>
+                <FieldSelect id="slot-parking" label="Parking Type *" field="parkingType" value={editingSlot.parkingType}
+                  error={fieldErrors.parkingType} onChange={(v) => setEditorField('parkingType', v)} />
+                <FieldSelect id="slot-allocation" label="Allocation Rule *" field="allocation" value={editingSlot.allocation}
+                  error={fieldErrors.allocation} onChange={(v) => setEditorField('allocation', v)} />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -757,19 +725,12 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-700 font-bold mb-1">Slot Operational Status *</label>
-                <select
-                  value={editingSlot.status || 'VACANT'}
-                  onChange={(e) => setEditingSlot({ ...editingSlot, status: e.target.value as SlotStatus })}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
-                >
-                  <option value="VACANT">VACANT (Available)</option>
-                  <option value="OCCUPIED">OCCUPIED</option>
-                  <option value="RESERVED">RESERVED</option>
-                  <option value="MAINTENANCE">MAINTENANCE</option>
-                </select>
-              </div>
+              <FieldSelect id="slot-status" label="Slot Operational Status" field="status" value={editingSlot.status}
+                error={fieldErrors.status} onChange={(v) => setEditorField('status', v)} />
+
+              {missingFields.length > 0 && (
+                <p className="text-slate-600">Fill every field marked * to save the new slot.</p>
+              )}
 
               <div className="pt-3 border-t border-slate-200 flex items-center justify-end space-x-3">
                 <button
@@ -781,7 +742,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                 </button>
                 <button
                   type="submit"
-                  disabled={slotFormSaving}
+                  disabled={slotFormSaving || missingFields.length > 0}
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center space-x-2 disabled:opacity-50"
                 >
                   {slotFormSaving && <RefreshCw className="w-4 h-4 animate-spin" />}

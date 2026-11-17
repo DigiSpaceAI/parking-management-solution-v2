@@ -1,7 +1,7 @@
 import React from 'react';
 import { Button, Card, EmptyState, Pagination, SiteTag, SlotCard, SlotCode, type SlotStatus } from '../../design-system/components';
 import { formatNumber } from '../../utils/format';
-import { compareTopFirst, decodeSlot, heightOf, palletLevelOf, type LiveSlot } from '../../utils/slots';
+import { compareTopFirst, decodeSlot, heightOf, type LiveSlot } from '../../utils/slots';
 
 export interface PuzzleModule {
   id: string;
@@ -73,8 +73,7 @@ export const PuzzleView: React.FC<PuzzleViewProps> = ({ modules, page, onPage, o
                     compact
                     code={p.slotNumber}
                     status={p.status as SlotStatus}
-                    decode={decodeSlot(p)}
-                    level={palletLevelOf(p)}
+                    decode={decodeSlot(p, false)}
                     slotType={p.slotType}
                     ev={p.slotType === 'EV'}
                     plate={p.currentVehicle}

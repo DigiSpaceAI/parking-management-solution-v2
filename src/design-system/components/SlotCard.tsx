@@ -26,7 +26,7 @@ export function sizeText(h: number | null | undefined, l: number | null | undefi
 export interface SlotCardProps {
   code: string;
   status: SlotStatus;
-  /** The line that explains the code: "Puzzle 03 · Pallet 1" / "Ground · Bay 14". */
+  /** The line that explains the code: "Puzzle 03" / "Ground · Bay 14" (no level or pallet on a card, 005 AC-25). */
   decode?: string;
   /** Slot type for the chip, e.g. "SUV" / "TWO_WHEELER" (shown as words). */
   slotType?: string;
@@ -37,8 +37,6 @@ export interface SlotCardProps {
   inSince?: string | null;
   heightM?: number | null;
   lengthM?: number | null;
-  /** Puzzle view: "Level 3" on the band. */
-  level?: number | null;
   /** Pallet variant inside a puzzle stacker card. */
   compact?: boolean;
   /** Open the slot details. */
@@ -53,7 +51,7 @@ export interface SlotCardProps {
 
 /** Live parking slot card (option B · status band, approved 2026-10-03). */
 export const SlotCard: React.FC<SlotCardProps> = ({
-  code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, level, compact, onOpen, onMarkExit, selected, siteCode, className,
+  code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, compact, onOpen, onMarkExit, selected, siteCode, className,
 }) => {
   const occupied = status === 'OCCUPIED';
   const statusWord = labelFor('status', status);
@@ -62,7 +60,6 @@ export const SlotCard: React.FC<SlotCardProps> = ({
       <span className={cx('pf-slot-band', `pf-slot-band--${status.toLowerCase()}`)}>
         <Icon icon={BAND_ICON[status]} size={16} />
         <span>{statusWord}</span>
-        {level ? <span className="pf-slot-band-end">Level {level}</span> : null}
       </span>
       <span className="pf-slot-body">
         <span className="pf-slot-head">
@@ -122,7 +119,7 @@ export const SlotCard: React.FC<SlotCardProps> = ({
   );
 };
 
-export interface SlotRowProps extends Omit<SlotCardProps, 'compact' | 'level'> {}
+export interface SlotRowProps extends Omit<SlotCardProps, 'compact'> {}
 
 /** Live parking list view (D): Status · Slot · Type · Height · Length · Vehicle · Mark exit (Height and Length merge into Size at 768–1279px). Use inside a pf-table. */
 export const SlotRow: React.FC<SlotRowProps> = ({ code, status, decode, slotType, ev, plate, inSince, heightM, lengthM, onOpen, onMarkExit, siteCode }) => {

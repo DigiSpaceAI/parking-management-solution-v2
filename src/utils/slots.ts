@@ -38,12 +38,15 @@ export function heightOf(slot: Pick<LiveSlot, 'heightM' | 'height'>): number | n
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** The line that explains a slot code: "Puzzle 03 · Pallet 1", "Ground · Bay 14", "Stack · Bay 2". */
-export function decodeSlot(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber' | 'slotNumber' | 'palletLevel' | 'floorLocation'>): string {
+/**
+ * The line that explains a slot code: "Puzzle 03 · Pallet 1", "Ground · Bay 14", "Stack · Bay 2".
+ * Slot cards pass `withPallet = false` (005 AC-25: no level or pallet text on a card): "Puzzle 03".
+ */
+export function decodeSlot(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber' | 'slotNumber' | 'palletLevel' | 'floorLocation'>, withPallet = true): string {
   if (isPuzzle(slot)) {
     const pid = puzzleIdOf(slot);
     const p = /P(\d+)$/i.exec(pid);
-    const level = palletLevelOf(slot);
+    const level = withPallet ? palletLevelOf(slot) : null;
     return [`Puzzle ${p ? p[1] : pid}`, level ? `Pallet ${level}` : null].filter(Boolean).join(' · ');
   }
   const kind = slot.parkingType === 'STACK' ? 'Stack' : 'Ground';

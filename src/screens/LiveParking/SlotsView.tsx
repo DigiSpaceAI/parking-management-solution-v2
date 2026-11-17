@@ -31,7 +31,7 @@ export const SlotsView: React.FC<SlotsViewProps> = ({
   const common = (s: LiveSlot) => ({
     code: s.slotNumber,
     status: s.status as SlotStatus,
-    decode: decodeSlot(s),
+    decode: decodeSlot(s, false),
     slotType: s.slotType,
     ev: s.slotType === 'EV',
     plate: s.currentVehicle,

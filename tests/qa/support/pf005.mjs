@@ -20,6 +20,10 @@ const dataFile = process.env.FAKE_DATA_FILE || null;
 const seed = dataFile && existsSync(dataFile) ? JSON.parse(readFileSync(dataFile, 'utf-8'))
   : process.env.SEED_FILE ? JSON.parse(readFileSync(process.env.SEED_FILE, 'utf-8')) : {};
 const fake = new FakeFirestore(seed, { persistFile: dataFile, failReads: Number(process.env.FAKE_FAIL_READS || 0) });
+// FAKE_FAIL_COMMITS="appRoles:1" arms commit failures before the store loads (full-sync isolation test)
+for (const part of (process.env.FAKE_FAIL_COMMITS || '').split(',').filter(Boolean)) {
+  const [col, n] = part.split(':'); fake.failCommit(Number(n || 1), col);
+}
 const idsOf = () => Object.fromEntries([...fake.data].filter(([c]) => c !== 'securityAuditLogs' && c !== '_meta').map(([c, m]) => [c, [...m.keys()]]));
 const before = idsOf();
 if (mode !== 'local') {

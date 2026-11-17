@@ -104,7 +104,7 @@ before(async () => {
   F.A = await c.onboard('RBA', 'R1b Site A');
   F.B = await c.onboard('RBB', 'R1b Site B');
   for (const [s, p] of [[F.A, 'A'], [F.B, 'B']]) {
-    const r = await c.post('master', '/slots/bulk-upload', { slots: [slot(`${p}-01`), slot(`${p}-02`), slot(`${p}-03`), slot(`${p}-04`, { basement: 'Ground', parkingType: 'FLAT' })] }, { site: s.id });
+    const r = await c.post('master', '/slots/bulk-upload', { slots: [slot(`${p}-01`), slot(`${p}-02`), slot(`${p}-03`), slot(`${p}-04`, { basement: 'Ground', parkingType: 'GROUND' })] }, { site: s.id });
     assert.ok(r.body.success, JSON.stringify(r.body));
   }
   F.adminA = await c.mkUser('adminA', 'role-site-manager', [F.A.id]);

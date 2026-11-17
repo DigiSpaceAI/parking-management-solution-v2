@@ -23,6 +23,7 @@ import {
   getEmployeeByEmailOrId,
   updateEmployeeVehicle,
   saveOrUpdateSlot,
+  isSlotSaveFailure,
   parseSlotDimensions,
   bulkUploadSlots,
   deleteSlot,
@@ -1873,7 +1874,27 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
       slotNumber: slotNumber.trim().toUpperCase(),
     };
 
-    const saved = saveOrUpdateSlot(slotData);
+    // 005 B2: validated save. 400 ERR_VALIDATION { field, allowed } for a value outside the lists (changed fields only),
+    // 409 ERR_DUPLICATE_SLOT for a slot number already used at this site. Nothing is saved on either.
+    const result = saveOrUpdateSlot(slotData);
+    if (isSlotSaveFailure(result)) {
+      return res.status(result.status).json({
+        success: false, errorCode: result.errorCode, message: result.message,
+        ...(result.field ? { field: result.field } : {}), ...(result.allowed ? { allowed: result.allowed } : {}),
+      });
+    }
+    const saved = result.slot;
+    logSecurityEvent({
+      action: 'SLOT_SAVED',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `slot/${saved.id}`,
+      status: 'SUCCESS',
+      // slot number and the names of the changed fields only: no values, plates or occupants
+      details: `Slot ${saved.slotNumber} ${result.created ? 'created' : 'updated'}${result.changed.length ? `; changed: ${result.changed.join(', ')}` : ''}.`,
+      siteId: writeSite,
+    });
     res.json({
       success: true,
       message: `Slot ${saved.slotNumber} successfully saved! Status: ${saved.status}`,

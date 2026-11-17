@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
+import { toCode, optionsFor, type SlotField } from '../utils/slotFields';
 import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
@@ -1453,7 +1454,21 @@ function logStartupCounts(): void {
   const defaultsInMemory = getDefaultRoles().filter((r) => !storedRoleIds.has(r.id)).length;
   const parts = FIRESTORE_COLLECTIONS.map((k) => `${String(k)}=${n(k)}${k === 'appRoles' && defaultsInMemory > 0 ? `(+${defaultsInMemory} default in memory)` : ''}`);
   console.log(`[startup] mode=${isLiveMode() ? 'live' : 'local-demo'} store=${isLiveMode() ? 'firestore' : 'local'} counts: ${parts.join(' ')}`);
+  logDuplicateSlotNumbers();
   if (seedingPrevented.size > 0) console.warn(`[startup][WARN] seeding prevented: ${Array.from(seedingPrevented).join(', ')}`);
+}
+
+/** 005 AC-15: counts only (no slot ids, plates or numbers); nothing is merged or deleted. */
+function logDuplicateSlotNumbers(): void {
+  const seen: Record<string, number> = {};
+  for (const sl of store.slots || []) {
+    const k = `${slotSiteOf(sl)}|${slotNumberKey(sl.slotNumber)}`;
+    seen[k] = (seen[k] || 0) + 1;
+  }
+  let numbers = 0;
+  const sites: Record<string, true> = {};
+  for (const k of Object.keys(seen)) if (seen[k] > 1) { numbers++; sites[k.split('|')[0]] = true; }
+  if (numbers > 0) console.warn(`[slots] duplicate slot numbers: ${numbers} number(s) at ${Object.keys(sites).length} site(s). Delete the extra slots in Inventory.`);
 }
 
 function scheduleBootstrapRetry(wait: number): void {
@@ -1463,19 +1478,18 @@ function scheduleBootstrapRetry(wait: number): void {
 }
 
 export async function bootstrapFirestore(): Promise<void> {
-  const live = isLiveMode();
-  const db = getFirestoreDb();
-  if (!db || (live && !isFirestoreConfigured())) {
-    if (live) {
-      // 005 AC-18 (B-G4, B-G5): live without a usable Firestore never serves a demo or empty store as real.
-      storeReady = false;
-      console.error('[firestore][CRITICAL] live mode but Firestore unavailable — not serving');
-      scheduleBootstrapRetry(BOOTSTRAP_RETRY_MAX_MS);
-      return;
-    }
-    // Local demo: nothing can be written to Firestore, the local store is all there is.
+  if (!isLiveMode()) {
+    // Local demo (no Cloud Run, no project id): Firestore is never used; the local store is all there is.
     storeReady = true;
     logStartupCounts();
+    return;
+  }
+  const db = getFirestoreDb();
+  if (!db || !isFirestoreConfigured()) {
+    // 005 AC-18 (B-G4, B-G5): live without a usable Firestore never serves a demo or empty store as real.
+    storeReady = false;
+    console.error('[firestore][CRITICAL] live mode but Firestore unavailable — not serving');
+    scheduleBootstrapRetry(BOOTSTRAP_RETRY_MAX_MS);
     return;
   }
 
@@ -2542,42 +2556,99 @@ function applyDimensions(slot: ParkingSlot, dims: SlotDimensions) {
 // cameraNumber, updatedAt, …) comes from the stored record or the server,
 // never from the request body (closes the mass-assignment gap of the old
 // `...slotData` spread). siteId is decided by the route (siteForSave).
-export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: boolean = false): ParkingSlot {
+// 005 B2: validated slot save.
+//  - A client-sent id that does not exist means a NEW slot; new ids are always made by the server (never the client's).
+//  - Only the fields that CHANGE are validated on update (legacy stored values survive unrelated edits, AC-02).
+//    On create every field is checked and nothing is defaulted (AC-14); status defaults to VACANT.
+//  - Slot numbers are unique per site (trim + upper-case): a create or a rename onto a used number is a 409 (AC-11/12).
+export type SlotSaveFailure = {
+  ok: false; status: 400 | 409; errorCode: 'ERR_VALIDATION' | 'ERR_DUPLICATE_SLOT'; field?: string; allowed?: string[]; message: string;
+};
+export type SlotSaveSuccess = { ok: true; slot: ParkingSlot; created: boolean; changed: string[] };
+export type SlotSaveResult = SlotSaveFailure | SlotSaveSuccess;
+export const isSlotSaveFailure = (r: SlotSaveResult): r is SlotSaveFailure => r.ok === false;
+
+const SLOT_FIELD_LABELS: Record<SlotField, string> = {
+  basement: 'Level', slotType: 'Vehicle type', height: 'Height', parkingType: 'Parking type', allocation: 'Allocation', status: 'Status',
+};
+const SLOT_FIELD_ORDER: SlotField[] = ['basement', 'slotType', 'height', 'parkingType', 'allocation', 'status'];
+const hasValue = (v: unknown): boolean => v !== undefined && v !== null && String(v).trim() !== '';
+const slotSiteOf = (s: { siteId?: string }): string => s.siteId || DEFAULT_SITE_ID;
+
+export function slotNumberKey(n: unknown): string { return String(n === undefined || n === null ? '' : n).trim().toUpperCase(); }
+
+function fieldFailure(field: SlotField, missing: boolean): SlotSaveFailure {
+  const opts = optionsFor(field);
+  const label = SLOT_FIELD_LABELS[field];
+  return {
+    ok: false, status: 400, errorCode: 'ERR_VALIDATION', field, allowed: opts.map((o) => o.code),
+    message: missing ? `${label} is required. Choose one of: ${opts.map((o) => o.label).join(', ')}.` : `${label} must be one of: ${opts.map((o) => o.label).join(', ')}.`,
+  };
+}
+
+export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSync?: boolean; matchByNumber?: boolean } = {}): SlotSaveResult {
   const storeData = getStore();
   const now = new Date().toISOString();
-  let existingIndex = -1;
   const dims = parseSlotDimensions(slotData).values; // routes validate first; invalid values are ignored here
+  const targetSite = slotData.siteId || DEFAULT_SITE_ID;
+  const numberKey = slotNumberKey(slotData.slotNumber);
 
-  if (slotData.id) {
-    existingIndex = storeData.slots.findIndex(s => s.id === slotData.id);
-  } else if (slotData.slotNumber) {
-    // Match on siteId + slotNumber together, not slotNumber alone — two
-    // different sites can legitimately have the same slot number (e.g.
-    // both using "B1-P01-S01"), and matching by number only would treat
-    // them as the same slot and silently overwrite one with the other.
-    // Same fix, same reasoning as the identical change in
-    // saveOrUpdateEmployee above — resolve missing siteId on both
-    // sides, don't strictly compare against literally undefined.
-    const targetSiteId = slotData.siteId || DEFAULT_SITE_ID;
-    existingIndex = storeData.slots.findIndex(
-      s => s.slotNumber.toUpperCase() === slotData.slotNumber!.toUpperCase() && (s.siteId || DEFAULT_SITE_ID) === targetSiteId
-    );
+  // 1. Find the stored slot: by id (the editor) or, for CSV import, by number at the site.
+  let existingIndex = -1;
+  if (opts.matchByNumber) {
+    existingIndex = storeData.slots.findIndex((s) => slotNumberKey(s.slotNumber) === numberKey && slotSiteOf(s) === targetSite);
+  } else if (slotData.id) {
+    existingIndex = storeData.slots.findIndex((s) => s.id === slotData.id);
+  }
+  const existing = existingIndex >= 0 ? storeData.slots[existingIndex] : undefined;
+
+  // 2. Validate: changed fields only on update, every field on create.
+  const values: Partial<Record<SlotField, string>> = {};
+  for (const field of SLOT_FIELD_ORDER) {
+    const raw = (slotData as any)[field];
+    if (existing) {
+      const stored = (existing as any)[field];
+      if (!hasValue(raw) || String(raw) === String(stored)) { values[field] = stored; continue; } // unchanged: stored back as is
+    } else if (!hasValue(raw)) {
+      if (field === 'status') { values[field] = 'VACANT'; continue; }
+      return fieldFailure(field, true);
+    }
+    const code = toCode(field, raw);
+    if (code === null) return fieldFailure(field, false);
+    values[field] = code;
+  }
+  const floorLocation = typeof slotData.floorLocation === 'string' ? slotData.floorLocation.trim() : '';
+  if (!existing && !floorLocation) {
+    return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'floorLocation', message: 'Floor location is required.' };
+  }
+  if (!numberKey) {
+    return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'slotNumber', message: 'Slot Number is required.' };
   }
 
-  if (existingIndex >= 0) {
-    const existing = storeData.slots[existingIndex];
-    const status = slotData.status || existing.status;
+  // 3. Unique number per site (create, or a rename onto another slot's number).
+  const finalNumber = numberKey || (existing ? slotNumberKey(existing.slotNumber) : '');
+  if (!existing || finalNumber !== slotNumberKey(existing.slotNumber)) {
+    const siteForCheck = existing ? slotSiteOf(existing) : targetSite;
+    const clash = storeData.slots.some((s) => s !== existing && slotNumberKey(s.slotNumber) === finalNumber && slotSiteOf(s) === siteForCheck);
+    if (clash) {
+      return { ok: false, status: 409, errorCode: 'ERR_DUPLICATE_SLOT', field: 'slotNumber', message: `Slot ${finalNumber} already exists at this site — edit that slot instead.` };
+    }
+  }
+
+  // 4. Write.
+  if (existing) {
+    const status = values.status as ParkingSlot['status'];
     const updated: ParkingSlot = {
       ...existing,
       siteId: slotData.siteId || existing.siteId,
-      slotNumber: (slotData.slotNumber || existing.slotNumber).trim().toUpperCase(),
-      basement: slotData.basement || existing.basement,
-      floorLocation: slotData.floorLocation || existing.floorLocation,
+      slotNumber: finalNumber,
+      basement: values.basement as ParkingSlot['basement'],
+      floorLocation: floorLocation || existing.floorLocation,
       puzzleNumber: slotData.puzzleNumber !== undefined ? (slotData.puzzleNumber || undefined) : existing.puzzleNumber,
-      slotType: slotData.slotType || existing.slotType,
-      height: slotData.height || existing.height,
-      parkingType: slotData.parkingType || existing.parkingType,
-      allocation: slotData.allocation || existing.allocation,
+      slotType: values.slotType as ParkingSlot['slotType'],
+      height: values.height as string,
+      parkingType: values.parkingType as ParkingSlot['parkingType'],
+      allocation: values.allocation as ParkingSlot['allocation'],
       status,
       // Only the stored vehicle is kept (a vehicle is set by entry/exit, never
       // by a slot save); a VACANT slot has none.
@@ -2585,33 +2656,32 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
       updatedAt: now,
     };
     applyDimensions(updated, dims);
+    const tracked: Array<keyof ParkingSlot> = ['slotNumber', 'basement', 'floorLocation', 'puzzleNumber', 'slotType', 'height', 'parkingType', 'allocation', 'status', 'lengthM', 'palletLevel'];
+    const changed = tracked.filter((k) => String((existing as any)[k] ?? '') !== String((updated as any)[k] ?? '')).map(String);
     storeData.slots[existingIndex] = updated;
     // deferSync lets a caller doing many updates in a loop (bulkUploadSlots)
-    // batch them into one sync at the end, instead of each iteration
-    // triggering its own immediate targeted write — see bulkUploadSlots
-    // below for why that distinction matters.
-    if (!deferSync) saveDB([{ collection: 'slots', ids: [updated.id] }]);
-    return updated;
-  } else {
-    const newSlot: ParkingSlot = {
-      id: slotData.id || uniqueRecordId('slot', storeData.slots),
-      siteId: slotData.siteId || DEFAULT_SITE_ID,
-      slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
-      basement: slotData.basement || 'B1',
-      floorLocation: slotData.floorLocation || 'Level 1 Stacker',
-      ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
-      slotType: slotData.slotType || 'SEDAN',
-      height: slotData.height || 'Standard (2.0m)',
-      parkingType: slotData.parkingType || 'PUZZLE',
-      allocation: slotData.allocation || 'EMPLOYEE',
-      status: slotData.status || 'VACANT',
-      updatedAt: now,
-    };
-    applyDimensions(newSlot, dims);
-    storeData.slots.unshift(newSlot);
-    if (!deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
-    return newSlot;
+    // batch them into one targeted write at the end instead of one per row.
+    if (!opts.deferSync) saveDB([{ collection: 'slots', ids: [updated.id] }]);
+    return { ok: true, slot: updated, created: false, changed };
   }
+  const newSlot: ParkingSlot = {
+    id: uniqueRecordId('slot', storeData.slots), // always server-made: a client id is never used
+    siteId: targetSite,
+    slotNumber: finalNumber,
+    basement: values.basement as ParkingSlot['basement'],
+    floorLocation,
+    ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
+    slotType: values.slotType as ParkingSlot['slotType'],
+    height: values.height as string,
+    parkingType: values.parkingType as ParkingSlot['parkingType'],
+    allocation: values.allocation as ParkingSlot['allocation'],
+    status: values.status as ParkingSlot['status'],
+    updatedAt: now,
+  };
+  applyDimensions(newSlot, dims);
+  storeData.slots.unshift(newSlot);
+  if (!opts.deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
+  return { ok: true, slot: newSlot, created: true, changed: [] };
 }
 
 /**
@@ -2652,26 +2722,16 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
       errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${Object.values(dimErrors).join(' ')}`);
       continue;
     }
-    const storeData = getStore();
-    const cleanSlotNum = item.slotNumber.trim().toUpperCase();
-
-    // Same reasoning as the identical fix in bulkUploadEmployees above.
-    const targetSiteId = item.siteId || DEFAULT_SITE_ID;
-    const existing = storeData.slots.find(
-      s => s.slotNumber.toUpperCase() === cleanSlotNum && (s.siteId || DEFAULT_SITE_ID) === targetSiteId
-    );
-
-    if (existing) {
-      updated++;
-    } else {
-      added++;
+    // deferSync=true: each row updates in memory and the local JSON backup;
+    // the rows are written to Firestore in one targeted batch below.
+    // Matching is by number at the site only: a row's own id is ignored (AC-13).
+    const r = saveOrUpdateSlot({ ...item, id: undefined }, { deferSync: true, matchByNumber: true });
+    if (isSlotSaveFailure(r)) {
+      errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${r.message}`);
+      continue;
     }
-    // deferSync=true: each row updates in-memory and the local JSON
-    // backup, but doesn't trigger its own Firestore write — a bulk
-    // upload of hundreds of rows would otherwise mean hundreds of
-    // individual immediate writes instead of one real batch.
-    const saved = saveOrUpdateSlot(item, true);
-    changedIds.push(saved.id);
+    if (r.created) added++; else updated++;
+    changedIds.push(r.slot.id);
   }
 
   if (changedIds.length > 0) {

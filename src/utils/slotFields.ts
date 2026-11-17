@@ -85,6 +85,11 @@ function findOption(field: SlotField, v: unknown): FieldOption | null {
   return null;
 }
 
+/** The offered options of a field, in display order. */
+export function optionsFor(field: SlotField): FieldOption[] {
+  return LISTS[field];
+}
+
 /** Exact code (case-sensitive). */
 export function isCode(field: SlotField, v: unknown): boolean {
   return findOption(field, v) !== null;

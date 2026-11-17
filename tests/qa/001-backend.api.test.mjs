@@ -77,7 +77,9 @@ async function onboard(code, name) {
   return r.body.site;
 }
 const mkSlots = (site, prefix, n) => Array.from({ length: n }, (_, i) => ({ siteId: site.id, slotNumber: `${prefix}-0${i + 1}`,
-  basement: 'B1', floorLocation: 'Level 1', slotType: 'SEDAN', height: '2.0m', parkingType: 'FLAT', allocation: 'EMPLOYEE', status: 'VACANT' }));
+  basement: 'B1', floorLocation: 'Level 1', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }));
+// 005: every field is required when a slot is created (no defaults, AC-14)
+const SLOT_FULL = { basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE' };
 const onlySite = (rows, siteId) => rows.length > 0 && rows.every((r) => (r.siteId || 'site-default') === siteId);
 async function auditEntries(action) {
   const r = await get('master', '/security/audit-logs?limit=1000');
@@ -215,7 +217,7 @@ test('B3/H4 slot save by id of another site -> 403, record unchanged, audit-logg
 });
 
 test('B3/H4 non-Master cannot move a record with body siteId; Master can and it is audit-logged', async () => {
-  const mk = await post('master', '/slots/save', { slot: { slotNumber: 'B-MOVE-1', basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN' } }, { site: F.B.id });
+  const mk = await post('master', '/slots/save', { slot: { ...SLOT_FULL, slotNumber: 'B-MOVE-1' } }, { site: F.B.id });
   assert.equal(mk.status, 200); assert.equal(mk.body.slot.siteId, F.B.id, 'create takes the resolved site');
   const id = mk.body.slot.id;
   const na = await post('adminAB', '/slots/save', { slot: { id, slotNumber: 'B-MOVE-1', siteId: F.A.id } }, { site: F.B.id });
@@ -234,14 +236,14 @@ test('B3 create in a site other than the selected one is refused', async () => {
 test('B3/H4 bulk upload: one foreign row rejects the whole batch and nothing is written', async () => {
   const bSlot = (await slotsAt(F.B.id))[0];
   const before = (await slotsAt(F.A.id)).length;
-  const byId = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }, { id: bSlot.id, slotNumber: bSlot.slotNumber }] }, { site: F.A.id });
+  const byId = await post('adminAB', '/slots/bulk-upload', { slots: [{ ...SLOT_FULL, slotNumber: 'A-NEW-1' }, { id: bSlot.id, slotNumber: bSlot.slotNumber }] }, { site: F.A.id });
   assert.equal(byId.status, 403, JSON.stringify(byId.body));
-  const bySite = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }, { slotNumber: 'A-NEW-2', siteId: F.B.id }] }, { site: F.A.id });
+  const bySite = await post('adminAB', '/slots/bulk-upload', { slots: [{ ...SLOT_FULL, slotNumber: 'A-NEW-1' }, { ...SLOT_FULL, slotNumber: 'A-NEW-2', siteId: F.B.id }] }, { site: F.A.id });
   assert.equal(bySite.status, 403);
   assert.equal((await slotsAt(F.A.id)).length, before, 'no row of a refused batch was written');
-  const noSite = await post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }] });
+  const noSite = await post('master', '/slots/bulk-upload', { slots: [{ ...SLOT_FULL, slotNumber: 'A-NEW-1' }] });
   assert.equal(noSite.status, 400);
-  const ok = await post('adminAB', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-NEW-1' }] }, { site: F.A.id });
+  const ok = await post('adminAB', '/slots/bulk-upload', { slots: [{ ...SLOT_FULL, slotNumber: 'A-NEW-1' }] }, { site: F.A.id });
   assert.equal(ok.status, 200);
   assert.ok((await slotsAt(F.A.id)).some((s) => s.slotNumber === 'A-NEW-1'), 'rows without siteId get the selected site');
 });
@@ -678,7 +680,7 @@ test('M-2 creating, editing and deleting roles is Master-only (roles are shared 
 });
 
 test('m-2 a Master Admin cannot move a record to a site that does not exist', async () => {
-  const mk = await post('master', '/slots/save', { slot: { slotNumber: 'B-ORPHAN-1', basement: 'B1', floorLocation: 'L1', slotType: 'SEDAN' } }, { site: F.B.id });
+  const mk = await post('master', '/slots/save', { slot: { ...SLOT_FULL, slotNumber: 'B-ORPHAN-1' } }, { site: F.B.id });
   assert.equal(mk.status, 200);
   const mv = await post('master', '/slots/save', { slot: { id: mk.body.slot.id, slotNumber: 'B-ORPHAN-1', siteId: 'site-does-not-exist' } }, { site: F.B.id });
   assert.equal(mv.status, 400);

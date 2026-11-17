@@ -96,7 +96,7 @@ before(async () => {
   F.B = await onboard('QAB', 'QA Site B');
   F.C = await onboard('QAC', 'QA Site C');
   const mkSlots = (site, prefix, n) => Array.from({ length: n }, (_, i) => ({ siteId: site.id, slotNumber: `${prefix}-0${i + 1}`,
-    basement: 'B1', floorLocation: 'Level 1', slotType: 'SEDAN', height: '2.0m', parkingType: 'FLAT', allocation: 'EMPLOYEE', status: 'VACANT' }));
+    basement: 'B1', floorLocation: 'Level 1', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }));
   for (const [s, p] of [[F.A, 'A'], [F.B, 'B'], [F.C, 'C']]) {
     const r = await post('master', '/slots/bulk-upload', { slots: mkSlots(s, p, 3) }, s.id);
     assert.ok(r.body.success, JSON.stringify(r.body));

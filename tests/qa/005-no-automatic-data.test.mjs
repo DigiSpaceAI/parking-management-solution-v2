@@ -181,3 +181,21 @@ test('AC-21 .gcloudignore excludes data/, .env*, *.bundle and *.tar.gz and keeps
     assert.ok(!lines.some((l) => l === mustNot || l === '/' + mustNot), `${mustNot} must not be ignored (the build reads it)`);
   }
 });
+
+// ---- 006 T-5 (moved here by 005 D-9): the full sync writes each collection on its own ----
+test('006 T-5 (moved, D-9) a full sync on a seeded store: one failing collection (appRoles) no longer stops the rest', async () => {
+  const seed = {
+    appRoles: [{ id: 'role-x', roleCode: 'X', roleName: 'X', modulePermissions: {} }],
+    appUsers: [master()], sites: sites('site-a'),
+    whitelistedDomains: [{ id: 'dom-x', domain: 'x.in', addedBy: 'Master', createdAt: '2026-10-02T00:00:00.000Z', isActive: true }],
+  };
+  const { r, log } = await run('store', { seed, env: { FAKE_FAIL_COMMITS: 'appRoles:1', ACTIONS: 'fullsync' } });
+  const lines = log.split('\n').filter((l) => l.includes('"event":"PERSIST_FAILED"'));
+  assert.equal(lines.length, 1, 'one PERSIST_FAILED line for the one failed collection:\n' + log.slice(-1500));
+  const j = JSON.parse(lines[0].slice(lines[0].indexOf('{')));
+  assert.equal(j.collection, 'appRoles');
+  assert.equal(j.scope, 'full-sync');
+  const wrote = (c) => r.writes.some((w) => w.collection === c && !w.deleted);
+  assert.ok(wrote('appUsers') && wrote('sites') && wrote('whitelistedDomains'), 'the other collections were still written: ' + JSON.stringify(r.writes));
+  assert.ok(!wrote('appRoles'), 'the failed collection wrote nothing');
+});

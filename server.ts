@@ -24,6 +24,7 @@ import {
   updateEmployeeVehicle,
   saveOrUpdateSlot,
   isSlotSaveFailure,
+  migrateSlotFields,
   parseSlotDimensions,
   bulkUploadSlots,
   deleteSlot,
@@ -1771,6 +1772,40 @@ app.post('/api/v1/admin/migrate-site-data', requireMasterAdmin, requirePermissio
   });
 
   res.json(result);
+});
+
+// 005 B4: one-time slot field fix (Master only, dry run unless { apply: true }; view-as is refused as a write).
+app.post('/api/v1/admin/migrate-slot-fields', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canEdit'), async (req, res) => {
+  const apply = req.body && req.body.apply === true;
+  try {
+    const out = await migrateSlotFields(apply);
+    if (apply) {
+      out.sites.forEach((site) => {
+        if (site.slotsChanged === 0) return;
+        logSecurityEvent({
+          action: 'SLOT_FIELDS_MIGRATED',
+          actor: req.user!.email,
+          actorRole: req.user!.roleName,
+          ipAddress: req.ip,
+          targetResource: `slots/${site.siteId}`,
+          status: 'SUCCESS',
+          details: `Slot fields migrated for ${site.slotsChanged} slots: ${JSON.stringify(site.changed)}.`,
+        });
+      });
+      logSecurityEvent({
+        action: 'SLOT_FIELDS_MIGRATED',
+        actor: req.user!.email,
+        actorRole: req.user!.roleName,
+        ipAddress: req.ip,
+        targetResource: 'slots/all-sites',
+        status: 'SUCCESS',
+        details: `Run summary: ${out.slotsChanged} slots changed across ${out.sites.length} sites.`,
+      });
+    }
+    res.json({ success: true, apply, slotsChanged: out.slotsChanged, sites: out.sites, changedSlotIds: apply || out.slotsChanged < 5000 ? out.changedSlotIds : [] });
+  } catch (err) {
+    return res.status(503).json({ success: false, message: 'The migration could not be saved; nothing was changed.' });
+  }
 });
 
 app.post('/api/v1/sites/pricing', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {

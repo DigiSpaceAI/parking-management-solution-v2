@@ -43,10 +43,12 @@ if (mode === 'local') {
   db.initDB();
   await db.bootstrapFirestore();
   let rolesSeen = [];
+  const migrations = [];
   for (const a of (process.env.ACTIONS || '').split(',').filter(Boolean)) {
     if (a === 'fullsync') db.saveDB();
     else if (a.startsWith('delete-slot:')) db.deleteSlot(a.slice(12), true);
     else if (a.startsWith('delete-site:')) db.deleteSite(a.slice(12));
+    else if (a === 'migrate-dry' || a === 'migrate-apply') { const before = storeWrites().length; const r = await db.migrateSlotFields(a === 'migrate-apply'); migrations.push({ slotsChanged: r.slotsChanged, ids: r.changedSlotIds, writes: storeWrites().slice(before) }); }
     else if (a === 'roles') rolesSeen = db.getAppRoles().map((r) => r.id);
   }
   await sleep(4500); // > the 3 s full-sync debounce
@@ -62,7 +64,7 @@ if (mode === 'local') {
     ready: db.isStoreReady(), writes: storeWrites(), newDocs,
     counts: Object.fromEntries(Object.entries(after).map(([c, ids]) => [c, ids.length])),
     store: { slots: st.slots.length, sites: st.sites.length, appRoles: st.appRoles.length, appUsers: st.appUsers.length, domains: st.whitelistedDomains.length },
-    roleIds: rolesSeen, slotIds: st.slots.map((s) => s.id), siteIds: db.getSites().map((s) => s.id), prevented: db.__seedingPreventedForTests(),
+    roleIds: rolesSeen, migrations, slotIds: st.slots.map((s) => s.id), siteIds: db.getSites().map((s) => s.id), prevented: db.__seedingPreventedForTests(),
   }));
   process.exit(0);
 } else {

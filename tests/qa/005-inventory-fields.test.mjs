@@ -12,6 +12,11 @@ const legacy = (id, num, extra = {}) => ({ id, siteId: 'site-1', slotNumber: num
 // Slots the server loads from its local data file at start: legacy values, and one duplicated number at site-1.
 const LOCAL_SLOTS = [
   legacy('legacy-1', 'LEG-01'), legacy('legacy-2', 'LEG-02', { allocation: 'General Employee' }),
+  legacy('mig-a', 'MIG-01', { slotType: 'Compact SUV', allocation: 'Car Pooling', parkingType: 'Puzzle', height: 'High Clearance (2.5m)' }),
+  legacy('mig-b', 'MIG-02', { slotType: 'EV', allocation: 'VIP', parkingType: 'GROUND', height: '3.0m' }),
+  legacy('mig-c', 'MIG-03', { slotType: 'Truck', allocation: 'NOT_AVAILABLE', parkingType: 'STACK', height: '2.2m' }),
+  legacy('mig-d', 'MIG-04', { slotType: 'SEDAN', allocation: 'EMPLOYEE', parkingType: 'PUZZLE', height: '1.9 metres' }),
+  legacy('mig-e', 'MIG-05', { siteId: 'site-mig', allocation: 'Car Pooling', slotType: 'CSUV', parkingType: 'PUZZLE', height: '2.0m' }),
   legacy('dup-a', 'DUP-01', { allocation: 'EMPLOYEE', height: '2.0m' }), legacy('dup-b', 'DUP-01', { allocation: 'EMPLOYEE', height: '2.0m' }),
 ];
 
@@ -186,4 +191,38 @@ test('T-8 [AC-09] permissions and site scope unchanged on save, bulk and export'
   assert.equal((await save(A, full('PERM-4'), 'admI')).status, 200);
   assert.equal((await c.get('admI', '/export/reports?type=slots', { site: A.id })).status, 200);
   assert.ok(att && adm);
+});
+
+// ------------------------------------------------------------------ B4: one-time migration
+test('T-10 [AC-07] migration: Master only; dry run changes nothing; apply maps by whole value; NOT_AVAILABLE/unknown untouched and listed; counts-only audit; second apply is a no-op', async () => {
+  const sm = await c.mkUser('migSM', 'role-site-manager', [A.id], 'mg');
+  assert.equal((await c.post('migSM', '/admin/migrate-slot-fields', { apply: true })).status, 403, 'non-Master refused');
+  const get = async () => (await c.slots('site-1')).reduce((m, s) => ({ ...m, [s.id]: s }), {});
+  const before = await get();
+  const dry = await c.post('master', '/admin/migrate-slot-fields', {});
+  assert.equal(dry.status, 200, JSON.stringify(dry.body));
+  assert.equal(dry.body.apply, false);
+  assert.deepEqual(await get(), before, 'a dry run changes nothing');
+  const other = dry.body.sites.find((x) => x.siteId === 'site-mig');
+  assert.deepEqual([other.changed.allocation, other.slotsChanged], [1, 1], 'a second site is covered');
+  assert.deepEqual(dry.body.changedSlotIds.filter((i) => i.startsWith('mig-')).sort(), ['mig-a', 'mig-e'], 'only slots with a label change');
+  const s1 = dry.body.sites.find((x) => x.siteId === 'site-1');
+  const un = (f, v) => s1.untouched.find((u) => u.field === f && u.value === v);
+  assert.deepEqual(un('slotType', 'Truck').slotIds, ['mig-c']);
+  assert.ok(un('allocation', 'NOT_AVAILABLE') && un('height', '1.9 metres'), 'unknown and NOT_AVAILABLE are listed');
+  assert.ok(!JSON.stringify(dry.body).match(/plate|occupant/i), 'no plates or occupants');
+  const ap = await c.post('master', '/admin/migrate-slot-fields', { apply: true });
+  assert.equal(ap.status, 200, JSON.stringify(ap.body));
+  const after = await get();
+  assert.deepEqual([after['mig-a'].slotType, after['mig-a'].allocation, after['mig-a'].parkingType, after['mig-a'].height], ['CSUV', 'CAR_POOLING', 'PUZZLE', '2.5m']);
+  assert.deepEqual([after['mig-b'].allocation, after['mig-b'].height], ['VIP', '3.0m'], 'codes stay');
+  assert.deepEqual([after['mig-c'].slotType, after['mig-c'].allocation, after['mig-c'].height], ['Truck', 'NOT_AVAILABLE', '2.2m'], 'unknown and NOT_AVAILABLE untouched');
+  assert.equal(after['mig-d'].height, '1.9 metres');
+  const again = await c.post('master', '/admin/migrate-slot-fields', { apply: true });
+  assert.equal(again.body.slotsChanged, 0, 'second apply changes nothing');
+  const logs = (await c.get('master', '/security/audit-logs?limit=1000')).body;
+  const entries = logs.logs.filter((l) => l.action === 'SLOT_FIELDS_MIGRATED');
+  assert.ok(entries.length >= 2, 'a per-site entry and a run summary');
+  assert.ok(entries.every((l) => !/MIG-0|plate|occupant/i.test(JSON.stringify(l.details))), 'counts only');
+  assert.ok(sm);
 });

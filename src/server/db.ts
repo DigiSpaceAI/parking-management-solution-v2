@@ -1960,6 +1960,68 @@ export function getStore(): StoreData {
   return store;
 }
 
+// 005 B4 (AC-07): one-time slot field fix. Dry run by default. Only maps whole values through toCode (no guessing);
+// values that are already codes are left alone; anything else (NOT_AVAILABLE, unknown, empty) is untouched and listed.
+const MIGRATED_FIELDS: SlotField[] = ['slotType', 'allocation', 'height', 'parkingType'];
+
+export interface SlotMigrationSite {
+  siteId: string;
+  changed: { slotType: number; allocation: number; height: number; parkingType: number };
+  slotsChanged: number;
+  untouched: { field: SlotField; value: string; count: number; slotIds: string[] }[];
+}
+export interface SlotMigrationResult { apply: boolean; sites: SlotMigrationSite[]; slotsChanged: number; changedSlotIds: string[] }
+
+export async function migrateSlotFields(apply: boolean): Promise<SlotMigrationResult> {
+  const slots = getStore().slots;
+  const bySite: { [siteId: string]: SlotMigrationSite } = {};
+  const untouchedKey: { [k: string]: { field: SlotField; value: string; count: number; slotIds: string[] } } = {};
+  const edits: { slot: ParkingSlot; field: SlotField; from: any; to: string }[] = [];
+  const changedIds: { [id: string]: boolean } = {};
+  const changedBySite: { [siteId: string]: { [id: string]: boolean } } = {};
+
+  slots.forEach((slot) => {
+    const siteId = slot.siteId || DEFAULT_SITE_ID;
+    const site = bySite[siteId] || (bySite[siteId] = { siteId, changed: { slotType: 0, allocation: 0, height: 0, parkingType: 0 }, slotsChanged: 0, untouched: [] });
+    MIGRATED_FIELDS.forEach((field) => {
+      const cur: any = (slot as any)[field];
+      const isCode = optionsFor(field).some((o) => o.code === cur);
+      if (isCode) return;
+      const code = toCode(field, cur);
+      if (code !== null) {
+        edits.push({ slot, field, from: cur, to: code });
+        site.changed[field as 'slotType' | 'allocation' | 'height' | 'parkingType']++;
+        changedIds[slot.id] = true;
+        (changedBySite[siteId] || (changedBySite[siteId] = {}))[slot.id] = true;
+      } else {
+        const value = cur === undefined || cur === null ? '' : String(cur).slice(0, 60);
+        const key = siteId + '|' + field + '|' + value;
+        const u = untouchedKey[key] || (untouchedKey[key] = { field, value, count: 0, slotIds: [] });
+        if (u.count === 0) site.untouched.push(u);
+        u.count++;
+        u.slotIds.push(slot.id);
+      }
+    });
+  });
+  const sites = Object.keys(bySite).sort().map((id) => {
+    const site = bySite[id];
+    site.slotsChanged = Object.keys(changedBySite[id] || {}).length;
+    return site;
+  });
+  const changedSlotIds = Object.keys(changedIds);
+  const result: SlotMigrationResult = { apply, sites, slotsChanged: changedSlotIds.length, changedSlotIds: changedSlotIds };
+  if (!apply || edits.length === 0) return result;
+
+  edits.forEach((e) => { (e.slot as any)[e.field] = e.to; });
+  try {
+    await persistIds([{ collection: 'slots', ids: changedSlotIds }]); // one targeted write of only the changed ids
+  } catch (err) {
+    edits.forEach((e) => { (e.slot as any)[e.field] = e.from; }); // memory must not run ahead of the database
+    throw err;
+  }
+  return result;
+}
+
 // Rules Engine: Find best vacant slot based on vehicle height, slotType, allocation, basement
 export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2.0m', allocationPreference: Allocation = 'EMPLOYEE', siteId?: string): ParkingSlot | null {
   const storeData = getStore();

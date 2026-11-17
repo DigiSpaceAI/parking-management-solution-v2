@@ -114,7 +114,8 @@ test('T-14c [AC-18] a failed first load on live with a local file present stays 
 // ---- T-15 (AC-16, AC-19) live, an EMPTY Firestore: the bootstrap Master only ----
 test('T-15 [AC-16/19, D-9] live + empty Firestore -> exactly one write (appUsers/usr-digi-master); no roles, no dom-1, no sites; SEED_DEMO_USERS=true changes nothing', async () => {
   for (const demo of ['false', 'true']) {
-    const { r, log } = await run('store', { env: { SEED_DEMO_USERS: demo, ACTIONS: 'fullsync' } });
+    const { r, log } = await run('store', { env: { SEED_DEMO_USERS: demo, ACTIONS: 'roles,fullsync' } });
+    assert.ok(['role-master-admin', 'role-site-manager', 'role-valet'].every((id) => r.roleIds.includes(id) || id === 'role-valet'), 'built-in roles must be available in memory: ' + JSON.stringify(r.roleIds));
     assert.equal(r.ready, true);
     assert.deepEqual(r.writes.filter((w) => !w.deleted).map((w) => `${w.collection}/${w.id}`).filter((x, i, a) => a.indexOf(x) === i), ['appUsers/usr-digi-master'], `SEED_DEMO_USERS=${demo}`);
     assert.deepEqual(Object.fromEntries(Object.entries(r.counts).filter(([, n]) => n > 0)), { appUsers: 1 }, 'collections created: ' + JSON.stringify(r.counts));
@@ -151,4 +152,32 @@ test('T-17 [D-8, AC-17] local demo mode: a local store with 1,000 slots stays at
   const { r } = await run('local', { localFile: JSON.stringify({ slots: slots(1000) }) });
   assert.equal(r.ready, true);
   assert.equal(r.storeSlots, 1000);
+});
+
+// ---- T-15b (AC-19) built-in roles work in memory for permission checks and never reach Firestore ----
+test('T-15b [AC-19, B-G3] live + empty Firestore: the Master signs in and passes permission checks with in-memory roles; a full sync writes no appRoles', async () => {
+  const s = await startServer({});
+  try {
+    const login = await fetch(s.base + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: 'digisolutions.fm@gmail.com', password: PW }) });
+    assert.equal(login.status, 200, await login.clone().text());
+    const { token } = await login.json();
+    const h = { 'x-session-token': token };
+    assert.equal((await fetch(s.base + '/security/audit-logs?limit=5', { headers: h })).status, 200, 'permission check failed without stored roles');
+    const roles = await (await fetch(s.base + '/rbac/roles', { headers: h })).json();
+    assert.ok(roles.roles.some((r) => r.id === 'role-master-admin') && roles.roles.some((r) => r.id === 'role-site-manager'));
+    await sleep(4500); // past the full-sync debounce: sign-in must not have pushed roles
+    const rep = await s.report();
+    assert.deepEqual([...new Set(rep.writes.map((w) => w.collection))].filter((c) => c !== 'appUsers'), [], 'unexpected collections written: ' + JSON.stringify(rep.writes));
+    assert.deepEqual(rep.newDocs.filter((d) => !d.startsWith('appUsers/')), []);
+  } finally { s.stop(); }
+});
+
+// ---- AC-21 .gcloudignore ----
+test('AC-21 .gcloudignore excludes data/, .env*, *.bundle and *.tar.gz and keeps the build inputs', async () => {
+  const { readFileSync } = await import('node:fs');
+  const lines = readFileSync(path.join(REPO, '.gcloudignore'), 'utf-8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  for (const must of ['data/', '.env*', '!.env.example', '*.bundle', '*.tar.gz', 'node_modules/']) assert.ok(lines.includes(must), `missing ${must}`);
+  for (const mustNot of ['scripts/', 'src/', 'marketing/', 'bun.lock', 'package.json', 'server.ts', 'firebase-applet-config.json', 'index.html', 'mobile.html']) {
+    assert.ok(!lines.some((l) => l === mustNot || l === '/' + mustNot), `${mustNot} must not be ignored (the build reads it)`);
+  }
 });

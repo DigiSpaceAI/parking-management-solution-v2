@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { SecurityAuditLog, SecurityComplianceSummary, Employee, ParkingLog, AppUser, AppModuleId } from '../types';
-import { getStore } from './db';
+import { getStore, getAppRoles } from './db';
 import { getFirestoreDb } from './firestoreClient';
 
 // Cryptographic Secret for HMAC Verification. This MUST be set via the
@@ -886,7 +886,7 @@ export type PermissionAction = 'view' | 'canCreate' | 'canEdit' | 'canDelete' | 
 // a permission check inline.
 export function modulePermissionDenial(user: AppUser, moduleId: AppModuleId, action: PermissionAction): string | null {
   const store = getStore();
-  const role = store.appRoles.find((r) => r.id === user.roleId || r.roleCode === user.roleId);
+  const role = getAppRoles().find((r) => r.id === user.roleId || r.roleCode === user.roleId); // 005: stored roles + built-in roles merged at read time
   if (!role) return 'No role assigned to this account.';
 
   const rights = role.modulePermissions?.[moduleId];

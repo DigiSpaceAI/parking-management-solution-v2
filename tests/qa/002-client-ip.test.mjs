@@ -74,7 +74,7 @@ async function startServer(env = {}) {
     SITE_SCOPE_MODE: '', AUDIT_HMAC_SECRET: 'b6b'.repeat(22), K_SERVICE: 'parkflows-test',
     DEMO_HOSTING_EGRESS_CIDRS: 'bogus-entry, 198.51.100.0/24, 2001:db8:ffff::/48',
     PORT: String(port), PF_REPO: REPO, FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', ...env };
-  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [path.join(REPO, 'server.ts')], { cwd: workDir, env: fullEnv, stdio: 'pipe' });
+  const proc = spawn(path.join(REPO, 'node_modules', '.bin', 'tsx'), [path.join(REPO, 'tests', 'qa', 'support', 'pf005.mjs'), 'server'], { cwd: workDir, env: fullEnv, stdio: 'pipe' }); // 005 D-7: K_SERVICE means live, so the server boots against an empty fake Firestore (bootstrap Master only)
   let log = ''; proc.stdout.on('data', (d) => (log += d)); proc.stderr.on('data', (d) => (log += d));
   let exited = null; proc.on('exit', (code) => (exited = code));
   const base = `http://127.0.0.1:${port}/api/v1`;

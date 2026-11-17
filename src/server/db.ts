@@ -147,7 +147,13 @@ export function verifyPassword(password: string, hash?: string, salt?: string): 
 }
 
 let bootstrapDefaultsWarned = false;
-function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppUser[] } {
+// 005 AC-19: the built-in roles, built once. Used in memory only (getAppRoles); never put into store.appRoles.
+let defaultRolesCache: RolePermissionConfig[] | null = null;
+function getDefaultRoles(): RolePermissionConfig[] {
+  if (!defaultRolesCache) defaultRolesCache = getDefaultRolesAndUsers(true).roles;
+  return defaultRolesCache;
+}
+function getDefaultRolesAndUsers(rolesOnly = false): { roles: RolePermissionConfig[]; users: AppUser[] } {
   const fullAccessRights: ModuleAccessRights = {
     enabled: true,
     canCreate: true,
@@ -308,6 +314,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
   };
 
   const roles = [masterAdminRole, siteManagerRole, valetSupervisorRole, misAuditorRole, gateAttendantRole];
+  if (rolesOnly) return { roles, users: [] }; // 005: read-time role merge needs no password hashes
 
   // SECURITY: no default passwords live in source anymore. This repo is
   // public, so any password written here is a password known to everyone.
@@ -1443,7 +1450,7 @@ export async function ensureBootstrapMaster(): Promise<boolean> {
 function logStartupCounts(): void {
   const n = (k: keyof StoreData) => (Array.isArray((store as any)[k]) ? ((store as any)[k] as unknown[]).length : 0);
   const storedRoleIds = new Set((store.appRoles || []).map((r) => r.id));
-  const defaultsInMemory = getDefaultRolesAndUsers().roles.filter((r) => !storedRoleIds.has(r.id)).length;
+  const defaultsInMemory = getDefaultRoles().filter((r) => !storedRoleIds.has(r.id)).length;
   const parts = FIRESTORE_COLLECTIONS.map((k) => `${String(k)}=${n(k)}${k === 'appRoles' && defaultsInMemory > 0 ? `(+${defaultsInMemory} default in memory)` : ''}`);
   console.log(`[startup] mode=${isLiveMode() ? 'live' : 'local-demo'} store=${isLiveMode() ? 'firestore' : 'local'} counts: ${parts.join(' ')}`);
   if (seedingPrevented.size > 0) console.warn(`[startup][WARN] seeding prevented: ${Array.from(seedingPrevented).join(', ')}`);
@@ -3812,10 +3819,10 @@ export function changeVehicleSlot(
 }
 
 // --- Platform Master Site Configuration & Invoicing Functions ---
-export function getSites(): SiteConfig[] {
-  const storeData = getStore();
-  if (!storeData.sites || storeData.sites.length === 0) {
-    storeData.sites = [
+// 005 AC-20: the demo sites, built only in local demo mode (the guard throws on live).
+function buildDemoSites(): SiteConfig[] {
+  assertLocalDemoMode();
+  return [
       {
         id: 'site-1',
         siteCode: 'SITE-BLR-01',
@@ -3870,8 +3877,18 @@ export function getSites(): SiteConfig[] {
         onboardedAt: new Date(Date.now() - 30 * 86400000).toISOString(),
         updatedAt: new Date().toISOString(),
       },
-    ];
-    saveDB([{ collection: 'sites', ids: storeData.sites.map((x) => x.id) }]); // 006 D4 (005 removes this fill on live)
+  ];
+}
+
+export function getSites(): SiteConfig[] {
+  const storeData = getStore();
+  if (!storeData.sites || storeData.sites.length === 0) {
+    if (isLocalDemoMode()) {
+      storeData.sites = buildDemoSites(); // local demo: in memory only, no saveDB()
+    } else {
+      storeData.sites = storeData.sites || []; // 005 AC-17/19 (B-G1): live never creates sites
+      if (storeReady) notePrevented('getSites');
+    }
   }
   return storeData.sites;
 }
@@ -4301,14 +4318,16 @@ export function requestValetRetrieval(query: string, siteId?: string): { success
 // USER MANAGEMENT & RBAC SERVICE FUNCTIONS
 // ==========================================
 
+// 005 AC-19 (B-G3): stored roles + every built-in role whose id is not stored, merged per call.
+// store.appRoles is never changed here and nothing is saved, so a later full sync can never write a default role.
 export function getAppRoles(): RolePermissionConfig[] {
   const storeData = getStore();
-  if (!storeData.appRoles || storeData.appRoles.length === 0) {
-    const { roles: defaultRoles } = getDefaultRolesAndUsers();
-    storeData.appRoles = defaultRoles;
-    saveDB([{ collection: 'appRoles', ids: defaultRoles.map((r) => r.id) }]); // 006 D4 (005 removes this fill on live)
-  }
-  return storeData.appRoles;
+  const stored = storeData.appRoles || [];
+  const have = new Set(stored.map((r) => r.id));
+  const missing = getDefaultRoles().filter((r) => !have.has(r.id));
+  if (missing.length === 0) return stored;
+  if (stored.length === 0 && storeReady) notePrevented('getAppRoles');
+  return [...stored, ...missing];
 }
 
 export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { success: boolean; message: string; role?: RolePermissionConfig } {
@@ -4316,7 +4335,12 @@ export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { succes
   if (!storeData.appRoles) storeData.appRoles = [];
 
   if (roleConfig.id) {
-    const index = storeData.appRoles.findIndex((r) => r.id === roleConfig.id);
+    let index = storeData.appRoles.findIndex((r) => r.id === roleConfig.id);
+    if (index === -1) {
+      // 005: a built-in role lives only in memory until a Master edits it; then it is stored (by id).
+      const builtIn = getDefaultRoles().find((r) => r.id === roleConfig.id);
+      if (builtIn) { storeData.appRoles.push(JSON.parse(JSON.stringify(builtIn))); index = storeData.appRoles.length - 1; }
+    }
     if (index !== -1) {
       storeData.appRoles[index] = { ...storeData.appRoles[index], ...roleConfig } as RolePermissionConfig;
       // Real bug fixed here, same class already fixed for passwords
@@ -4426,9 +4450,14 @@ export function toPublicUsers(users: AppUser[]): PublicAppUser[] {
 export function getAppUsers(): AppUser[] {
   const storeData = getStore();
   if (!storeData.appUsers || storeData.appUsers.length === 0) {
-    const { users: defaultUsers } = getDefaultRolesAndUsers();
-    storeData.appUsers = defaultUsers;
-    saveDB([{ collection: 'appUsers', ids: defaultUsers.map((u) => u.id) }]); // 006 D4 (005 removes this fill on live)
+    if (isLocalDemoMode()) {
+      // Local demo only: the defaults live in memory (and the local copy); no Firestore write.
+      storeData.appUsers = getDefaultRolesAndUsers().users;
+    } else {
+      // 005 AC-19: live never builds or writes default users here; the bootstrap Master comes only from ensureBootstrapMaster().
+      storeData.appUsers = storeData.appUsers || [];
+      if (storeReady) notePrevented('getAppUsers');
+    }
   }
   return storeData.appUsers;
 }
@@ -4461,7 +4490,7 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
   if (!storeData.appUsers) storeData.appUsers = [];
 
   // Match role name
-  const role = (storeData.appRoles || []).find((r) => r.id === userData.roleId);
+  const role = getAppRoles().find((r) => r.id === userData.roleId);
   const roleName = role ? role.roleName : userData.roleName || 'Site Facility Manager';
 
   // Site Names lookup
@@ -4525,7 +4554,7 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
       // passwordSalt, id, createdAt, siteScopeType, ...). Only these fields
       // are editable here; passwords go through plainPassword / reset tokens.
       const nextRoleId = userData.roleId !== undefined ? userData.roleId : existing.roleId;
-      const nextRole = (storeData.appRoles || []).find((r) => r.id === nextRoleId);
+      const nextRole = getAppRoles().find((r) => r.id === nextRoleId);
       const pick = <K extends keyof AppUser>(k: K): AppUser[K] => (userData[k] !== undefined ? (userData[k] as AppUser[K]) : existing[k]);
       const nextScopeType = pick('siteScopeType');
       const nextSiteIds = pick('assignedSiteIds');

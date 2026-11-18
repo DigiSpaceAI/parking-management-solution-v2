@@ -154,6 +154,14 @@ test('T-17 [D-8, AC-17] local demo mode: a local store with 1,000 slots stays at
   assert.equal(r.storeSlots, 1000);
 });
 
+// ---- T-18 (AC-20) the demo-data builder refuses to run on live ----
+test('T-18 [AC-20] generate1080Inventory throws "demo data on live" when K_SERVICE is set, and builds 1,080 slots in local demo mode', async () => {
+  const live = await run('local', { env: { DEMO_GUARD: '1', K_SERVICE: 'parkflows' } });
+  assert.deepEqual(live.r, { threw: true, message: 'demo data on live' });
+  const local = await run('local', { env: { DEMO_GUARD: '1' } });
+  assert.deepEqual(local.r, { threw: false, slots: 1080 });
+});
+
 // ---- T-15b (AC-19) built-in roles work in memory for permission checks and never reach Firestore ----
 test('T-15b [AC-19, B-G3] live + empty Firestore: the Master signs in and passes permission checks with in-memory roles; a full sync writes no appRoles', async () => {
   const s = await startServer({});

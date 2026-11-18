@@ -126,7 +126,7 @@ import {
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
 import { isLocalDemoMode } from './src/server/runtimeMode';
 import { isMasterAdmin } from './src/utils/rbac';
-import { slotMatchesFilters, compareInventory, inventoryRow, INVENTORY_CSV_COLUMNS } from './src/utils/slotFields';
+import { slotMatchesFilters, compareInventory, inventoryRow, INVENTORY_CSV_COLUMNS, heightMetres } from './src/utils/slotFields';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
@@ -848,17 +848,18 @@ function activeEntryIndex(logs: { status: string; slotId?: string; siteId?: stri
   return index;
 }
 
-// 002 B1/B2: response-only fields (nothing stored). heightM = the first
-// number in the stored height string ("Standard (2.0m)" -> 2), so cards show
-// "2.0 m". inSince = entry time of the slot's ACTIVE log at the same site
+// 002 B1/B2: response-only fields (nothing stored). heightM = the height in
+// metres read by slotFields.heightMetres ("2.0m" / "Standard (2.0m)" -> 2, so
+// cards show "2.0 m"); absent when the text has no height ("Puzzle 2-Tier").
+// inSince = entry time of the slot's ACTIVE log at the same site
 // (OCCUPIED slots only; absent when none is found, e.g. legacy data).
 function withSlotExtras<T extends { id: string; siteId?: string; status?: string; height?: string }>(
   slot: T,
   inSinceBySlot?: Map<string, string>
 ): T & { heightM?: number; inSince?: string } {
   const out: T & { heightM?: number; inSince?: string } = { ...slot };
-  const m = String(slot.height || '').match(/\d+(?:\.\d+)?/);
-  if (m) out.heightM = parseFloat(m[0]);
+  const metres = heightMetres(slot.height);
+  if (!isNaN(metres)) out.heightM = metres;
   if (slot.status === 'OCCUPIED' && inSinceBySlot) {
     const since = inSinceBySlot.get(`${recordSite(slot)}|${slot.id}`);
     if (since) out.inSince = since;

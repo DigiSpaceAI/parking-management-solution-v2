@@ -118,6 +118,30 @@ test('T-5 [AC-11/12/14] a used number is a 409 (any case or spaces, even with th
   assert.ok(!(await c.slots(A.id)).some((s) => /^NOREQ/.test(s.slotNumber)), 'nothing was created with defaults');
 });
 
+test('T-5b [AC-11/12] a Master moving a slot to another site is checked against the target site: a used number there is a 409 and nothing is saved; a free number works', async () => {
+  const a1 = await save(A, full('MOVE-01'));
+  const a2 = await save(A, full('MOVE-02'));
+  const b1 = await save(B, full('MOVE-01'));
+  for (const r of [a1, a2, b1]) assert.equal(r.status, 200, JSON.stringify(r.body));
+  const nA = await count(A); const nB = await count(B);
+  const clash = await save(A, { id: a1.body.slot.id, slotNumber: 'MOVE-01', siteId: B.id }); // Master, body siteId = target
+  assert.equal(clash.status, 409, JSON.stringify(clash.body));
+  assert.equal(clash.body.errorCode, 'ERR_DUPLICATE_SLOT');
+  assert.equal(clash.body.message, 'Slot MOVE-01 already exists at this site — edit that slot instead.');
+  assert.equal(await count(A), nA, 'site A unchanged');
+  assert.equal(await count(B), nB, 'site B unchanged');
+  assert.equal((await c.slots(A.id)).find((s) => s.id === a1.body.slot.id)?.siteId, A.id, 'the slot stayed at its site');
+  assert.equal((await c.slots(B.id)).filter((s) => s.slotNumber === 'MOVE-01').length, 1, 'site B holds one MOVE-01');
+  const moved = await save(A, { id: a2.body.slot.id, slotNumber: 'MOVE-02', siteId: B.id }); // free at B
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.slot.siteId, B.id);
+  assert.equal(await count(A), nA - 1);
+  assert.equal(await count(B), nB + 1);
+  // a plain edit that keeps number and site is not blocked by the check
+  const edit = await save(B, { id: b1.body.slot.id, slotNumber: 'MOVE-01', floorLocation: 'Level 2 east' });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+});
+
 test('T-6 [AC-15] startup logs the duplicate count (no numbers, ids or plates) and deletes nothing', async () => {
   const line = srv.getLog().split('\n').find((l) => l.includes('[slots] duplicate slot numbers'));
   assert.ok(line, 'no duplicate log line:\n' + srv.getLog().slice(-1500));
@@ -181,6 +205,19 @@ test('T-9 [AC-06] export = the table: its columns, labels, filters, order, IST f
   assert.equal((await c.get('master', '/export/reports?type=slots', { site: B.id })).headers.get('content-type').split(';')[0], 'text/csv');
 });
 
+test('T-7b [AC-13] bulk upload: a row with an empty slot number is an error row "Slot number is required." in rows and errors; the other rows still save', async () => {
+  const ok = { slotNumber: 'EMP-1', basement: 'B1', floorLocation: 'Lobby', slotType: 'SEDAN', height: '2.0m', parkingType: 'PUZZLE', allocation: 'EMPLOYEE' };
+  const n = await count(A);
+  const r = await c.post('master', '/slots/bulk-upload', { slots: [{ ...ok, slotNumber: '' }, ok, { ...ok, slotNumber: '   ' }, { ...ok, slotNumber: undefined }] }, { site: A.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const res = r.body.result;
+  assert.deepEqual(res.rows.map((x) => [x.row, x.result]), [[1, 'error'], [2, 'added'], [3, 'error'], [4, 'error']], 'every input row has a result row');
+  for (const i of [0, 2, 3]) assert.deepEqual(res.rows[i].errors, ['Slot number is required.']);
+  assert.deepEqual(res.errors, ['Row 1: Slot number is required.', 'Row 3: Slot number is required.', 'Row 4: Slot number is required.']);
+  assert.equal(res.added, 1);
+  assert.equal(await count(A), n + 1, 'only the valid row was saved');
+});
+
 test('T-8 [AC-09] permissions and site scope unchanged on save, bulk and export', async () => {
   const att = await c.mkUser('attI', 'role-gate-attendant', [A.id], 'if');
   const adm = await c.mkUser('admI', 'role-site-manager', [A.id], 'if');
@@ -191,6 +228,21 @@ test('T-8 [AC-09] permissions and site scope unchanged on save, bulk and export'
   assert.equal((await save(A, full('PERM-4'), 'admI')).status, 200);
   assert.equal((await c.get('admI', '/export/reports?type=slots', { site: A.id })).status, 200);
   assert.ok(att && adm);
+});
+
+test('T-8b [AC-07/09] migrate-slot-fields: a non-Master is 403, and a Master viewing as a non-Master is 403; nothing changes', async () => {
+  const sm = await c.mkUser('migVA', 'role-site-manager', [A.id], 'vb');
+  const before = JSON.stringify(await c.slots('site-1'));
+  for (const body of [{}, { apply: true }]) {
+    const nm = await c.post('migVA', '/admin/migrate-slot-fields', body);
+    assert.equal(nm.status, 403, `non-Master ${JSON.stringify(body)}: ${JSON.stringify(nm.body)}`);
+    const va = await c.post('master', '/admin/migrate-slot-fields', body, { headers: { 'x-view-as': sm.id } });
+    assert.equal(va.status, 403, `view-as ${JSON.stringify(body)}: ${JSON.stringify(va.body)}`);
+  }
+  assert.equal(JSON.stringify(await c.slots('site-1')), before, 'a refused request changes nothing');
+  assert.equal((await c.audit('SLOT_FIELDS_MIGRATED')).length, 0, 'no migration audit entry from a refused request');
+  const ok = await c.post('master', '/admin/migrate-slot-fields', {}); // the Master (not viewing as) is still allowed: a dry run
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
 });
 
 // ------------------------------------------------------------------ B4: one-time migration

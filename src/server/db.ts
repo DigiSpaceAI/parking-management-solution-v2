@@ -965,6 +965,8 @@ export function notePrevented(pathName: string): void {
   console.warn(`[startup][WARN] seeding prevented: ${pathName}`);
 }
 export function __seedingPreventedForTests(): string[] { return Array.from(seedingPrevented); }
+// 005 R2-4: lets a test call the demo-data builder directly (its first line is the live-mode guard).
+export function __generate1080InventoryForTests(): StoreData { return generate1080Inventory(); }
 
 export function initDB(): StoreData {
   storeInitialized = true;
@@ -2688,10 +2690,11 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSy
     return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'slotNumber', message: 'Slot Number is required.' };
   }
 
-  // 3. Unique number per site (create, or a rename onto another slot's number).
+  // 3. Unique number per site (create, a rename onto another slot's number, or a
+  // move to another site): always checked against the site the slot will be in.
   const finalNumber = numberKey || (existing ? slotNumberKey(existing.slotNumber) : '');
-  if (!existing || finalNumber !== slotNumberKey(existing.slotNumber)) {
-    const siteForCheck = existing ? slotSiteOf(existing) : targetSite;
+  const siteForCheck = existing ? (slotData.siteId || existing.siteId || DEFAULT_SITE_ID) : targetSite;
+  if (!existing || finalNumber !== slotNumberKey(existing.slotNumber) || siteForCheck !== slotSiteOf(existing)) {
     const clash = storeData.slots.some((s) => s !== existing && slotNumberKey(s.slotNumber) === finalNumber && slotSiteOf(s) === siteForCheck);
     if (clash) {
       return { ok: false, status: 409, errorCode: 'ERR_DUPLICATE_SLOT', field: 'slotNumber', message: `Slot ${finalNumber} already exists at this site — edit that slot instead.` };
@@ -2792,13 +2795,14 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
   });
 
   const fail = (index: number, num: string, messages: string[]) => {
-    for (const m of messages) errors.push(`Row ${index + 1} (${num}): ${m}`);
+    for (const m of messages) errors.push(`Row ${index + 1}${num ? ` (${num})` : ''}: ${m}`);
     rows.push({ row: index + 1, slotNumber: num, result: 'error', errors: messages });
   };
 
   for (const [index, item] of list.entries()) {
-    if (!item || !item.slotNumber) continue;
-    const num = slotNumberKey(item.slotNumber);
+    const num = slotNumberKey(item && item.slotNumber);
+    // 005 R2-2: a row without a slot number gets a result row too, so an API client can map results back.
+    if (!item || !num) { fail(index, '', ['Slot number is required.']); continue; }
     const same = occurrences[`${item.siteId || DEFAULT_SITE_ID}|${num}`] || [];
     if (same.length > 1) {
       fail(index, num, [`Slot number repeated in this file (rows ${same.join(', ')}).`]);

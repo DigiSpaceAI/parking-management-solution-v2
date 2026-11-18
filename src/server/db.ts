@@ -2793,13 +2793,14 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
   });
 
   const fail = (index: number, num: string, messages: string[]) => {
-    for (const m of messages) errors.push(`Row ${index + 1} (${num}): ${m}`);
+    for (const m of messages) errors.push(`Row ${index + 1}${num ? ` (${num})` : ''}: ${m}`);
     rows.push({ row: index + 1, slotNumber: num, result: 'error', errors: messages });
   };
 
   for (const [index, item] of list.entries()) {
-    if (!item || !item.slotNumber) continue;
-    const num = slotNumberKey(item.slotNumber);
+    const num = slotNumberKey(item && item.slotNumber);
+    // 005 R2-2: a row without a slot number gets a result row too, so an API client can map results back.
+    if (!item || !num) { fail(index, '', ['Slot number is required.']); continue; }
     const same = occurrences[`${item.siteId || DEFAULT_SITE_ID}|${num}`] || [];
     if (same.length > 1) {
       fail(index, num, [`Slot number repeated in this file (rows ${same.join(', ')}).`]);

@@ -205,6 +205,19 @@ test('T-9 [AC-06] export = the table: its columns, labels, filters, order, IST f
   assert.equal((await c.get('master', '/export/reports?type=slots', { site: B.id })).headers.get('content-type').split(';')[0], 'text/csv');
 });
 
+test('T-7b [AC-13] bulk upload: a row with an empty slot number is an error row "Slot number is required." in rows and errors; the other rows still save', async () => {
+  const ok = { slotNumber: 'EMP-1', basement: 'B1', floorLocation: 'Lobby', slotType: 'SEDAN', height: '2.0m', parkingType: 'PUZZLE', allocation: 'EMPLOYEE' };
+  const n = await count(A);
+  const r = await c.post('master', '/slots/bulk-upload', { slots: [{ ...ok, slotNumber: '' }, ok, { ...ok, slotNumber: '   ' }, { ...ok, slotNumber: undefined }] }, { site: A.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const res = r.body.result;
+  assert.deepEqual(res.rows.map((x) => [x.row, x.result]), [[1, 'error'], [2, 'added'], [3, 'error'], [4, 'error']], 'every input row has a result row');
+  for (const i of [0, 2, 3]) assert.deepEqual(res.rows[i].errors, ['Slot number is required.']);
+  assert.deepEqual(res.errors, ['Row 1: Slot number is required.', 'Row 3: Slot number is required.', 'Row 4: Slot number is required.']);
+  assert.equal(res.added, 1);
+  assert.equal(await count(A), n + 1, 'only the valid row was saved');
+});
+
 test('T-8 [AC-09] permissions and site scope unchanged on save, bulk and export', async () => {
   const att = await c.mkUser('attI', 'role-gate-attendant', [A.id], 'if');
   const adm = await c.mkUser('admI', 'role-site-manager', [A.id], 'if');

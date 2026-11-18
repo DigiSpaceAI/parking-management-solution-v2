@@ -126,9 +126,10 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
   const levels = summary
     ? [
         { id: 'ALL', label: 'All parking', free: slots.filter((s) => s.status === 'VACANT').length, total: summary.total },
-        { id: 'B1', label: 'Basement B1', ...summary.b1 },
-        { id: 'B2', label: 'Basement B2', ...summary.b2 },
-        { id: 'B3', label: 'Basement B3', ...summary.b3 },
+        // 005 F4b: the basement levels and their labels come from slotFields (optionsFor('basement')), not a second list here
+        ...optionsFor('basement')
+          .filter((o) => /^B[0-9]$/.test(o.code) && !!summary[o.code.toLowerCase() as 'b1' | 'b2' | 'b3'])
+          .map((o) => ({ id: o.code, label: o.label, ...summary[o.code.toLowerCase() as 'b1' | 'b2' | 'b3'] })),
         { id: 'Ground', label: 'Ground / driveway', ...summary.ground },
       ].filter((l) => l.id === 'ALL' || l.total > 0)
     : [];

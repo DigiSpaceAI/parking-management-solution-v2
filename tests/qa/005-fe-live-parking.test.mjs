@@ -53,3 +53,9 @@ test('F3 static: Live parking keeps no list of its own', () => {
   assert.match(modal, /labelFor\('allocation'/);
   assert.match(src('src/design-system/components/SlotCard.tsx'), /labelFor\('slotType', slotType\)/);
 });
+
+test('F3 round 2 (finding 4b): the Live parking basement level buttons come from optionsFor("basement")', () => {
+  const idx = src('src/screens/LiveParking/index.tsx');
+  assert.doesNotMatch(idx, /label: 'Basement B[123]'/, 'no level label written by hand');
+  assert.match(idx, /optionsFor\('basement'\)\s*\.filter\(\(o\) => \/\^B\[0-9\]\$\/\.test\(o\.code\)/, 'built from the basement list, B-levels only (Ground keeps its own button)');
+});

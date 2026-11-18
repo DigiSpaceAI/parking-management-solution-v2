@@ -2,6 +2,7 @@
 //   store  -> initDB + bootstrapFirestore, then ACTIONS (comma list: fullsync, delete-slot:<id>, delete-site:<id>), then a JSON REPORT line.
 //   server -> boots server.ts (the test talks to it over HTTP; FAKE_REPORT_PORT serves GET /report with the fake's writes).
 //   local  -> local demo mode (no project id, no K_SERVICE), no Firestore: initDB only, reports the slot count.
+//             With DEMO_GUARD=1 it calls generate1080Inventory directly and reports whether it threw (K_SERVICE is set by the test).
 // (the audit log and the _meta timestamp doc are bookkeeping, not records: not counted)
 // Env: SEED_FILE (initial Firestore JSON), FAKE_DATA_FILE (persist + restart on the same "Firestore"),
 //      MARK_UNAVAILABLE=1 (the Firestore client is gone), NO_PROJECT=1 (no project id), FAKE_FAIL_READS=n.
@@ -33,7 +34,12 @@ if (mode !== 'local') {
 }
 const storeWrites = () => fake.writes.filter((w) => w.collection !== 'securityAuditLogs' && w.collection !== '_meta');
 
-if (mode === 'local') {
+if (mode === 'local' && process.env.DEMO_GUARD === '1') { // calls the demo-data builder directly: report whether it threw
+  const db = await imp('src/server/db.ts');
+  try { const s = db.__generate1080InventoryForTests(); console.log('REPORT ' + JSON.stringify({ threw: false, slots: s.slots.length })); }
+  catch (e) { console.log('REPORT ' + JSON.stringify({ threw: true, message: String(e && e.message) })); }
+  process.exit(0);
+} else if (mode === 'local') {
   const db = await imp('src/server/db.ts');
   db.initDB();
   console.log('REPORT ' + JSON.stringify({ storeSlots: db.getStore().slots.length, ready: db.isStoreReady() }));

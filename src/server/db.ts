@@ -965,6 +965,8 @@ export function notePrevented(pathName: string): void {
   console.warn(`[startup][WARN] seeding prevented: ${pathName}`);
 }
 export function __seedingPreventedForTests(): string[] { return Array.from(seedingPrevented); }
+// 005 R2-4: lets a test call the demo-data builder directly (its first line is the live-mode guard).
+export function __generate1080InventoryForTests(): StoreData { return generate1080Inventory(); }
 
 export function initDB(): StoreData {
   storeInitialized = true;

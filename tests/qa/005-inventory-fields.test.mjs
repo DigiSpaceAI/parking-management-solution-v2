@@ -230,6 +230,21 @@ test('T-8 [AC-09] permissions and site scope unchanged on save, bulk and export'
   assert.ok(att && adm);
 });
 
+test('T-8b [AC-07/09] migrate-slot-fields: a non-Master is 403, and a Master viewing as a non-Master is 403; nothing changes', async () => {
+  const sm = await c.mkUser('migVA', 'role-site-manager', [A.id], 'vb');
+  const before = JSON.stringify(await c.slots('site-1'));
+  for (const body of [{}, { apply: true }]) {
+    const nm = await c.post('migVA', '/admin/migrate-slot-fields', body);
+    assert.equal(nm.status, 403, `non-Master ${JSON.stringify(body)}: ${JSON.stringify(nm.body)}`);
+    const va = await c.post('master', '/admin/migrate-slot-fields', body, { headers: { 'x-view-as': sm.id } });
+    assert.equal(va.status, 403, `view-as ${JSON.stringify(body)}: ${JSON.stringify(va.body)}`);
+  }
+  assert.equal(JSON.stringify(await c.slots('site-1')), before, 'a refused request changes nothing');
+  assert.equal((await c.audit('SLOT_FIELDS_MIGRATED')).length, 0, 'no migration audit entry from a refused request');
+  const ok = await c.post('master', '/admin/migrate-slot-fields', {}); // the Master (not viewing as) is still allowed: a dry run
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+});
+
 // ------------------------------------------------------------------ B4: one-time migration
 test('T-10 [AC-07] migration: Master only; dry run changes nothing; apply maps by whole value; NOT_AVAILABLE/unknown untouched and listed; counts-only audit; second apply is a no-op', async () => {
   const sm = await c.mkUser('migSM', 'role-site-manager', [A.id], 'mg');

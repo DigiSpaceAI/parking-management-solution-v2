@@ -118,6 +118,30 @@ test('T-5 [AC-11/12/14] a used number is a 409 (any case or spaces, even with th
   assert.ok(!(await c.slots(A.id)).some((s) => /^NOREQ/.test(s.slotNumber)), 'nothing was created with defaults');
 });
 
+test('T-5b [AC-11/12] a Master moving a slot to another site is checked against the target site: a used number there is a 409 and nothing is saved; a free number works', async () => {
+  const a1 = await save(A, full('MOVE-01'));
+  const a2 = await save(A, full('MOVE-02'));
+  const b1 = await save(B, full('MOVE-01'));
+  for (const r of [a1, a2, b1]) assert.equal(r.status, 200, JSON.stringify(r.body));
+  const nA = await count(A); const nB = await count(B);
+  const clash = await save(A, { id: a1.body.slot.id, slotNumber: 'MOVE-01', siteId: B.id }); // Master, body siteId = target
+  assert.equal(clash.status, 409, JSON.stringify(clash.body));
+  assert.equal(clash.body.errorCode, 'ERR_DUPLICATE_SLOT');
+  assert.equal(clash.body.message, 'Slot MOVE-01 already exists at this site — edit that slot instead.');
+  assert.equal(await count(A), nA, 'site A unchanged');
+  assert.equal(await count(B), nB, 'site B unchanged');
+  assert.equal((await c.slots(A.id)).find((s) => s.id === a1.body.slot.id)?.siteId, A.id, 'the slot stayed at its site');
+  assert.equal((await c.slots(B.id)).filter((s) => s.slotNumber === 'MOVE-01').length, 1, 'site B holds one MOVE-01');
+  const moved = await save(A, { id: a2.body.slot.id, slotNumber: 'MOVE-02', siteId: B.id }); // free at B
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.slot.siteId, B.id);
+  assert.equal(await count(A), nA - 1);
+  assert.equal(await count(B), nB + 1);
+  // a plain edit that keeps number and site is not blocked by the check
+  const edit = await save(B, { id: b1.body.slot.id, slotNumber: 'MOVE-01', floorLocation: 'Level 2 east' });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+});
+
 test('T-6 [AC-15] startup logs the duplicate count (no numbers, ids or plates) and deletes nothing', async () => {
   const line = srv.getLog().split('\n').find((l) => l.includes('[slots] duplicate slot numbers'));
   assert.ok(line, 'no duplicate log line:\n' + srv.getLog().slice(-1500));

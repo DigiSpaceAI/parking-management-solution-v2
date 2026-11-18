@@ -2688,10 +2688,11 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSy
     return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'slotNumber', message: 'Slot Number is required.' };
   }
 
-  // 3. Unique number per site (create, or a rename onto another slot's number).
+  // 3. Unique number per site (create, a rename onto another slot's number, or a
+  // move to another site): always checked against the site the slot will be in.
   const finalNumber = numberKey || (existing ? slotNumberKey(existing.slotNumber) : '');
-  if (!existing || finalNumber !== slotNumberKey(existing.slotNumber)) {
-    const siteForCheck = existing ? slotSiteOf(existing) : targetSite;
+  const siteForCheck = existing ? (slotData.siteId || existing.siteId || DEFAULT_SITE_ID) : targetSite;
+  if (!existing || finalNumber !== slotNumberKey(existing.slotNumber) || siteForCheck !== slotSiteOf(existing)) {
     const clash = storeData.slots.some((s) => s !== existing && slotNumberKey(s.slotNumber) === finalNumber && slotSiteOf(s) === siteForCheck);
     if (clash) {
       return { ok: false, status: 409, errorCode: 'ERR_DUPLICATE_SLOT', field: 'slotNumber', message: `Slot ${finalNumber} already exists at this site — edit that slot instead.` };

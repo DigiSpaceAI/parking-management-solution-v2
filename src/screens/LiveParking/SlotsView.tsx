@@ -1,7 +1,7 @@
 import React from 'react';
 import { Card, EmptyState, Pagination, SegmentedControl, SlotCard, SlotRow, Button } from '../../design-system/components';
 import type { SlotStatus } from '../../design-system/components';
-import { decodeSlot, heightOf, type LiveSlot } from '../../utils/slots';
+import { cardDecode, heightOf, type LiveSlot } from '../../utils/slots';
 
 export type Layout = 'cards' | 'list';
 export const SLOT_PAGE_SIZES = [12, 20, 36, 60];
@@ -31,7 +31,7 @@ export const SlotsView: React.FC<SlotsViewProps> = ({
   const common = (s: LiveSlot) => ({
     code: s.slotNumber,
     status: s.status as SlotStatus,
-    decode: decodeSlot(s, false),
+    decode: cardDecode(s),
     slotType: s.slotType,
     ev: s.slotType === 'EV',
     plate: s.currentVehicle,

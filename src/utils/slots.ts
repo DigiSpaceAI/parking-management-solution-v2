@@ -54,6 +54,14 @@ export function decodeSlot(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber
   return bay ? `${kind} · Bay ${Number(bay[1])}` : [kind, slot.floorLocation].filter(Boolean).join(' · ');
 }
 
+/**
+ * The decode line on a Live parking slot card (005 AC-25): never a Puzzle / Pallet / Level line.
+ * A puzzle slot gets none (its stacker is named by the stacker header); ground and stack slots keep "Ground · Bay 14".
+ */
+export function cardDecode(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber' | 'slotNumber' | 'palletLevel' | 'floorLocation'>): string {
+  return isPuzzle(slot) ? '' : decodeSlot(slot, false);
+}
+
 /** Vacant first, then reserved, maintenance, occupied; then slot code in natural order. */
 const STATUS_ORDER: Record<SlotStatus, number> = { VACANT: 0, RESERVED: 1, MAINTENANCE: 2, OCCUPIED: 3 };
 export function compareSlots(a: ParkingSlot, b: ParkingSlot): number {

@@ -135,3 +135,19 @@ test('F2 static: the table and filters come from slotFields; nothing is listed t
   const csvSrc = src('src/utils/slotCsv.ts');
   assert.doesNotMatch(csvSrc, /'SEDAN'|'EMPLOYEE'|'PUZZLE'|'2\.0m'/, 'slotCsv keeps no list of values (sample uses slotFields by index)');
 });
+
+test('F2 round 2 (finding 5): Download CSV shows only for a viewer with ANALYTICS:canExport', () => {
+  const comp = src('src/components/InventoryMaster.tsx');
+  assert.match(comp, /canExport\?: boolean;/);
+  assert.match(comp, /canExport = false,/, 'no right is the default: the button stays hidden');
+  const at = comp.indexOf('onClick={handleDownloadCsv}');
+  assert.ok(at > 0, 'button found');
+  assert.match(comp.slice(comp.lastIndexOf('\n', at - 40) - 60, at), /\{canExport && \(\s*<button\s*$/, 'the button is inside {canExport && (...)}');
+  const app = src('src/App.tsx');
+  assert.match(app, /<InventoryMaster [^>]*canExport=\{getModuleRights\(viewer, currentRole, 'ANALYTICS'\)\.canExport\}/, 'App passes the export right of the module the route checks');
+});
+
+test('F2 round 2 (finding 5): the export right the console reads is the one the route checks (ANALYTICS)', () => {
+  assert.match(src('server.ts'), /app\.get\('\/api\/v1\/export\/reports', requirePermission\('ANALYTICS', 'canExport'\)/);
+  assert.match(inventoryExportUrl('S1', {}), /^\/api\/v1\/export\/reports\?type=slots/);
+});

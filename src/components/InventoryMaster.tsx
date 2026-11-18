@@ -59,6 +59,8 @@ interface InventoryMasterProps {
   onUpdateSlotStatus: (slotId: string, newStatus: SlotStatus) => void;
   onRefresh: () => void;
   currentSiteId: string;
+  /** ANALYTICS:canExport of the viewer: the export route needs it. Without it the Download CSV button is not shown. */
+  canExport?: boolean;
 }
 
 export const InventoryMaster: React.FC<InventoryMasterProps> = ({
@@ -66,6 +68,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   onUpdateSlotStatus,
   onRefresh,
   currentSiteId,
+  canExport = false,
 }) => {
   const guard = useWriteGuard();
   const [activeTab, setActiveTab] = useState<'SLOTS'>('SLOTS');
@@ -389,15 +392,17 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                 <span>Bulk Upload Inventory</span>
               </button>
 
-              <button
-                onClick={handleDownloadCsv}
-                disabled={currentSiteId === 'ALL'}
-                title={currentSiteId === 'ALL' ? 'Select a specific site to download its inventory' : 'Download the rows now shown in the table (current filters, all pages) as CSV'}
-                className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors flex items-center space-x-1.5 disabled:opacity-40"
-              >
-                <Download className="w-4 h-4 text-blue-300" />
-                <span>Download CSV</span>
-              </button>
+              {canExport && (
+                <button
+                  onClick={handleDownloadCsv}
+                  disabled={currentSiteId === 'ALL'}
+                  title={currentSiteId === 'ALL' ? 'Select a specific site to download its inventory' : 'Download the rows now shown in the table (current filters, all pages) as CSV'}
+                  className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors flex items-center space-x-1.5 disabled:opacity-40"
+                >
+                  <Download className="w-4 h-4 text-blue-300" />
+                  <span>Download CSV</span>
+                </button>
+              )}
             </div>
           )}
 

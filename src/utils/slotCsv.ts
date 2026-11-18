@@ -1,20 +1,20 @@
 // 005 F2: the Inventory CSV import preview (AC-05, AC-13) and the export link (AC-06). Pure.
 // Every list, label and code comes from slotFields.ts. The server repeats every check (/slots/bulk-upload).
-import { toCode, INVENTORY_CSV_COLUMNS, optionsFor } from './slotFields.ts';
+import { toCode, INVENTORY_CSV_COLUMNS, optionsFor, SLOT_FIELD_NAMES } from './slotFields.ts';
 import type { SlotField } from './slotFields.ts';
 
 type Key = 'slotNumber' | 'basement' | 'floorLocation' | 'slotType' | 'height' | 'parkingType' | 'allocation' | 'status' | 'lengthM' | 'palletLevel';
 const LIST_KEYS: { key: Key; field: SlotField; name: string }[] = [
-  { key: 'basement', field: 'basement', name: 'Level' },
-  { key: 'slotType', field: 'slotType', name: 'Vehicle type' },
-  { key: 'height', field: 'height', name: 'Height' },
-  { key: 'parkingType', field: 'parkingType', name: 'Parking type' },
-  { key: 'allocation', field: 'allocation', name: 'Allocation' },
-  { key: 'status', field: 'status', name: 'Status' },
+  { key: 'basement', field: 'basement', name: SLOT_FIELD_NAMES.basement },
+  { key: 'slotType', field: 'slotType', name: SLOT_FIELD_NAMES.slotType },
+  { key: 'height', field: 'height', name: SLOT_FIELD_NAMES.height },
+  { key: 'parkingType', field: 'parkingType', name: SLOT_FIELD_NAMES.parkingType },
+  { key: 'allocation', field: 'allocation', name: SLOT_FIELD_NAMES.allocation },
+  { key: 'status', field: 'status', name: SLOT_FIELD_NAMES.status },
 ];
 const REQUIRED: { key: Key; name: string }[] = [
-  { key: 'slotNumber', name: 'Slot number' }, { key: 'basement', name: 'Level' }, { key: 'floorLocation', name: 'Floor location' },
-  { key: 'slotType', name: 'Vehicle type' }, { key: 'height', name: 'Height' }, { key: 'parkingType', name: 'Parking type' }, { key: 'allocation', name: 'Allocation' },
+  { key: 'slotNumber', name: 'Slot number' }, { key: 'basement', name: SLOT_FIELD_NAMES.basement }, { key: 'floorLocation', name: 'Floor location' },
+  { key: 'slotType', name: SLOT_FIELD_NAMES.slotType }, { key: 'height', name: SLOT_FIELD_NAMES.height }, { key: 'parkingType', name: SLOT_FIELD_NAMES.parkingType }, { key: 'allocation', name: SLOT_FIELD_NAMES.allocation },
 ];
 
 /** Column order of a file without a header row (the template order). */

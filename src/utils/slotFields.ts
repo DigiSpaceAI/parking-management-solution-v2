@@ -60,6 +60,11 @@ const LISTS: { [F in SlotField]: FieldOption[] } = {
   slotType: SLOT_TYPES, allocation: ALLOCATIONS, height: HEIGHTS, parkingType: PARKING_TYPES, basement: LEVELS, status: SLOT_STATUSES,
 };
 
+/** The ONE name of each list field as users see it (editor errors, CSV header, import messages). es2015-safe plain object. */
+export const SLOT_FIELD_NAMES: { [F in SlotField]: string } = {
+  basement: 'Level', slotType: 'Vehicle type', height: 'Height', parkingType: 'Parking type', allocation: 'Allocation', status: 'Status',
+};
+
 /** Whole-value aliases (compared after trim, upper-case, collapsed spaces). Never substring tests. */
 const ALIASES: { [F in SlotField]?: { [key: string]: string } } = {
   slotType: {
@@ -149,7 +154,8 @@ export function slotMatchesFilters(slot: SlotLike, f: SlotFilters): boolean {
   return true;
 }
 
-export const INVENTORY_CSV_COLUMNS = ['Slot number', 'Level', 'Floor location', 'Vehicle type', 'Height', 'Parking type', 'Allocation', 'Status', 'Current occupant', 'Length (m)', 'Pallet level'];
+export const INVENTORY_CSV_COLUMNS = ['Slot number', SLOT_FIELD_NAMES.basement, 'Floor location', SLOT_FIELD_NAMES.slotType, SLOT_FIELD_NAMES.height, SLOT_FIELD_NAMES.parkingType,
+  SLOT_FIELD_NAMES.allocation, SLOT_FIELD_NAMES.status, 'Current occupant', 'Length (m)', 'Pallet level'];
 
 /** The table's cells = the CSV row (labels; legacy values as "<value> (old)"). */
 export function inventoryRow(slot: SlotLike): string[] {

@@ -79,3 +79,17 @@ test('T-2 the module avoids ES2016+ runtime APIs (the 003 TV bundle is es2015)',
     assert.ok(!bad.test(src), `forbidden API ${bad}`);
   }
 });
+
+test('T-2b (finding 4c) one map of field names: CSV header, import messages and the server labels use it', async () => {
+  const { SLOT_FIELD_NAMES } = await import('../../src/utils/slotFields.ts');
+  const root = path.join(here, '..', '..');
+  const read = (p) => readFileSync(path.join(root, p), 'utf8');
+  assert.deepEqual(SLOT_FIELD_NAMES, { basement: 'Level', slotType: 'Vehicle type', height: 'Height', parkingType: 'Parking type', allocation: 'Allocation', status: 'Status' });
+  assert.deepEqual(INVENTORY_CSV_COLUMNS, ['Slot number', 'Level', 'Floor location', 'Vehicle type', 'Height', 'Parking type', 'Allocation', 'Status', 'Current occupant', 'Length (m)', 'Pallet level']);
+  const csv = read('src/utils/slotCsv.ts');
+  for (const name of ['Level', 'Vehicle type', 'Height', 'Parking type', 'Allocation', 'Status']) {
+    assert.ok(csv.indexOf(`name: '${name}'`) === -1, `slotCsv.ts has no own "${name}"`);
+  }
+  assert.match(csv, /SLOT_FIELD_NAMES/);
+  assert.match(read('src/server/db.ts'), /const SLOT_FIELD_LABELS: Record<SlotField, string> = SLOT_FIELD_NAMES;/);
+});

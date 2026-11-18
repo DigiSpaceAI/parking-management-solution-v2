@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
-import { toCode, optionsFor, heightMetres, HIGH_CLEARANCE_M, type SlotField } from '../utils/slotFields';
+import { toCode, optionsFor, heightMetres, HIGH_CLEARANCE_M, SLOT_FIELD_NAMES, type SlotField } from '../utils/slotFields';
 import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
@@ -2632,9 +2632,7 @@ export type SlotSaveSuccess = { ok: true; slot: ParkingSlot; created: boolean; c
 export type SlotSaveResult = SlotSaveFailure | SlotSaveSuccess;
 export const isSlotSaveFailure = (r: SlotSaveResult): r is SlotSaveFailure => r.ok === false;
 
-const SLOT_FIELD_LABELS: Record<SlotField, string> = {
-  basement: 'Level', slotType: 'Vehicle type', height: 'Height', parkingType: 'Parking type', allocation: 'Allocation', status: 'Status',
-};
+const SLOT_FIELD_LABELS: Record<SlotField, string> = SLOT_FIELD_NAMES;
 const SLOT_FIELD_ORDER: SlotField[] = ['basement', 'slotType', 'height', 'parkingType', 'allocation', 'status'];
 const hasValue = (v: unknown): boolean => v !== undefined && v !== null && String(v).trim() !== '';
 const slotSiteOf = (s: { siteId?: string }): string => s.siteId || DEFAULT_SITE_ID;

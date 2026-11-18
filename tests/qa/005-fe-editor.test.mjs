@@ -107,3 +107,14 @@ test('F1 static: the editor keeps no list of its own and sends no client-made id
   assert.doesNotMatch(comp, /Math\.random\(\)/, 'no random slot number');
   assert.match(comp, /disabled=\{slotFormSaving \|\| missingFields\.length > 0\}/);
 });
+
+test('F1 round 2 (finding 3): a server 400 for Floor location is shown next to the Floor location input', () => {
+  const v = mapSaveError(400, { errorCode: 'ERR_VALIDATION', field: 'floorLocation', message: 'Floor location is required.' });
+  assert.deepEqual(v.fieldErrors, { floorLocation: 'Floor location is required.' });
+  assert.equal(v.banner, null, 'not lost in the banner');
+  const comp = src('src/components/InventoryMaster.tsx');
+  const floor = comp.slice(comp.indexOf('id="slot-floor"'), comp.indexOf('id="slot-type"'));
+  assert.match(floor, /fieldErrors\.floorLocation && <p id="slot-floor-error" role="alert"/, 'the message is rendered after the input, as for the slot number');
+  assert.match(floor, /aria-describedby=\{fieldErrors\.floorLocation \? 'slot-floor-error' : undefined\}/);
+  assert.match(floor, /aria-invalid=\{fieldErrors\.floorLocation \? true : undefined\}/);
+});

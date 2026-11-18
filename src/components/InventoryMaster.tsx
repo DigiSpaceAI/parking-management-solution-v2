@@ -600,8 +600,11 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                   placeholder="e.g. North Wing Level 1 Stacker"
                   value={editingSlot.floorLocation || ''}
                   onChange={(e) => setEditorField('floorLocation', e.target.value)}
+                  aria-invalid={fieldErrors.floorLocation ? true : undefined}
+                  aria-describedby={fieldErrors.floorLocation ? 'slot-floor-error' : undefined}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
                 />
+                {fieldErrors.floorLocation && <p id="slot-floor-error" role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.floorLocation}</p>}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

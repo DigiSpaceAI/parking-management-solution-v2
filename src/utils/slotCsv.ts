@@ -2,8 +2,10 @@
 // Every list, label and code comes from slotFields.ts. The server repeats every check (/slots/bulk-upload).
 import { toCode, INVENTORY_CSV_COLUMNS, optionsFor, SLOT_FIELD_NAMES } from './slotFields.ts';
 import type { SlotField } from './slotFields.ts';
+import { checkZoneName, ZONE_PATTERN } from './zones.ts';
 
-type Key = 'slotNumber' | 'basement' | 'floorLocation' | 'slotType' | 'height' | 'parkingType' | 'allocation' | 'status' | 'lengthM' | 'palletLevel';
+// 008 F9: 'zone' is the Zone column (two-wheeler slots; saved as puzzleNumber "{Level}-{Zone}").
+type Key = 'slotNumber' | 'basement' | 'zone' | 'floorLocation' | 'slotType' | 'height' | 'parkingType' | 'allocation' | 'status' | 'lengthM' | 'palletLevel';
 const LIST_KEYS: { key: Key; field: SlotField; name: string }[] = [
   { key: 'basement', field: 'basement', name: SLOT_FIELD_NAMES.basement },
   { key: 'slotType', field: 'slotType', name: SLOT_FIELD_NAMES.slotType },
@@ -17,10 +19,10 @@ const REQUIRED: { key: Key; name: string }[] = [
   { key: 'slotType', name: SLOT_FIELD_NAMES.slotType }, { key: 'height', name: SLOT_FIELD_NAMES.height }, { key: 'parkingType', name: SLOT_FIELD_NAMES.parkingType }, { key: 'allocation', name: SLOT_FIELD_NAMES.allocation },
 ];
 
-/** Column order of a file without a header row (the template order). */
+/** Column order of a file without a header row (the template order). 008: unchanged; Zone is read from a header only. */
 export const IMPORT_ORDER: Key[] = ['slotNumber', 'basement', 'floorLocation', 'slotType', 'height', 'parkingType', 'allocation', 'status', 'lengthM', 'palletLevel'];
 // The export's own columns (INVENTORY_CSV_COLUMNS), so a downloaded file imports back; 'Current occupant' is ignored.
-const EXPORT_KEYS: (Key | null)[] = ['slotNumber', 'basement', null /* Zone: read from task 9 */, 'floorLocation', 'slotType', 'height', 'parkingType', 'allocation', 'status', null, 'lengthM', 'palletLevel'];
+const EXPORT_KEYS: (Key | null)[] = ['slotNumber', 'basement', 'zone', 'floorLocation', 'slotType', 'height', 'parkingType', 'allocation', 'status', null, 'lengthM', 'palletLevel'];
 const squash = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 const HEADER_KEYS: { [name: string]: Key | null } = {};
 INVENTORY_CSV_COLUMNS.forEach((name, i) => { HEADER_KEYS[squash(name)] = EXPORT_KEYS[i]; });
@@ -57,6 +59,26 @@ export interface PreviewRow {
   slot?: { [key: string]: string };
 }
 const numKey = (n: string): string => n.trim().toUpperCase();
+
+export const ZONE_NAME = 'Zone';
+/** The Zone cell of one row. Needs the row's own Level and Vehicle type (already turned to codes); a row that fails those reports them, not this. */
+function zoneRule(raw: string, slot: { [key: string]: string }, errors: string[]): void {
+  if (!slot.slotType) return;
+  if (slot.slotType !== 'TWO_WHEELER') {
+    errors.push(`${ZONE_NAME} "${raw}" is for two-wheeler slots only. Clear the ${ZONE_NAME} cell, or set ${SLOT_FIELD_NAMES.slotType} to Two-wheeler.`);
+    return;
+  }
+  const zone = raw.trim().toUpperCase();
+  if (!ZONE_PATTERN.test(zone)) {
+    errors.push(`${ZONE_NAME} "${raw}" must be 1 to 6 capital letters or digits, with no dash (for example Z1).`);
+    return;
+  }
+  if (!slot.basement || !slot.slotNumber) return; // those are reported as required
+  const puzzleNumber = `${slot.basement.toUpperCase()}-${zone}`;
+  const check = checkZoneName({ basement: slot.basement, puzzleNumber, slotNumber: slot.slotNumber });
+  if (check.ok) slot.puzzleNumber = puzzleNumber;
+  else errors.push((check as { message: string }).message);
+}
 
 /**
  * Preview of a pasted / uploaded CSV before anything is sent.
@@ -99,6 +121,8 @@ export function previewSlotCsv(text: string, existing: { slotNumber?: string }[]
     if (get.floorLocation) slot.floorLocation = get.floorLocation;
     if (get.lengthM) slot.lengthM = get.lengthM;
     if (get.palletLevel) slot.palletLevel = get.palletLevel;
+    // 008 AC-13: a Zone cell puts a two-wheeler slot in "{Level}-{Zone}" and the name must agree; a blank cell changes nothing
+    if (get.zone) zoneRule(get.zone, slot, errors);
     rows.push({ row, slotNumber: num, action: errors.length ? 'error' : (known[num] ? 'update' : 'add'), errors, slot: errors.length ? undefined : slot });
   }
   for (let i = 0; i < rows.length; i++) {
@@ -133,19 +157,19 @@ export function mergeServerRows(preview: PreviewRow[], server: ServerRowResult[]
 /** Template CSV. Header names are the template's; values are codes taken from slotFields. */
 export function sampleCsv(): string {
   const c = (field: SlotField, i: number): string => optionsFor(field)[i].code;
-  const head = 'SlotNumber,Basement,FloorLocation,SlotType,Height,ParkingType,Allocation,Status,LengthM,PalletLevel';
-  const line = (num: string, level: number, floor: string, type: number, height: number, park: number, alloc: number, len: string, pallet: string) =>
-    [num, c('basement', level), floor, c('slotType', type), c('height', height), c('parkingType', park), c('allocation', alloc), c('status', 0), len, pallet].join(',');
+  const head = 'SlotNumber,Basement,FloorLocation,SlotType,Height,ParkingType,Allocation,Status,LengthM,PalletLevel,Zone';
+  const line = (num: string, level: number, floor: string, type: number, height: number, park: number, alloc: number, len: string, pallet: string, zone = '') =>
+    [num, c('basement', level), floor, c('slotType', type), c('height', height), c('parkingType', park), c('allocation', alloc), c('status', 0), len, pallet, zone].join(',');
   return [head,
     line('B1-P01-S1', 0, 'North Wing Level 1 Stacker', 2, 1, 1, 0, '5.0', '1'),
     line('B1-P01-S2', 0, 'North Wing Level 2 Stacker', 0, 3, 1, 4, '5.2', '2'),
     line('B2-EV-001', 1, 'South Bay EV Charging Station', 5, 1, 0, 0, '5.5', ''),
-    line('B3-2W-101', 2, 'East Bay Two Wheeler Rack', 4, 0, 0, 0, '2.2', ''),
+    line('B3-Z1-101', 2, 'East Bay Two Wheeler Rack', 4, 0, 0, 0, '2.2', '', 'Z1'),
   ].join('\n');
 }
 
 /** Header names of the template, for the help text. */
-export const TEMPLATE_HELP = 'SlotNumber, Basement, FloorLocation, SlotType, Height, ParkingType, Allocation, Status, LengthM (optional), PalletLevel (optional)';
+export const TEMPLATE_HELP = 'SlotNumber, Basement, FloorLocation, SlotType, Height, ParkingType, Allocation, Status, LengthM (optional), PalletLevel (optional), Zone (optional, two-wheeler slots only: the slot number is then Level-Zone-001 to 999)';
 
 /** The Inventory "Download CSV" link: the same route as Reports, with the table's filters. */
 export function inventoryExportUrl(siteId: string, f: { basement?: string; status?: string; search?: string }, token?: string | null): string {

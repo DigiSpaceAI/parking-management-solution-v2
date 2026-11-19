@@ -139,7 +139,7 @@ export function toCode(field: SlotField, raw: unknown): string | null {
 export interface SlotFilters { basement?: string; status?: string; search?: string }
 interface SlotLike {
   slotNumber?: string; floorLocation?: string; currentVehicle?: string | null; basement?: string; status?: string;
-  slotType?: string; height?: string; parkingType?: string; allocation?: string; lengthM?: number; palletLevel?: number;
+  slotType?: string; height?: string; parkingType?: string; allocation?: string; lengthM?: number; palletLevel?: number; puzzleNumber?: string;
 }
 
 /** The Inventory table's filter (also used by the CSV export). 'ALL' or empty = no filter. */
@@ -154,7 +154,17 @@ export function slotMatchesFilters(slot: SlotLike, f: SlotFilters): boolean {
   return true;
 }
 
-export const INVENTORY_CSV_COLUMNS = ['Slot number', SLOT_FIELD_NAMES.basement, 'Floor location', SLOT_FIELD_NAMES.slotType, SLOT_FIELD_NAMES.height, SLOT_FIELD_NAMES.parkingType,
+/** 008: the zone of a two-wheeler slot = last dash segment of its puzzleNumber ("B1-Z1" -> "Z1"); '' for any other slot or an unreadable value.
+ *  Same rule as zoneOf() in zones.ts, kept here without imports so this file stays es2015-safe (see the test that compares them). */
+export const ZONE_CELL_PATTERN = /^[A-Z0-9]{1,6}$/;
+export function zoneCell(slot: { slotType?: string; puzzleNumber?: string }): string {
+  if (slot.slotType !== 'TWO_WHEELER' || !slot.puzzleNumber || String(slot.puzzleNumber).trim() === '') return '';
+  const parts = String(slot.puzzleNumber).trim().toUpperCase().split('-');
+  const zone = parts.length > 1 ? parts[parts.length - 1] : '';
+  return ZONE_CELL_PATTERN.test(zone) ? zone : '';
+}
+
+export const INVENTORY_CSV_COLUMNS = ['Slot number', SLOT_FIELD_NAMES.basement, 'Zone', 'Floor location', SLOT_FIELD_NAMES.slotType, SLOT_FIELD_NAMES.height, SLOT_FIELD_NAMES.parkingType,
   SLOT_FIELD_NAMES.allocation, SLOT_FIELD_NAMES.status, 'Current occupant', 'Length (m)', 'Pallet level'];
 
 /** The table's cells = the CSV row (labels; legacy values as "<value> (old)"). */
@@ -162,6 +172,7 @@ export function inventoryRow(slot: SlotLike): string[] {
   return [
     slot.slotNumber || '',
     labelFor('basement', slot.basement),
+    zoneCell(slot),
     slot.floorLocation || '',
     labelFor('slotType', slot.slotType),
     labelFor('height', slot.height),

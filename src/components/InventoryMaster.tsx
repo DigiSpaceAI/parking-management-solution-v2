@@ -8,6 +8,9 @@ import { previewSlotCsv, sendableRows, mergeServerRows, sampleCsv, TEMPLATE_HELP
 import { getSessionToken } from '../sessionTokenFallback';
 import { emptyNewSlot, selectModel, missingRequired, buildSavePayload, mapSaveError } from '../utils/slotEditor';
 import {
+  autoFloorLocation, checkZoneForm, COPY_NAME_EXISTS, mapZoneSaveError, nameTaken, originOf, setZoneInputs, usesZoneForm, zoneInputsOf, type ZoneFormOrigin,
+} from '../utils/slotZoneForm';
+import {
   Cpu,
   Search,
   Filter,
@@ -89,6 +92,13 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   // validation message comes back for a bad value. Empty = not set.
   const [dimText, setDimText] = useState<{ lengthM: string; palletLevel: string }>({ lengthM: '', palletLevel: '' });
   const [dimErrors, setDimErrors] = useState<{ lengthM?: string; palletLevel?: string }>({});
+  // 008 F7: the two-wheeler part of the form (Level, Zone, Slot number are typed; the slot name is built)
+  const [zoneText, setZoneText] = useState('');
+  const [numText, setNumText] = useState('');
+  const [zoneTouched, setZoneTouched] = useState<{ zone?: boolean; number?: boolean }>({});
+  const [zoneErrs, setZoneErrs] = useState<{ zone?: string; number?: string; name?: string }>({});
+  const [origin, setOrigin] = useState<ZoneFormOrigin | null>(null);
+  const [forceZone, setForceZone] = useState(false);
 
   // Bulk Upload Slots Modal State
   const [isSlotBulkModalOpen, setIsSlotBulkModalOpen] = useState(false);
@@ -117,10 +127,18 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const paginatedSlots = filteredSlots.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   // Slot Management Handlers
-  const handleOpenSlotEditModal = (slot?: ParkingSlot) => {
+  const handleOpenSlotEditModal = (slot?: ParkingSlot, opts: { setZone?: boolean } = {}) => {
     setDimText({ lengthM: slot?.lengthM != null ? String(slot.lengthM) : '', palletLevel: slot?.palletLevel != null ? String(slot.palletLevel) : '' });
     setDimErrors({});
     setFieldErrors({});
+    // 008 F7: Set zone opens the normal two-wheeler form with the number taken from the old name; nothing is written until Save
+    const inputs = slot ? (opts.setZone ? setZoneInputs(slot.slotNumber) : zoneInputsOf(slot)) : { zone: '', number: '' };
+    setZoneText(inputs.zone);
+    setNumText(inputs.number);
+    setZoneTouched({});
+    setZoneErrs({});
+    setOrigin(originOf(slot ?? null));
+    setForceZone(!!opts.setZone);
     if (slot) {
       setEditingSlot({ ...slot });
     } else {
@@ -170,11 +188,39 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   };
 
   const isNewSlot = !!editingSlot && !editingSlot.id;
-  const missingFields = editingSlot ? missingRequired(editingSlot, isNewSlot) : [];
+  // 008 F7: two-wheeler slots are named by Level + Zone + Slot number; the name is built, never typed
+  const zoneMode = !!editingSlot && usesZoneForm(editingSlot.slotType, origin, forceZone);
+  const zoneCheck = zoneMode ? checkZoneForm(String(editingSlot?.basement || ''), zoneText, numText, zoneTouched) : null;
+  const builtName = zoneCheck?.built ?? null;
+  const nameClash = !!builtName && nameTaken(builtName.slotNumber, siteSlots, editingSlot?.id);
+  const missingFields = editingSlot ? missingRequired(editingSlot, isNewSlot).filter((f) => !(zoneMode && f === 'slotNumber')) : [];
+  const zoneBlocked = zoneMode && (!builtName || nameClash);
   const setEditorField = (field: string, value: string) => {
     if (!editingSlot) return;
-    setEditingSlot({ ...editingSlot, [field]: value } as Partial<ParkingSlot>);
+    const next = { ...editingSlot, [field]: value } as Partial<ParkingSlot>;
+    // the floor location follows Level and Zone until the admin types their own
+    if (zoneMode && field === 'basement') {
+      const was = autoFloorLocation(String(editingSlot.basement || ''), zoneText);
+      if (!editingSlot.floorLocation || editingSlot.floorLocation === was) next.floorLocation = autoFloorLocation(value, zoneText);
+    }
+    setEditingSlot(next);
     if (fieldErrors[field]) setFieldErrors({ ...fieldErrors, [field]: '' });
+    if (field === 'basement') setZoneErrs({});
+  };
+  const setZoneField = (value: string) => {
+    if (!editingSlot) return;
+    const zone = value.toUpperCase().replace(/\s+/g, '');
+    const was = autoFloorLocation(String(editingSlot.basement || ''), zoneText);
+    const floor = !editingSlot.floorLocation || editingSlot.floorLocation === was ? autoFloorLocation(String(editingSlot.basement || ''), zone) : editingSlot.floorLocation;
+    setZoneText(zone);
+    setZoneTouched({ ...zoneTouched, zone: true });
+    setZoneErrs({ ...zoneErrs, zone: undefined, name: undefined });
+    setEditingSlot({ ...editingSlot, floorLocation: floor });
+  };
+  const setNumberField = (value: string) => {
+    setNumText(value.trim());
+    setZoneTouched({ ...zoneTouched, number: true });
+    setZoneErrs({ ...zoneErrs, number: undefined, name: undefined });
   };
 
   const handleSaveSlotSubmit = async (e: React.FormEvent) => {
@@ -184,15 +230,20 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
       return;
     }
     if (missingFields.length > 0) return;
+    if (zoneMode && (!builtName || nameClash)) {
+      setZoneTouched({ zone: true, number: true });
+      return;
+    }
 
     try {
       setSlotFormSaving(true);
       setSlotFormError(null);
       setFieldErrors({});
+      setZoneErrs({});
       setDimErrors({});
 
-      // A new slot never carries an id: the server makes it (AC-11).
-      const slotPayload = buildSavePayload(editingSlot, dimText);
+      // A new slot never carries an id: the server makes it (AC-11). A two-wheeler slot sends its built name and zone (AC-09).
+      const slotPayload = buildSavePayload(zoneMode && builtName ? { ...editingSlot, slotNumber: builtName.slotNumber, puzzleNumber: builtName.puzzleNumber } : editingSlot, dimText);
 
       const res = await fetch('/api/v1/slots/save', {
         method: 'POST',
@@ -211,7 +262,8 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
         onRefresh();
       } else {
         // Typed values stay in the form; the error is shown next to the field it names.
-        const view = mapSaveError(res.status, data);
+        const view = zoneMode ? mapZoneSaveError(res.status, data) : { ...mapSaveError(res.status, data), zoneErrors: {} };
+        setZoneErrs(view.zoneErrors);
         setFieldErrors(view.fieldErrors);
         setDimErrors(view.dimErrors);
         setSlotFormError(view.banner);
@@ -461,23 +513,27 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                       {cells[0]}
                     </td>
                     <td className="p-3.5 font-medium">{cells[1]}</td>
-                    <td className="p-3.5 text-slate-500 max-w-xs truncate" title={cells[2]}>{cells[2]}</td>
-                    <td className="p-3.5 font-semibold text-blue-600">{cells[3]}</td>
-                    <td className="p-3.5 text-slate-700">{cells[4]}</td>
-                    <td className="p-3.5 text-slate-600 font-medium">{cells[5]}</td>
-                    <td className="p-3.5 font-medium">{cells[6]}</td>
-                    <td className="p-3.5">{isCode('status', slot.status) ? getSlotStatusBadge(slot.status) : cells[7]}</td>
+                    <td className="p-3.5 font-mono font-bold text-slate-800">
+                      {/* 008 AC-13: blank for four-wheelers; an old two-wheeler slot with no zone reads Unzoned (the CSV cell stays blank) */}
+                      {cells[2] || (slot.slotType === 'TWO_WHEELER' ? <span className="font-sans font-semibold text-amber-800">Unzoned</span> : '')}
+                    </td>
+                    <td className="p-3.5 text-slate-500 max-w-xs truncate" title={cells[3]}>{cells[3]}</td>
+                    <td className="p-3.5 font-semibold text-blue-600">{cells[4]}</td>
+                    <td className="p-3.5 text-slate-700">{cells[5]}</td>
+                    <td className="p-3.5 text-slate-600 font-medium">{cells[6]}</td>
+                    <td className="p-3.5 font-medium">{cells[7]}</td>
+                    <td className="p-3.5">{isCode('status', slot.status) ? getSlotStatusBadge(slot.status) : cells[8]}</td>
                     <td className="p-3.5">
                       {slot.currentVehicle ? (
                         <span className="font-mono font-bold bg-slate-900 text-white px-2 py-0.5 rounded shadow-sm text-[11px]">
-                          {cells[8]}
+                          {cells[9]}
                         </span>
                       ) : (
-                        <span className="text-slate-400 font-mono">{cells[8]}</span>
+                        <span className="text-slate-400 font-mono">{cells[9]}</span>
                       )}
                     </td>
-                    <td className="p-3.5">{cells[9]}</td>
                     <td className="p-3.5">{cells[10]}</td>
+                    <td className="p-3.5">{cells[11]}</td>
                     <td className="p-3.5 text-right space-x-1">
 
                       <button
@@ -488,6 +544,16 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                         <Edit2 className="w-3 h-3" />
                         <span>Edit</span>
                       </button>
+
+                      {slot.slotType === 'TWO_WHEELER' && !cells[2] && (
+                        <button
+                          {...guard('Put this slot in a zone')}
+                          onClick={() => handleOpenSlotEditModal(slot, { setZone: true })}
+                          className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 rounded border border-amber-300 text-[10px] font-bold transition-colors"
+                        >
+                          Set zone
+                        </button>
+                      )}
 
                       {slot.status === 'MAINTENANCE' ? (
                         <button
@@ -577,6 +643,64 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
             )}
 
             <form onSubmit={handleSaveSlotSubmit} className="space-y-3">
+              {zoneMode ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FieldSelect id="slot-basement" label="Level *" field="basement" value={editingSlot.basement}
+                      error={fieldErrors.basement} onChange={(v) => setEditorField('basement', v)} />
+                    <div>
+                      <label htmlFor="slot-zone" className="block text-slate-700 font-bold mb-1">Zone *</label>
+                      <input
+                        id="slot-zone"
+                        type="text"
+                        maxLength={6}
+                        placeholder="e.g. Z1"
+                        value={zoneText}
+                        onChange={(e) => setZoneField(e.target.value)}
+                        aria-invalid={zoneCheck?.errors.zone || zoneErrs.zone ? true : undefined}
+                        aria-describedby={zoneCheck?.errors.zone || zoneErrs.zone ? 'slot-zone-error' : undefined}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
+                      />
+                      {(zoneErrs.zone || zoneCheck?.errors.zone) && <p id="slot-zone-error" role="alert" className="mt-1 text-xs text-red-700">{zoneErrs.zone || zoneCheck?.errors.zone}</p>}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="slot-no" className="block text-slate-700 font-bold mb-1">Slot number *</label>
+                      <input
+                        id="slot-no"
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={4}
+                        placeholder="e.g. 001"
+                        value={numText}
+                        onChange={(e) => setNumberField(e.target.value)}
+                        aria-invalid={zoneCheck?.errors.number || zoneErrs.number ? true : undefined}
+                        aria-describedby={zoneCheck?.errors.number || zoneErrs.number ? 'slot-no-error' : undefined}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
+                      />
+                      {(zoneErrs.number || zoneCheck?.errors.number) && <p id="slot-no-error" role="alert" className="mt-1 text-xs text-red-700">{zoneErrs.number || zoneCheck?.errors.number}</p>}
+                    </div>
+                    <div>
+                      <span id="slot-name-label" className="block text-slate-700 font-bold mb-1">Slot name</span>
+                      <output
+                        id="slot-name"
+                        aria-labelledby="slot-name-label"
+                        aria-describedby={nameClash || zoneErrs.name ? 'slot-name-error' : undefined}
+                        className="block w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold"
+                      >
+                        {builtName ? builtName.slotNumber : '—'}
+                      </output>
+                      {(nameClash || zoneErrs.name) && <p id="slot-name-error" role="alert" className="mt-1 text-xs text-red-700">{COPY_NAME_EXISTS}</p>}
+                    </div>
+                  </div>
+                  {editingSlot.id && forceZone && (
+                    <p className="text-slate-600">
+                      Setting the zone renames this slot from <span className="font-mono font-bold">{origin ? editingSlot.slotNumber : ''}</span>{builtName ? <> to <span className="font-mono font-bold">{builtName.slotNumber}</span></> : null}. Older log rows keep the old name.
+                    </p>
+                  )}
+                </>
+              ) : (
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="slot-number" className="block text-slate-700 font-bold mb-1">Slot Identifier Number *</label>
@@ -591,11 +715,13 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
                   />
                   {fieldErrors.slotNumber && <p id="slot-number-error" role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.slotNumber}</p>}
+                  {editingSlot.slotType === 'TWO_WHEELER' && !!editingSlot.id && <p className="mt-1 text-xs text-slate-600">Zone not set. Use "Set zone" in the table to place this slot in a zone.</p>}
                 </div>
 
                 <FieldSelect id="slot-basement" label="Basement / Level *" field="basement" value={editingSlot.basement}
                   error={fieldErrors.basement} onChange={(v) => setEditorField('basement', v)} />
               </div>
+              )}
 
               <div>
                 <label htmlFor="slot-floor" className="block text-slate-700 font-bold mb-1">Floor Location Description *</label>
@@ -678,7 +804,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={slotFormSaving || missingFields.length > 0}
+                  disabled={slotFormSaving || missingFields.length > 0 || zoneBlocked}
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center space-x-2 disabled:opacity-50"
                 >
                   {slotFormSaving && <RefreshCw className="w-4 h-4 animate-spin" />}

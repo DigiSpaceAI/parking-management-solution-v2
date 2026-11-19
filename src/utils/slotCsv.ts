@@ -20,7 +20,7 @@ const REQUIRED: { key: Key; name: string }[] = [
 /** Column order of a file without a header row (the template order). */
 export const IMPORT_ORDER: Key[] = ['slotNumber', 'basement', 'floorLocation', 'slotType', 'height', 'parkingType', 'allocation', 'status', 'lengthM', 'palletLevel'];
 // The export's own columns (INVENTORY_CSV_COLUMNS), so a downloaded file imports back; 'Current occupant' is ignored.
-const EXPORT_KEYS: (Key | null)[] = ['slotNumber', 'basement', 'floorLocation', 'slotType', 'height', 'parkingType', 'allocation', 'status', null, 'lengthM', 'palletLevel'];
+const EXPORT_KEYS: (Key | null)[] = ['slotNumber', 'basement', null /* Zone: read from task 9 */, 'floorLocation', 'slotType', 'height', 'parkingType', 'allocation', 'status', null, 'lengthM', 'palletLevel'];
 const squash = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 const HEADER_KEYS: { [name: string]: Key | null } = {};
 INVENTORY_CSV_COLUMNS.forEach((name, i) => { HEADER_KEYS[squash(name)] = EXPORT_KEYS[i]; });

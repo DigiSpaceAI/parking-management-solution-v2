@@ -56,7 +56,7 @@ test('F2 a file without a header uses the template order; a floor text "Level 1"
   assert.deepEqual(rows[0].slot, { slotNumber: 'B1-P01-S1', basement: 'B1', floorLocation: 'Level 1, North', slotType: 'SEDAN', height: '2.0m', parkingType: 'PUZZLE', allocation: 'EMPLOYEE', status: 'VACANT', lengthM: '5.0', palletLevel: '2' });
   assert.deepEqual(splitCsvLine('a,"b ""c"", d",e'), ['a', 'b "c", d', 'e']);
   // the export's own header (incl. Current occupant) imports back
-  const back = previewSlotCsv(`"${INVENTORY_CSV_COLUMNS.join('","')}"\n"EXP-1","Basement B2","North","EV","Extra high (3.0 m)","Ground","Handicap","Vacant","-","5.5","1"`, []);
+  const back = previewSlotCsv(`"${INVENTORY_CSV_COLUMNS.join('","')}"\n"EXP-1","Basement B2","","North","EV","Extra high (3.0 m)","Ground","Handicap","Vacant","-","5.5","1"`, []);
   assert.equal(back[0].action, 'add', JSON.stringify(back[0]));
   assert.deepEqual(back[0].slot, { slotNumber: 'EXP-1', basement: 'B2', floorLocation: 'North', slotType: 'EV', height: '3.0m', parkingType: 'GROUND', allocation: 'HANDICAP', status: 'VACANT', lengthM: '5.5', palletLevel: '1' });
 });
@@ -79,7 +79,7 @@ test('F2 export link carries the table filters; ALL and empty are left out', () 
 
 test('F2 legacy values read "<value> (old)" in the table cells', () => {
   const row = inventoryRow({ slotNumber: 'L-1', basement: 'B1', floorLocation: 'F', slotType: 'Compact SUV', height: 'Standard (2.0m)', parkingType: 'PUZZLE', allocation: 'NOT_AVAILABLE', status: 'VACANT', currentVehicle: null });
-  assert.deepEqual(row, ['L-1', 'Basement B1', 'F', 'Compact SUV (old)', 'Standard (2.0m) (old)', 'Puzzle', 'NOT_AVAILABLE (old)', 'Vacant', '-', '', '']);
+  assert.deepEqual(row, ['L-1', 'Basement B1', '', 'F', 'Compact SUV (old)', 'Standard (2.0m) (old)', 'Puzzle', 'NOT_AVAILABLE (old)', 'Vacant', '-', '', '']);
 });
 
 let srv; let c; let A;

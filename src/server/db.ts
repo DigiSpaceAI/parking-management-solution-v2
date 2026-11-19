@@ -7,7 +7,7 @@ import { istHour, istDayStartMs } from './time';
 import { toCode, optionsFor, heightMetres, HIGH_CLEARANCE_M, SLOT_FIELD_NAMES, type SlotField } from '../utils/slotFields';
 import { countSlots } from '../utils/slotCounts';
 import { groupOf, inGroup } from '../utils/vehicleGroup';
-import { zonesOf } from '../utils/zones';
+import { zonesOf, checkZoneName } from '../utils/zones';
 import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
@@ -2693,6 +2693,27 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSy
     return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'slotNumber', message: 'Slot Number is required.' };
   }
 
+  // 2b. 008 B3: a two-wheeler slot that is sent WITH a puzzleNumber (its zone) must have a name that agrees:
+  // puzzleNumber = "{Level}-{ZONE}" and slotNumber = "{puzzleNumber}-NNN". A 2W slot with no puzzleNumber saves
+  // exactly as before (Unzoned). On update the check runs only when the zone, number, level or type changes, so a
+  // stored legacy value survives an unrelated edit. The stored zone is upper-case, like the slot number.
+  let zoneValue: string | undefined;
+  const sentZone = hasValue(slotData.puzzleNumber) ? String(slotData.puzzleNumber).trim() : '';
+  if (sentZone && values.slotType === 'TWO_WHEELER') {
+    const zoneTouched = !existing
+      || sentZone.toUpperCase() !== String(existing.puzzleNumber || '').trim().toUpperCase()
+      || numberKey !== slotNumberKey(existing.slotNumber)
+      || values.basement !== existing.basement
+      || values.slotType !== existing.slotType;
+    if (zoneTouched) {
+      const zoneCheck = checkZoneName({ basement: String(values.basement), puzzleNumber: sentZone, slotNumber: numberKey });
+      if (zoneCheck.ok === false) {
+        return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: zoneCheck.field, value: String(zoneCheck.field === 'slotNumber' ? numberKey : sentZone).slice(0, 40), message: zoneCheck.message };
+      }
+      zoneValue = sentZone.toUpperCase();
+    }
+  }
+
   // 3. Unique number per site (create, a rename onto another slot's number, or a
   // move to another site): always checked against the site the slot will be in.
   const finalNumber = numberKey || (existing ? slotNumberKey(existing.slotNumber) : '');
@@ -2713,7 +2734,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSy
       slotNumber: finalNumber,
       basement: values.basement as ParkingSlot['basement'],
       floorLocation: floorLocation || existing.floorLocation,
-      puzzleNumber: slotData.puzzleNumber !== undefined ? (slotData.puzzleNumber || undefined) : existing.puzzleNumber,
+      puzzleNumber: zoneValue ?? (slotData.puzzleNumber !== undefined ? (slotData.puzzleNumber || undefined) : existing.puzzleNumber),
       slotType: values.slotType as ParkingSlot['slotType'],
       height: values.height as string,
       parkingType: values.parkingType as ParkingSlot['parkingType'],
@@ -2739,7 +2760,7 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSy
     slotNumber: finalNumber,
     basement: values.basement as ParkingSlot['basement'],
     floorLocation,
-    ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
+    ...(zoneValue ? { puzzleNumber: zoneValue } : slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
     slotType: values.slotType as ParkingSlot['slotType'],
     height: values.height as string,
     parkingType: values.parkingType as ParkingSlot['parkingType'],
@@ -2782,7 +2803,9 @@ export function deleteSlot(slotId: string, force: boolean = false): { success: b
 //  - A number repeated INSIDE the file makes every occurrence a row error (none is saved).
 //  - A number that exists at the site updates that slot; never a second slot.
 export interface SlotUploadRow { row: number; slotNumber: string; result: 'added' | 'updated' | 'error'; errors?: string[] }
-export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[]; rows: SlotUploadRow[] } {
+//  - 008 B3: with opts.createOnly a number that already exists is a row error (the 409 text) and the slot is
+//    never updated; rows of a bulk add (Zone, From, To) use it so a clash can never overwrite a slot.
+export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>, opts: { createOnly?: boolean } = {}): { added: number; updated: number; total: number; errors: string[]; rows: SlotUploadRow[] } {
   let added = 0;
   let updated = 0;
   const changedIds: string[] = [];
@@ -2819,7 +2842,7 @@ export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: num
     }
     // deferSync=true: each row updates in memory and the local JSON backup;
     // the rows are written to Firestore in one targeted batch below.
-    const r = saveOrUpdateSlot({ ...item, id: undefined }, { deferSync: true, matchByNumber: true });
+    const r = saveOrUpdateSlot({ ...item, id: undefined }, { deferSync: true, matchByNumber: opts.createOnly !== true });
     if (isSlotSaveFailure(r)) {
       fail(index, num, [r.value ? `${r.message} (got "${r.value}")` : r.message]);
       continue;

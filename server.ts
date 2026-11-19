@@ -1972,16 +1972,20 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
 // 3e. Bulk Upload Slot Inventory Endpoint
 app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'), (req, res) => {
   try {
-    const { slots: list } = req.body;
+    const { slots: list, createOnly } = req.body;
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty slots array for bulk upload.' });
+    }
+    // 008 B3: optional createOnly (boolean). Anything else is refused, never read as "update by number".
+    if (createOnly !== undefined && typeof createOnly !== 'boolean') {
+      return res.status(400).json({ success: false, errorCode: 'ERR_VALIDATION', field: 'createOnly', message: 'createOnly must be true or false.' });
     }
     const site = resolveSite(req, res, { allowAll: false });
     if (site === null) return;
     const store = getStore();
     if (!stampBulkRows(req, res, site, list, (row: any) => (row.id ? store.slots.find((sl) => sl.id === row.id) : undefined))) return;
 
-    const result = bulkUploadSlots(list);
+    const result = bulkUploadSlots(list, { createOnly: createOnly === true });
     res.json({
       success: true,
       message: `Bulk slot upload successful! Added ${result.added} new slots, updated ${result.updated} existing slots. Total slot inventory: ${result.total}`

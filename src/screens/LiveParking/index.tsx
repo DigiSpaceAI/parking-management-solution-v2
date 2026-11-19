@@ -9,6 +9,9 @@ import { compareSlots, isPuzzle, puzzleIdOf, slotInLevel, type LevelId, type Liv
 import { SlotsView, type Layout } from './SlotsView';
 import { PuzzleView, type PuzzleModule } from './PuzzleView';
 import { SlotModal } from './SlotModal';
+import { VehicleGroupSwitch, useVehicleGroup, type GroupCounts } from '../../components/VehicleGroupSwitch';
+import { inGroup } from '../../utils/vehicleGroup';
+import { countSlots } from '../../utils/slotCounts';
 
 interface SlotsResponse {
   slots?: LiveSlot[];
@@ -57,6 +60,7 @@ export interface LiveParkingProps {
 export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) => {
   const toast = useToast();
   const site = useSiteContext();
+  const { group, setGroup } = useVehicleGroup();
   const [data, setData] = useState<SlotsResponse | null>(null);
   const [view, setView] = useState<'slots' | 'puzzle'>('slots');
   const [level, setLevel] = useState<LevelId>('ALL');
@@ -82,7 +86,15 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
     [siteId]
   );
 
-  const slots = data?.slots ?? [];
+  const allSlots = data?.slots ?? [];
+  // 008 F4: the switcher's totals come from the one counter (countSlots), over every slot of the site
+  const groupCounts: GroupCounts | null = data
+    ? (Object.fromEntries((['4W', '2W'] as const).map((g) => {
+        const gs = allSlots.filter((s) => inGroup(s, g));
+        return [g, { occupied: gs.filter((s) => s.status === 'OCCUPIED').length, total: countSlots(gs).total }];
+      })) as GroupCounts)
+    : null;
+  const slots = allSlots;
   const levelSlots = useMemo(() => slots.filter((s) => slotInLevel(s, level)), [slots, level]);
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -218,6 +230,7 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
   return (
     <>
       {header}
+      <VehicleGroupSwitch counts={groupCounts} loading={loading} group={group} onChange={setGroup} />
       <Card className="pf-lp-filters">
         {loading ? (
           <Skeleton variant="block" />

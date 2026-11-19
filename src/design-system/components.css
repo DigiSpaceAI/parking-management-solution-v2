@@ -671,3 +671,13 @@
     .pf-skip { display: inline-flex; align-items: center; }
   }
 }
+
+/* 008 F4: vehicle group switcher (tokens only) */
+@layer components {
+  .pf-vgs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
+  .pf-vgs .pf-card-note { margin: 0; }
+  @media (max-width: 639.98px) {
+    .pf-vgs .pf-seg { display: flex; width: 100%; }
+    .pf-vgs .pf-seg-btn { flex: 1; justify-content: center; }
+  }
+}

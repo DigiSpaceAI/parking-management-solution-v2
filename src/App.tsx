@@ -11,6 +11,7 @@ import { useToast, ErrorState, EmptyState, PageHeader, type NavGroup } from './d
 import { useAutoRefresh } from './utils/useAutoRefresh';
 import { LiveParking } from './screens/LiveParking';
 import { Overview } from './screens/Overview';
+import { VehicleGroupProvider } from './components/VehicleGroupSwitch';
 import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
@@ -734,6 +735,7 @@ export default function App() {
 
   return (
     <SiteContext.Provider value={siteContextValue}>
+      <VehicleGroupProvider siteId={currentSiteId}>
       <AppShell
         user={currentUser}
         viewAs={viewAsUser}
@@ -776,6 +778,7 @@ export default function App() {
           </div>
         )}
       </AppShell>
+      </VehicleGroupProvider>
     </SiteContext.Provider>
   );
 }

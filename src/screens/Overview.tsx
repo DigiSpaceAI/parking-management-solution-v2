@@ -7,6 +7,7 @@ import {
 import { formatDayDate, formatNumber, formatTime, istHour } from '../utils/format';
 import { useAutoRefresh } from '../utils/useAutoRefresh';
 import { hrefFor, type RouteId } from '../routes';
+import { VehicleGroupSwitch, useVehicleGroup, type GroupCounts } from '../components/VehicleGroupSwitch';
 
 export interface OverviewProps {
   /** One site (never 'ALL': /overview refuses it). */
@@ -36,6 +37,7 @@ function hourWindow(byHour: number[], nowHour: number): number[] {
  */
 export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
   const [data, setData] = useState<OverviewToday | null>(null);
+  const { group, setGroup } = useVehicleGroup();
   const refresh = useAutoRefresh(
     async (isCurrent) => {
       const res = await fetch('/api/v1/overview');
@@ -67,10 +69,14 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
     />
   );
 
+  const groupCounts: GroupCounts | null = data?.groups ? { '4W': data.groups['4W'], '2W': data.groups['2W'] } : null;
+  const switcher = <VehicleGroupSwitch counts={groupCounts} loading={loading} group={group} onChange={setGroup} />;
+
   if (failed) {
     return (
       <>
         {header}
+        {switcher}
         <ErrorState title="Couldn't load today's overview" onRetry={() => void refresh.refresh()} />
       </>
     );
@@ -257,6 +263,7 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
   return (
     <>
       {header}
+      {switcher}
       {kpis}
       <div className="pf-cards-2">
         {levels}

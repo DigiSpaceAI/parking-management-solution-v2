@@ -7,6 +7,7 @@ import { optionsFor, labelFor, isCode, inventoryRow, slotMatchesFilters, compare
 import { previewSlotCsv, sendableRows, mergeServerRows, sampleCsv, TEMPLATE_HELP, inventoryExportUrl } from '../utils/slotCsv';
 import { getSessionToken } from '../sessionTokenFallback';
 import { emptyNewSlot, selectModel, missingRequired, buildSavePayload, mapSaveError } from '../utils/slotEditor';
+import { planBulkAdd, bulkAddRows, bulkOutcome, COPY_BULK_NAMES_EXIST, type BulkOutcome } from '../utils/bulkAdd';
 import {
   autoFloorLocation, checkZoneForm, COPY_NAME_EXISTS, mapZoneSaveError, nameTaken, originOf, setZoneInputs, usesZoneForm, zoneInputsOf, type ZoneFormOrigin,
 } from '../utils/slotZoneForm';
@@ -100,6 +101,13 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const [origin, setOrigin] = useState<ZoneFormOrigin | null>(null);
   const [forceZone, setForceZone] = useState(false);
 
+  // 008 F8: bulk add of two-wheeler slots (Level + Zone + From..To)
+  const [isBulkAddOpen, setIsBulkAddOpen] = useState(false);
+  const [bulk, setBulk] = useState({ basement: '', zone: '', from: '', to: '', height: '', parkingType: '', allocation: '' });
+  const [bulkResult, setBulkResult] = useState<BulkOutcome | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
+
   // Bulk Upload Slots Modal State
   const [isSlotBulkModalOpen, setIsSlotBulkModalOpen] = useState(false);
   const [slotBulkCsvText, setSlotBulkCsvText] = useState('');
@@ -117,6 +125,50 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const siteSlots = useMemo(() => slots.filter((s) => currentSiteId === 'ALL' || s.siteId === currentSiteId), [slots, currentSiteId]);
   const preview = useMemo(() => previewSlotCsv(slotBulkCsvText, siteSlots), [slotBulkCsvText, siteSlots]);
   const sendable = sendableRows(preview);
+
+  // 008 F8: the names to create, checked against the inventory loaded for this site (the server checks again: createOnly)
+  const bulkPlan = useMemo(() => planBulkAdd(bulk.basement, bulk.zone, bulk.from, bulk.to, siteSlots.map((x) => x.slotNumber)), [bulk.basement, bulk.zone, bulk.from, bulk.to, siteSlots]);
+  const bulkListsChosen = bulk.height !== '' && bulk.parkingType !== '' && bulk.allocation !== '';
+
+  const handleOpenBulkAdd = () => {
+    setBulk({ basement: '', zone: '', from: '', to: '', height: '', parkingType: '', allocation: '' });
+    setBulkResult(null);
+    setBulkMsg(null);
+    setIsBulkAddOpen(true);
+  };
+
+  const handleConfirmBulkAdd = async () => {
+    if (!bulkPlan.ready || !bulkListsChosen || bulkResult) return;
+    if (currentSiteId === 'ALL') {
+      setBulkMsg('Select a specific site (top right) before adding slots.');
+      return;
+    }
+    try {
+      setBulkBusy(true);
+      setBulkMsg(`Adding ${bulkPlan.count} slots...`);
+      // ONE request; the server saves in chunks and answers after saving. createOnly: an existing name is a row error, never an update.
+      const res = await fetch('/api/v1/slots/bulk-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slots: bulkAddRows(bulkPlan, bulk, bulk.zone.trim().toUpperCase(), currentSiteId), createOnly: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const serverRows = Array.isArray(data?.result?.rows) ? data.result.rows : [];
+      const outcome = bulkOutcome(bulkPlan.names, serverRows);
+      setBulkResult(serverRows.length ? outcome : null);
+      setBulkMsg(
+        serverRows.length
+          ? outcome.refused === 0 ? `Added ${outcome.added} slots: ${bulkPlan.first} to ${bulkPlan.last}.` : `Added ${outcome.added} of ${bulkPlan.count}. ${outcome.refused} were not added: see the list.`
+          : `Not added: ${data.message || "Couldn't save. Nothing was changed."}`
+      );
+      onRefresh();
+      if (data.success && outcome.refused === 0) setTimeout(() => setIsBulkAddOpen(false), 1800);
+    } catch (err: any) {
+      setBulkMsg(`Upload failed: ${err.message || err}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const handleDownloadCsv = () => {
     // Same route as Reports; the table's current filters go along, so the file = the rows on screen (all pages).
@@ -442,6 +494,15 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
               >
                 <Upload className="w-4 h-4 text-emerald-400" />
                 <span>Bulk Upload Inventory</span>
+              </button>
+
+              <button
+                {...guard()}
+                onClick={handleOpenBulkAdd}
+                className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-sm transition-colors flex items-center space-x-1.5"
+              >
+                <Cpu className="w-4 h-4 text-blue-300" />
+                <span>Bulk add two-wheeler</span>
               </button>
 
               {canExport && (
@@ -947,6 +1008,142 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 008 F8: Bulk add two-wheeler slots */}
+      {isBulkAddOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div role="dialog" aria-modal="true" aria-labelledby="bulk-add-title" className="bg-white border border-slate-200 rounded-3xl shadow-2xl max-w-2xl w-full p-6 text-xs space-y-4 relative animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div id="bulk-add-title" className="flex items-center space-x-2 text-slate-900 font-bold text-sm">
+                <Cpu className="w-5 h-5 text-blue-600" />
+                <span>Bulk add two-wheeler slots</span>
+              </div>
+              <button onClick={() => setIsBulkAddOpen(false)} aria-label="Close" className="p-1 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {bulkMsg && (
+              <div role="status" className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-900 font-bold flex items-center space-x-2">
+                <Check className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span>{bulkMsg}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <FieldSelect id="bulk-level" label="Level *" field="basement" value={bulk.basement} onChange={(v) => setBulk({ ...bulk, basement: v })} />
+              <div>
+                <label htmlFor="bulk-zone" className="block text-slate-700 font-bold mb-1">Zone *</label>
+                <input
+                  id="bulk-zone"
+                  type="text"
+                  maxLength={6}
+                  placeholder="e.g. Z1"
+                  value={bulk.zone}
+                  onChange={(e) => setBulk({ ...bulk, zone: e.target.value.toUpperCase().replace(/\s+/g, '') })}
+                  aria-invalid={bulkPlan.errors.zone ? true : undefined}
+                  aria-describedby={bulkPlan.errors.zone ? 'bulk-zone-error' : undefined}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
+                />
+                {bulkPlan.errors.zone && <p id="bulk-zone-error" role="alert" className="mt-1 text-xs text-red-700">{bulkPlan.errors.zone}</p>}
+              </div>
+              <div>
+                <label htmlFor="bulk-from" className="block text-slate-700 font-bold mb-1">From *</label>
+                <input
+                  id="bulk-from"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="1"
+                  value={bulk.from}
+                  onChange={(e) => setBulk({ ...bulk, from: e.target.value.trim() })}
+                  aria-invalid={bulkPlan.errors.from ? true : undefined}
+                  aria-describedby={bulkPlan.errors.from ? 'bulk-from-error' : undefined}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
+                />
+                {bulkPlan.errors.from && <p id="bulk-from-error" role="alert" className="mt-1 text-xs text-red-700">{bulkPlan.errors.from}</p>}
+              </div>
+              <div>
+                <label htmlFor="bulk-to" className="block text-slate-700 font-bold mb-1">To *</label>
+                <input
+                  id="bulk-to"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="40"
+                  value={bulk.to}
+                  onChange={(e) => setBulk({ ...bulk, to: e.target.value.trim() })}
+                  aria-invalid={bulkPlan.errors.to ? true : undefined}
+                  aria-describedby={bulkPlan.errors.to ? 'bulk-to-error' : undefined}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
+                />
+                {bulkPlan.errors.to && <p id="bulk-to-error" role="alert" className="mt-1 text-xs text-red-700">{bulkPlan.errors.to}</p>}
+              </div>
+              <FieldSelect id="bulk-height" label="Clearance Height *" field="height" value={bulk.height} onChange={(v) => setBulk({ ...bulk, height: v })} />
+              <FieldSelect id="bulk-parking" label="Parking Type *" field="parkingType" value={bulk.parkingType} onChange={(v) => setBulk({ ...bulk, parkingType: v })} />
+              <FieldSelect id="bulk-allocation" label="Allocation Rule *" field="allocation" value={bulk.allocation} onChange={(v) => setBulk({ ...bulk, allocation: v })} />
+            </div>
+
+            <div aria-live="polite" className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1">
+              {bulkPlan.count > 0 ? (
+                <>
+                  <p className="text-slate-900 font-bold">
+                    Will add {bulkPlan.count} {bulkPlan.count === 1 ? 'slot' : 'slots'}: <span className="font-mono">{bulkPlan.first}</span>{bulkPlan.count > 1 && <> to <span className="font-mono">{bulkPlan.last}</span></>}
+                  </p>
+                  <p className="text-slate-600">Vehicle type Two-wheeler, status Vacant, floor location "{autoFloorLocation(bulk.basement, bulk.zone)}".</p>
+                </>
+              ) : (
+                <p className="text-slate-600">Enter Level, Zone, From and To to see the names.</p>
+              )}
+              {bulkPlan.clashes.length > 0 && (
+                <p role="alert" className="text-red-700 font-semibold">
+                  {COPY_BULK_NAMES_EXIST} {bulkPlan.clashes.length === 1 ? 'Already used:' : `Already used (${bulkPlan.clashes.length}):`} <span className="font-mono">{bulkPlan.clashes.slice(0, 5).join(', ')}{bulkPlan.clashes.length > 5 ? ', …' : ''}</span>
+                </p>
+              )}
+            </div>
+
+            {bulkResult && (
+              <div className="max-h-52 overflow-y-auto border border-slate-200 rounded-2xl">
+                <table className="w-full text-left text-[11px] text-slate-700">
+                  <caption className="sr-only">Result for each slot</caption>
+                  <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[9px] sticky top-0">
+                    <tr><th className="p-2">Slot name</th><th className="p-2">Result</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {bulkResult.rows.map((r) => (
+                      <tr key={r.slotNumber} className="align-top">
+                        <td className="p-2 font-mono font-bold text-slate-900">{r.slotNumber}</td>
+                        <td className="p-2">
+                          {r.result === 'added' ? (
+                            <span className="text-emerald-700 font-semibold">Added</span>
+                          ) : (
+                            <span className="text-red-700 font-semibold">{r.errors.length ? r.errors.map((m, i) => <span key={i} className="block">{m}</span>) : 'Not added'}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-200 flex items-center justify-end space-x-3">
+              <button onClick={() => setIsBulkAddOpen(false)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition-colors">
+                {bulkResult ? 'Close' : 'Cancel'}
+              </button>
+              <button
+                {...guard()}
+                onClick={handleConfirmBulkAdd}
+                disabled={bulkBusy || !bulkPlan.ready || !bulkListsChosen || !!bulkResult || !!guard().disabled}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center space-x-2 disabled:opacity-40"
+              >
+                {bulkBusy && <RefreshCw className="w-4 h-4 animate-spin" />}
+                <span>Confirm & Add ({bulkPlan.count})</span>
+              </button>
             </div>
           </div>
         </div>

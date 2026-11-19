@@ -5,6 +5,9 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
 import { toCode, optionsFor, heightMetres, HIGH_CLEARANCE_M, SLOT_FIELD_NAMES, type SlotField } from '../utils/slotFields';
+import { countSlots } from '../utils/slotCounts';
+import { groupOf, inGroup } from '../utils/vehicleGroup';
+import { zonesOf } from '../utils/zones';
 import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
@@ -57,6 +60,8 @@ import {
   OvernightRequest,
   OvernightRequestStatus,
   OverviewToday,
+  OverviewGroupCounts,
+  VehicleGroup,
   DemoRequest,
   DemoRequestStatus,
   SiteSummaryRow,
@@ -3573,11 +3578,20 @@ export function getOccupancyTrend(siteId: string, fromISO: string, toISO: string
 // `now`; hours are IST. Counts are real counts (0 only when the data says 0);
 // hasHistory tells a brand-new site (no logs ever) apart from a quiet day.
 // `latest` is returned unmasked: the route masks plates by the caller's role.
-export function getSiteOverview(siteId: string, now: number = Date.now()): OverviewToday {
+//
+// 008 B2: optional `group` ('4W' | '2W') limits slots and entries to that vehicle group.
+//  - Every slot count comes from the one shared countSlots (occupied = countSlots with isFree = OCCUPIED).
+//  - A log's group = the group of its slot, found by slotId in THIS site's slots, else by slot number;
+//    no slot found = 4W. Slots and logs are filtered by site first, so another site is never counted.
+//  - `groups` (both groups, same snapshot) is always returned; `group` is echoed only when asked for;
+//    `zones` (2W pallets) only for group '2W'. Without `group` the old fields keep their old meaning,
+//    including the old Overview level rows (Driveway clubbed into Ground).
+//  - Pending requests, their age and non-parked alerts have no slot type: they stay on 4W, 0 / null on 2W.
+export function getSiteOverview(siteId: string, now: number = Date.now(), group?: VehicleGroup): OverviewToday {
   const storeData = getStore();
   const atSite = (x: { siteId?: string }) => (x.siteId || DEFAULT_SITE_ID) === siteId;
-  const slots = storeData.slots.filter(atSite);
-  const logs = storeData.logs.filter(atSite);
+  const siteSlots = storeData.slots.filter(atSite);
+  const siteLogs = storeData.logs.filter(atSite);
   const todayStart = istDayStartMs(now);
   const isToday = (t?: string | null) => {
     if (!t) return false;
@@ -3585,20 +3599,47 @@ export function getSiteOverview(siteId: string, now: number = Date.now()): Overv
     return ms >= todayStart && ms < todayStart + 86_400_000;
   };
 
-  const levelOf = (b: string) => (b === 'Driveway' ? 'Ground' : b);
-  const LEVEL_ORDER = ['B1', 'B2', 'B3', 'Ground'];
-  const levels = new Map<string, { level: string; occupied: number; total: number }>();
-  for (const sl of slots) {
-    const level = levelOf(sl.basement);
-    const row = levels.get(level) || { level, occupied: 0, total: 0 };
-    row.total++;
-    if (sl.status === 'OCCUPIED') row.occupied++;
-    levels.set(level, row);
-  }
-  const byLevel = [...levels.values()].sort((a, b) => {
-    const ia = LEVEL_ORDER.indexOf(a.level), ib = LEVEL_ORDER.indexOf(b.level);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.level.localeCompare(b.level);
+  const isOccupied = (sl: { status: string }) => sl.status === 'OCCUPIED';
+  const countsOf = (list: ParkingSlot[]) => ({
+    occupied: countSlots(list, { isFree: isOccupied }).free,
+    free: countSlots(list).free,
+    total: list.length,
   });
+  const groups: Record<VehicleGroup, OverviewGroupCounts> = {
+    '4W': countsOf(siteSlots.filter((sl) => inGroup(sl, '4W'))),
+    '2W': countsOf(siteSlots.filter((sl) => inGroup(sl, '2W'))),
+  };
+
+  const slots = group ? siteSlots.filter((sl) => inGroup(sl, group)) : siteSlots;
+  const slotById = new Map(siteSlots.map((sl) => [sl.id, sl] as const));
+  const slotByNumber = new Map<string, ParkingSlot>();
+  for (const sl of siteSlots) if (!slotByNumber.has(slotNumberKey(sl.slotNumber))) slotByNumber.set(slotNumberKey(sl.slotNumber), sl);
+  const logGroup = (l: ParkingLog): VehicleGroup => {
+    const sl = slotById.get(l.slotId) || slotByNumber.get(slotNumberKey(l.slotNumber));
+    return sl ? groupOf(sl.slotType) : '4W';
+  };
+  const logs = group ? siteLogs.filter((l) => logGroup(l) === group) : siteLogs;
+
+  let byLevel: { level: string; occupied: number; total: number }[];
+  if (group) {
+    // One row per level of the group, in the shared level order; Ground and Driveway are separate.
+    byLevel = countSlots(slots, { isFree: isOccupied }).rows.map((r) => ({ level: r.level, occupied: r.free, total: r.total }));
+  } else {
+    const levelOf = (b: string) => (b === 'Driveway' ? 'Ground' : b);
+    const LEVEL_ORDER = ['B1', 'B2', 'B3', 'Ground'];
+    const levels = new Map<string, { level: string; occupied: number; total: number }>();
+    for (const sl of slots) {
+      const level = levelOf(sl.basement);
+      const row = levels.get(level) || { level, occupied: 0, total: 0 };
+      row.total++;
+      if (sl.status === 'OCCUPIED') row.occupied++;
+      levels.set(level, row);
+    }
+    byLevel = [...levels.values()].sort((a, b) => {
+      const ia = LEVEL_ORDER.indexOf(a.level), ib = LEVEL_ORDER.indexOf(b.level);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.level.localeCompare(b.level);
+    });
+  }
 
   const entriesByHour = new Array(24).fill(0);
   let entriesToday = 0;
@@ -3608,18 +3649,20 @@ export function getSiteOverview(siteId: string, now: number = Date.now()): Overv
     if (isToday(l.exitTime)) exitsToday++;
   }
 
-  const pending = (storeData.registrationRequests || []).filter(r => atSite(r) && r.status === 'PENDING');
+  const withoutSlotType = group === '2W'; // pending requests and non-parked alerts have no slot type: 4W only
+  const pending = withoutSlotType ? [] : (storeData.registrationRequests || []).filter(r => atSite(r) && r.status === 'PENDING');
   const oldestPendingMs = pending.reduce((min, r) => Math.min(min, new Date(r.createdAt).getTime()), Infinity);
   const twelveHoursAgo = now - 12 * 3_600_000;
   const lastEvent = (l: ParkingLog) => Math.max(new Date(l.entryTime).getTime(), l.exitTime ? new Date(l.exitTime).getTime() : 0);
+  const own = countsOf(slots);
 
   return {
     siteId,
     asOf: new Date(now).toISOString(),
     timezone: 'Asia/Kolkata',
-    occupied: slots.filter(sl => sl.status === 'OCCUPIED').length,
-    total: slots.length,
-    free: slots.filter(sl => sl.status === 'VACANT').length,
+    occupied: own.occupied,
+    total: own.total,
+    free: own.free,
     byLevel,
     entriesToday,
     exitsToday,
@@ -3628,7 +3671,7 @@ export function getSiteOverview(siteId: string, now: number = Date.now()): Overv
     oldestPendingDays: Number.isFinite(oldestPendingMs) ? Math.floor((now - oldestPendingMs) / 86_400_000) : null,
     // Open entries older than 12 hours (the 001 default; per-site limits are 001 P2-3).
     parkedOver12h: logs.filter(l => l.status === 'ACTIVE' && new Date(l.entryTime).getTime() < twelveHoursAgo).length,
-    nonParkedAlerts: (storeData.alerts || []).filter(atSite).length,
+    nonParkedAlerts: withoutSlotType ? 0 : (storeData.alerts || []).filter(atSite).length,
     latest: [...logs].sort((a, b) => lastEvent(b) - lastEvent(a)).slice(0, 4).map(l => ({
       vehicleNumber: l.vehicleNumber,
       slotNumber: l.slotNumber,
@@ -3636,7 +3679,10 @@ export function getSiteOverview(siteId: string, now: number = Date.now()): Overv
       exitTime: l.exitTime || null,
       status: l.status,
     })),
-    hasHistory: logs.length > 0,
+    hasHistory: siteLogs.length > 0, // the site has logged a vehicle at some time (not per group)
+    ...(group ? { group } : {}),
+    groups,
+    ...(group === '2W' ? { zones: zonesOf(slots) } : {}),
   };
 }
 

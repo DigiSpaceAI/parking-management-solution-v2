@@ -123,9 +123,10 @@ import {
   extractSessionToken,
   loadAuditLogsFromFirestore
 } from './src/server/security';
-import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow, VehicleGroup } from './src/types';
 import { isLocalDemoMode } from './src/server/runtimeMode';
 import { isMasterAdmin } from './src/utils/rbac';
+import { isVehicleGroup } from './src/utils/vehicleGroup';
 import { slotMatchesFilters, compareInventory, inventoryRow, INVENTORY_CSV_COLUMNS, heightMetres } from './src/utils/slotFields';
 
 // Initialize PMS Store with 1,080 parking inventory slots
@@ -2220,7 +2221,12 @@ app.get('/api/v1/sites/summary', requireMasterAdminView, (req, res) => {
 app.get('/api/v1/overview', requirePermission('FLOOR_PLAN', 'view'), (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: false });
   if (siteId === null) return;
-  const overview = getSiteOverview(siteId);
+  // 008 B2: optional ?group=4W|2W (case as written). Anything else is a 400; absent = all slots, as before.
+  const rawGroup = req.query.group;
+  if (rawGroup !== undefined && !isVehicleGroup(rawGroup)) {
+    return res.status(400).json({ success: false, errorCode: 'ERR_VALIDATION', field: 'group', allowed: ['4W', '2W'], message: 'group must be 4W or 2W.' });
+  }
+  const overview = getSiteOverview(siteId, Date.now(), rawGroup as VehicleGroup | undefined);
   const { platesUnmasked } = piiAccess(req);
   if (!platesUnmasked) {
     overview.latest = overview.latest.map((l) => ({ ...l, vehicleNumber: maskLicensePlate(l.vehicleNumber, false) }));

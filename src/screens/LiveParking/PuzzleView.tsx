@@ -1,7 +1,7 @@
 import React from 'react';
 import { Button, Card, EmptyState, Pagination, SiteTag, SlotCard, SlotCode, type SlotStatus } from '../../design-system/components';
 import { formatNumber } from '../../utils/format';
-import { compareTopFirst, decodeSlot, heightOf, palletLevelOf, type LiveSlot } from '../../utils/slots';
+import { cardDecode, compareTopFirst, heightOf, type LiveSlot } from '../../utils/slots';
 
 export interface PuzzleModule {
   id: string;
@@ -58,7 +58,7 @@ export const PuzzleView: React.FC<PuzzleViewProps> = ({ modules, page, onPage, o
                     <SiteTag code={m.basement} />
                     {siteCodeFor && <SiteTag code={siteCodeFor(m.siteId)} />}
                   </h3>
-                  <span className="pf-card-note">{pallets.length} pallets · top level first</span>
+                  <span className="pf-card-note">{pallets.length} slots</span>
                 </div>
                 <p className="pf-puzzle-counts">
                   <b>{formatNumber(free)} free</b>
@@ -73,8 +73,7 @@ export const PuzzleView: React.FC<PuzzleViewProps> = ({ modules, page, onPage, o
                     compact
                     code={p.slotNumber}
                     status={p.status as SlotStatus}
-                    decode={decodeSlot(p)}
-                    level={palletLevelOf(p)}
+                    decode={cardDecode(p)}
                     slotType={p.slotType}
                     ev={p.slotType === 'EV'}
                     plate={p.currentVehicle}

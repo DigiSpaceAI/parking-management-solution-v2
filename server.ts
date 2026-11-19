@@ -23,6 +23,8 @@ import {
   getEmployeeByEmailOrId,
   updateEmployeeVehicle,
   saveOrUpdateSlot,
+  isSlotSaveFailure,
+  migrateSlotFields,
   parseSlotDimensions,
   bulkUploadSlots,
   deleteSlot,
@@ -122,14 +124,15 @@ import {
   loadAuditLogsFromFirestore
 } from './src/server/security';
 import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
-import { isFirestoreConfigured } from './src/server/firestoreClient';
+import { isLocalDemoMode } from './src/server/runtimeMode';
 import { isMasterAdmin } from './src/utils/rbac';
+import { slotMatchesFilters, compareInventory, inventoryRow, INVENTORY_CSV_COLUMNS, heightMetres } from './src/utils/slotFields';
 
 // Initialize PMS Store with 1,080 parking inventory slots
 initDB();
 // With Firestore configured, rotation runs after the remote data is loaded
 // (bootstrapFirestore) — running it now would act on the boot-time seed store.
-if (!isFirestoreConfigured()) rotateKnownDefaultPasswords();
+if (isLocalDemoMode()) rotateKnownDefaultPasswords();
 void loadAuditLogsFromFirestore();
 
 const app = express();
@@ -845,17 +848,18 @@ function activeEntryIndex(logs: { status: string; slotId?: string; siteId?: stri
   return index;
 }
 
-// 002 B1/B2: response-only fields (nothing stored). heightM = the first
-// number in the stored height string ("Standard (2.0m)" -> 2), so cards show
-// "2.0 m". inSince = entry time of the slot's ACTIVE log at the same site
+// 002 B1/B2: response-only fields (nothing stored). heightM = the height in
+// metres read by slotFields.heightMetres ("2.0m" / "Standard (2.0m)" -> 2, so
+// cards show "2.0 m"); absent when the text has no height ("Puzzle 2-Tier").
+// inSince = entry time of the slot's ACTIVE log at the same site
 // (OCCUPIED slots only; absent when none is found, e.g. legacy data).
 function withSlotExtras<T extends { id: string; siteId?: string; status?: string; height?: string }>(
   slot: T,
   inSinceBySlot?: Map<string, string>
 ): T & { heightM?: number; inSince?: string } {
   const out: T & { heightM?: number; inSince?: string } = { ...slot };
-  const m = String(slot.height || '').match(/\d+(?:\.\d+)?/);
-  if (m) out.heightM = parseFloat(m[0]);
+  const metres = heightMetres(slot.height);
+  if (!isNaN(metres)) out.heightM = metres;
   if (slot.status === 'OCCUPIED' && inSinceBySlot) {
     const since = inSinceBySlot.get(`${recordSite(slot)}|${slot.id}`);
     if (since) out.inSince = since;
@@ -1771,6 +1775,40 @@ app.post('/api/v1/admin/migrate-site-data', requireMasterAdmin, requirePermissio
   res.json(result);
 });
 
+// 005 B4: one-time slot field fix (Master only, dry run unless { apply: true }; view-as is refused as a write).
+app.post('/api/v1/admin/migrate-slot-fields', requireMasterAdmin, requirePermission('MASTER_CONFIG', 'canEdit'), async (req, res) => {
+  const apply = req.body && req.body.apply === true;
+  try {
+    const out = await migrateSlotFields(apply);
+    if (apply) {
+      out.sites.forEach((site) => {
+        if (site.slotsChanged === 0) return;
+        logSecurityEvent({
+          action: 'SLOT_FIELDS_MIGRATED',
+          actor: req.user!.email,
+          actorRole: req.user!.roleName,
+          ipAddress: req.ip,
+          targetResource: `slots/${site.siteId}`,
+          status: 'SUCCESS',
+          details: `Slot fields migrated for ${site.slotsChanged} slots: ${JSON.stringify(site.changed)}.`,
+        });
+      });
+      logSecurityEvent({
+        action: 'SLOT_FIELDS_MIGRATED',
+        actor: req.user!.email,
+        actorRole: req.user!.roleName,
+        ipAddress: req.ip,
+        targetResource: 'slots/all-sites',
+        status: 'SUCCESS',
+        details: `Run summary: ${out.slotsChanged} slots changed across ${out.sites.length} sites.`,
+      });
+    }
+    res.json({ success: true, apply, slotsChanged: out.slotsChanged, sites: out.sites, changedSlotIds: apply || out.slotsChanged < 5000 ? out.changedSlotIds : [] });
+  } catch (err) {
+    return res.status(503).json({ success: false, message: 'The migration could not be saved; nothing was changed.' });
+  }
+});
+
 app.post('/api/v1/sites/pricing', requirePermission('MASTER_CONFIG', 'canEdit'), (req, res) => {
   const { siteId, pricing } = req.body;
   if (!siteId || !pricing) {
@@ -1873,7 +1911,27 @@ app.post('/api/v1/slots/save', requirePermission('INVENTORY', 'canEdit'), (req, 
       slotNumber: slotNumber.trim().toUpperCase(),
     };
 
-    const saved = saveOrUpdateSlot(slotData);
+    // 005 B2: validated save. 400 ERR_VALIDATION { field, allowed } for a value outside the lists (changed fields only),
+    // 409 ERR_DUPLICATE_SLOT for a slot number already used at this site. Nothing is saved on either.
+    const result = saveOrUpdateSlot(slotData);
+    if (isSlotSaveFailure(result)) {
+      return res.status(result.status).json({
+        success: false, errorCode: result.errorCode, message: result.message,
+        ...(result.field ? { field: result.field } : {}), ...(result.allowed ? { allowed: result.allowed } : {}),
+      });
+    }
+    const saved = result.slot;
+    logSecurityEvent({
+      action: 'SLOT_SAVED',
+      actor: req.user!.email,
+      actorRole: req.user!.roleName,
+      ipAddress: req.ip,
+      targetResource: `slot/${saved.id}`,
+      status: 'SUCCESS',
+      // slot number and the names of the changed fields only: no values, plates or occupants
+      details: `Slot ${saved.slotNumber} ${result.created ? 'created' : 'updated'}${result.changed.length ? `; changed: ${result.changed.join(', ')}` : ''}.`,
+      siteId: writeSite,
+    });
     res.json({
       success: true,
       message: `Slot ${saved.slotNumber} successfully saved! Status: ${saved.status}`,
@@ -2338,12 +2396,17 @@ app.get('/api/v1/export/reports', requirePermission('ANALYTICS', 'canExport'), (
   });
 
   if (type === 'slots') {
-    let csv = 'SlotNumber,Basement,FloorLocation,PuzzleNumber,SlotType,ParkingType,Height,Allocation,Status,CurrentVehicle\n';
-    siteFilter(store.slots).forEach(s => {
-      csv += [s.slotNumber, s.basement, s.floorLocation, s.puzzleNumber || '', s.slotType, s.parkingType, s.height, s.allocation, s.status, s.currentVehicle || ''].map(csvCell).join(',') + '\n';
-    });
+    // 005 B3 (AC-06): the Inventory table's columns, labels, row filter and order; the table's own filters come as query params.
+    const q = (k: string) => (typeof req.query[k] === 'string' ? (req.query[k] as string) : '');
+    const filters = { basement: q('basement'), status: q('status'), search: q('search') };
+    const rows = siteFilter(store.slots).filter((s) => slotMatchesFilters(s, filters)).sort(compareInventory);
+    let csv = INVENTORY_CSV_COLUMNS.map(csvCell).join(',') + '\n';
+    // a lone "-" (no occupant, as the table shows it) is not a formula: it is the one value the formula guard leaves alone
+    rows.forEach((s) => { csv += inventoryRow(s).map((v) => (v === '-' ? '"-"' : csvCell(v))).join(',') + '\n'; });
+    const siteCode = String(getSites().find((x) => x.id === siteId)?.siteCode || siteId).replace(/[^A-Za-z0-9_-]/g, '');
+    const ist = new Date(Date.now() + 330 * 60 * 1000).toISOString(); // IST wall clock (UTC+05:30, no DST)
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="pms_slots_inventory.csv"');
+    res.setHeader('Content-Disposition', `attachment; filename="inventory_${siteCode}_${ist.slice(0, 10)}_${ist.slice(11, 13)}${ist.slice(14, 16)}.csv"`);
     return res.send(csv);
   }
 

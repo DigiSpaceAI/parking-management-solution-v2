@@ -1,7 +1,12 @@
-import React, { useState, useRef } from 'react';
-import { ParkingSlot, SlotStatus, SlotType, ParkingType, Allocation } from '../types';
+import React, { useState, useRef, useMemo } from 'react';
+import { ParkingSlot, SlotStatus } from '../types';
 import { useWriteGuard } from '../utils/withSite';
 import { SiteCodeChip } from './SiteCodeChip';
+import type { SlotField as SlotFieldName } from '../utils/slotFields';
+import { optionsFor, labelFor, isCode, inventoryRow, slotMatchesFilters, compareInventory, INVENTORY_CSV_COLUMNS } from '../utils/slotFields';
+import { previewSlotCsv, sendableRows, mergeServerRows, sampleCsv, TEMPLATE_HELP, inventoryExportUrl } from '../utils/slotCsv';
+import { getSessionToken } from '../sessionTokenFallback';
+import { emptyNewSlot, selectModel, missingRequired, buildSavePayload, mapSaveError } from '../utils/slotEditor';
 import {
   Cpu,
   Search,
@@ -24,11 +29,38 @@ import {
   Trash2
 } from 'lucide-react';
 
+// 005 F1: one select for every list field. Options, labels and codes come from slotFields (through selectModel).
+const FieldSelect: React.FC<{
+  id: string; label: string; field: SlotFieldName; value: unknown; error?: string; onChange: (code: string) => void;
+}> = ({ id, label, field, value, error, onChange }) => {
+  const model = selectModel(field, value);
+  return (
+    <div>
+      <label htmlFor={id} className="block text-slate-700 font-bold mb-1">{label}</label>
+      <select
+        id={id}
+        value={model.value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
+        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
+      >
+        {model.options.map((o) => (
+          <option key={o.value || 'placeholder'} value={o.value} disabled={o.disabled}>{o.label}</option>
+        ))}
+      </select>
+      {error && <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+    </div>
+  );
+};
+
 interface InventoryMasterProps {
   slots: ParkingSlot[];
   onUpdateSlotStatus: (slotId: string, newStatus: SlotStatus) => void;
   onRefresh: () => void;
   currentSiteId: string;
+  /** ANALYTICS:canExport of the viewer: the export route needs it. Without it the Download CSV button is not shown. */
+  canExport?: boolean;
 }
 
 export const InventoryMaster: React.FC<InventoryMasterProps> = ({
@@ -36,6 +68,7 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   onUpdateSlotStatus,
   onRefresh,
   currentSiteId,
+  canExport = false,
 }) => {
   const guard = useWriteGuard();
   const [activeTab, setActiveTab] = useState<'SLOTS'>('SLOTS');
@@ -50,6 +83,8 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const [editingSlot, setEditingSlot] = useState<Partial<ParkingSlot> | null>(null);
   const [slotFormSaving, setSlotFormSaving] = useState(false);
   const [slotFormError, setSlotFormError] = useState<string | null>(null);
+  // 005 F1: server errors shown next to the field they name (400 ERR_VALIDATION {field}, 409 on the slot number)
+  const [fieldErrors, setFieldErrors] = useState<{ [field: string]: string }>({});
   // 002 F5 (B1): optional slot length (m) and pallet level, typed as text so the server's own
   // validation message comes back for a bad value. Empty = not set.
   const [dimText, setDimText] = useState<{ lengthM: string; palletLevel: string }>({ lengthM: '', palletLevel: '' });
@@ -58,35 +93,25 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   // Bulk Upload Slots Modal State
   const [isSlotBulkModalOpen, setIsSlotBulkModalOpen] = useState(false);
   const [slotBulkCsvText, setSlotBulkCsvText] = useState('');
-  const [parsedBulkSlots, setParsedBulkSlots] = useState<Partial<ParkingSlot>[]>([]);
+  // 005 F2: what the server said for each row (renumbered to the preview's rows); null before an upload
+  const [bulkRows, setBulkRows] = useState<{ row: number; slotNumber: string; result: string; errors: string[] }[] | null>(null);
   const [slotBulkUploading, setSlotBulkUploading] = useState(false);
   const [slotBulkSuccessMsg, setSlotBulkSuccessMsg] = useState<string | null>(null);
   const slotFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Filter slots & sort empty (VACANT) slots first, occupied pushed to last
-  const filteredSlots = slots.filter((s) => {
-    if (basementFilter !== 'ALL' && s.basement !== basementFilter) return false;
-    if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const matchSlot = s.slotNumber.toLowerCase().includes(q);
-      const matchLoc = s.floorLocation.toLowerCase().includes(q);
-      const matchVehicle = s.currentVehicle && s.currentVehicle.toLowerCase().includes(q);
-      if (!matchSlot && !matchLoc && !matchVehicle) return false;
-    }
-    return true;
-  }).sort((a, b) => {
-    const statusOrder: Record<SlotStatus, number> = {
-      VACANT: 0,
-      RESERVED: 1,
-      MAINTENANCE: 2,
-      OCCUPIED: 3,
-    };
-    const orderA = statusOrder[a.status] ?? 4;
-    const orderB = statusOrder[b.status] ?? 4;
-    if (orderA !== orderB) return orderA - orderB;
-    return a.slotNumber.localeCompare(b.slotNumber, undefined, { numeric: true });
-  });
+  // Filter slots & sort empty (VACANT) slots first, occupied pushed to last. The filter and the order are the ones the CSV export uses (slotFields).
+  const tableFilters = { basement: basementFilter, status: statusFilter, search: searchQuery };
+  const filteredSlots = slots.filter((s) => slotMatchesFilters(s, tableFilters)).sort(compareInventory);
+
+  // 005 F2: preview of the pasted / uploaded CSV, against the slots of the site it will go to
+  const siteSlots = useMemo(() => slots.filter((s) => currentSiteId === 'ALL' || s.siteId === currentSiteId), [slots, currentSiteId]);
+  const preview = useMemo(() => previewSlotCsv(slotBulkCsvText, siteSlots), [slotBulkCsvText, siteSlots]);
+  const sendable = sendableRows(preview);
+
+  const handleDownloadCsv = () => {
+    // Same route as Reports; the table's current filters go along, so the file = the rows on screen (all pages).
+    window.open(inventoryExportUrl(currentSiteId, tableFilters, getSessionToken()), '_blank');
+  };
 
   const totalSlotPages = Math.ceil(filteredSlots.length / pageSize) || 1;
   const paginatedSlots = filteredSlots.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -95,19 +120,12 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const handleOpenSlotEditModal = (slot?: ParkingSlot) => {
     setDimText({ lengthM: slot?.lengthM != null ? String(slot.lengthM) : '', palletLevel: slot?.palletLevel != null ? String(slot.palletLevel) : '' });
     setDimErrors({});
+    setFieldErrors({});
     if (slot) {
       setEditingSlot({ ...slot });
     } else {
-      setEditingSlot({
-        slotNumber: `B1-P01-S${Math.floor(Math.random() * 90 + 10)}`,
-        basement: 'B1',
-        floorLocation: 'Level 1 Stacker',
-        slotType: 'SEDAN',
-        height: 'Standard (2.0m)',
-        parkingType: 'PUZZLE',
-        allocation: 'EMPLOYEE',
-        status: 'VACANT',
-      });
+      // AC-14: the Add form starts empty (no made-up number, location, height or type)
+      setEditingSlot(emptyNewSlot() as unknown as Partial<ParkingSlot>);
     }
     setSlotFormError(null);
     setIsSlotEditModalOpen(true);
@@ -151,30 +169,30 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     }
   };
 
+  const isNewSlot = !!editingSlot && !editingSlot.id;
+  const missingFields = editingSlot ? missingRequired(editingSlot, isNewSlot) : [];
+  const setEditorField = (field: string, value: string) => {
+    if (!editingSlot) return;
+    setEditingSlot({ ...editingSlot, [field]: value } as Partial<ParkingSlot>);
+    if (fieldErrors[field]) setFieldErrors({ ...fieldErrors, [field]: '' });
+  };
+
   const handleSaveSlotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingSlot) {
       setSlotFormError('No slot selected.');
       return;
     }
-    const cleanSlotNumber = (editingSlot.slotNumber || editingSlot.id || '').trim().toUpperCase();
-    if (!cleanSlotNumber) {
-      setSlotFormError('Slot Identifier Number is required.');
-      return;
-    }
+    if (missingFields.length > 0) return;
 
     try {
       setSlotFormSaving(true);
       setSlotFormError(null);
-
-      const slotPayload = {
-        ...editingSlot,
-        id: editingSlot.id || cleanSlotNumber.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
-        slotNumber: cleanSlotNumber,
-        lengthM: dimText.lengthM.trim() === '' ? null : dimText.lengthM.trim(),
-        palletLevel: dimText.palletLevel.trim() === '' ? null : dimText.palletLevel.trim(),
-      };
+      setFieldErrors({});
       setDimErrors({});
+
+      // A new slot never carries an id: the server makes it (AC-11).
+      const slotPayload = buildSavePayload(editingSlot, dimText);
 
       const res = await fetch('/api/v1/slots/save', {
         method: 'POST',
@@ -186,14 +204,17 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (data.success) {
         setIsSlotEditModalOpen(false);
         setEditingSlot(null);
         onRefresh();
       } else {
-        if (data.errors && typeof data.errors === 'object') setDimErrors(data.errors);
-        setSlotFormError(data.message || 'Failed to save slot');
+        // Typed values stay in the form; the error is shown next to the field it names.
+        const view = mapSaveError(res.status, data);
+        setFieldErrors(view.fieldErrors);
+        setDimErrors(view.dimErrors);
+        setSlotFormError(view.banner);
       }
     } catch (err: any) {
       setSlotFormError(err.message || 'Error communicating with server');
@@ -202,62 +223,10 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     }
   };
 
-  const parseSlotCSVText = (text: string): Partial<ParkingSlot>[] => {
-    const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-    if (lines.length === 0) return [];
-
-    const startIndex = lines[0].toLowerCase().includes('slot') || lines[0].toLowerCase().includes('basement') ? 1 : 0;
-    const results: Partial<ParkingSlot>[] = [];
-
-    for (let i = startIndex; i < lines.length; i++) {
-      const cols = lines[i].split(',').map((c) => c.trim().replace(/^["']|["']$/g, ''));
-      if (cols.length < 2) continue;
-
-      const slotNum = cols[0] || `B1-P01-S${10 + i}`;
-      const basement = (cols[1] || 'B1') as any;
-      const floorLoc = cols[2] || 'Level 1 Stacker';
-
-      let slotType: SlotType = 'SEDAN';
-      const rawType = (cols[3] || '').toUpperCase();
-      if (rawType.includes('SUV')) slotType = 'SUV';
-      else if (rawType.includes('EV')) slotType = 'EV';
-      else if (rawType.includes('TWO') || rawType.includes('2W')) slotType = 'TWO_WHEELER';
-      else if (rawType.includes('CSUV')) slotType = 'CSUV';
-
-      const height = cols[4] || 'Standard (2.0m)';
-      const parkingType: ParkingType = (cols[5] as ParkingType) || 'PUZZLE';
-      const allocation: Allocation = (cols[6] as Allocation) || 'EMPLOYEE';
-
-      let status: SlotStatus = 'VACANT';
-      const rawStatus = (cols[7] || '').toUpperCase();
-      if (rawStatus.includes('OCCUPIED')) status = 'OCCUPIED';
-      else if (rawStatus.includes('RESERVED')) status = 'RESERVED';
-      else if (rawStatus.includes('MAINT')) status = 'MAINTENANCE';
-
-      // 002 F5: optional 9th/10th columns LengthM, PalletLevel (8-column files are unchanged).
-      const extra: { lengthM?: string; palletLevel?: string } = {};
-      if (cols[8] !== undefined && cols[8] !== '') extra.lengthM = cols[8];
-      if (cols[9] !== undefined && cols[9] !== '') extra.palletLevel = cols[9];
-      results.push({
-        slotNumber: slotNum,
-        basement,
-        floorLocation: floorLoc,
-        slotType,
-        height,
-        parkingType,
-        allocation,
-        status,
-        ...(extra as unknown as Partial<ParkingSlot>),
-      });
-    }
-    return results;
-  };
-
   const handleSlotBulkTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const text = e.target.value;
-    setSlotBulkCsvText(text);
-    const parsed = parseSlotCSVText(text);
-    setParsedBulkSlots(parsed);
+    setSlotBulkCsvText(e.target.value);
+    setBulkRows(null);
+    setSlotBulkSuccessMsg(null);
   };
 
   const handleSlotFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -265,21 +234,16 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      setSlotBulkCsvText(text);
-      const parsed = parseSlotCSVText(text);
-      setParsedBulkSlots(parsed);
+      setSlotBulkCsvText(event.target?.result as string);
+      setBulkRows(null);
+      setSlotBulkSuccessMsg(null);
     };
     reader.readAsText(file);
   };
 
   const handleDownloadSlotSampleCSV = () => {
-    // LengthM (metres, 0–20) and PalletLevel (1–10, puzzle stackers) are optional (002 B1).
-    const csvContent = `SlotNumber,Basement,FloorLocation,SlotType,Height,ParkingType,Allocation,Status,LengthM,PalletLevel
-B1-P01-S1,B1,North Wing Level 1 Stacker,SEDAN,Standard (2.0m),PUZZLE,EMPLOYEE,Vacant,5.0,1
-B1-P01-S2,B1,North Wing Level 2 Stacker,SUV,High Clearance (2.5m),PUZZLE,VIP,Vacant,5.2,2
-B2-EV-001,B2,South Bay EV Charging Station,EV,Standard (2.0m),GROUND,EMPLOYEE,Vacant,5.5,
-B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYEE,Vacant,2.2,`;
+    // Codes come from slotFields. LengthM (metres, 0–20) and PalletLevel (1–10, puzzle stackers) are optional (002 B1).
+    const csvContent = sampleCsv();
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -292,42 +256,40 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
   };
 
   const handleConfirmSlotBulkUpload = async () => {
-    if (parsedBulkSlots.length === 0) return;
+    if (sendable.length === 0) return;
     if (currentSiteId === 'ALL') {
       setSlotBulkSuccessMsg('Select a specific site (top right) before bulk-uploading — "All Sites" is ambiguous for new inventory.');
       return;
     }
     try {
       setSlotBulkUploading(true);
-      setSlotBulkSuccessMsg(`Uploading & processing ${parsedBulkSlots.length} inventory slots...`);
+      setSlotBulkSuccessMsg(`Uploading & processing ${sendable.length} inventory slots...`);
 
+      // Only rows that passed the preview are sent, with codes; a row's own id is never sent (matching is by slot number).
       const res = await fetch('/api/v1/slots/bulk-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slots: parsedBulkSlots.map((s) => ({ ...s, siteId: currentSiteId })) }),
+        body: JSON.stringify({ slots: sendable.map((p) => ({ ...p.slot, siteId: currentSiteId })) }),
       });
-      const data = await res.json();
-
-      // 002 B1: rows with a bad length or pallet level come back as "Row n (SLOT): message".
-      const rowErrors: string[] = Array.isArray(data.errors) ? data.errors : [];
-      const errorNote = rowErrors.length ? ` Not saved: ${rowErrors.slice(0, 5).join(' ')}${rowErrors.length > 5 ? ` (+${rowErrors.length - 5} more)` : ''}` : '';
+      const data = await res.json().catch(() => ({}));
+      const serverRows = Array.isArray(data?.result?.rows) ? data.result.rows : [];
+      const merged = mergeServerRows(preview, serverRows);
+      const failed = merged.filter((r) => r.result === 'error' || r.result === 'pending').length;
+      setBulkRows(serverRows.length ? merged : null);
       if (data.success) {
-        setSlotBulkSuccessMsg((data.message || `Successfully uploaded ${parsedBulkSlots.length} slots.`) + errorNote);
+        setSlotBulkSuccessMsg(data.message || `Uploaded ${sendable.length} slots.`);
       } else {
-        setSlotBulkSuccessMsg(`Upload note: ${data.message || 'Processed'}${errorNote}`);
+        setSlotBulkSuccessMsg(`Upload note: ${data.message || 'Not processed'}`);
       }
 
-      // Keep the dialog open when some rows were refused, so the reasons can be read.
-      if (rowErrors.length) {
-        onRefresh();
-        return;
-      }
+      // Keep the dialog open when some rows were refused or the upload failed, so the reasons can be read.
+      onRefresh();
+      if (!data.success || failed > 0) return;
       setTimeout(() => {
         setIsSlotBulkModalOpen(false);
         setSlotBulkSuccessMsg(null);
         setSlotBulkCsvText('');
-        setParsedBulkSlots([]);
-        onRefresh();
+        setBulkRows(null);
       }, 1800);
     } catch (err: any) {
       console.error('Slot Bulk Upload Error:', err);
@@ -347,21 +309,21 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
         return (
           <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-300 inline-flex items-center space-x-1">
             <Car className="w-3 h-3 text-slate-600" />
-            <span>Occupied</span>
+            <span>{labelFor('status', 'OCCUPIED')}</span>
           </span>
         );
       case 'RESERVED':
         return (
           <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center space-x-1">
             <ShieldAlert className="w-3 h-3 text-amber-600" />
-            <span>Reserved</span>
+            <span>{labelFor('status', 'RESERVED')}</span>
           </span>
         );
       case 'MAINTENANCE':
         return (
           <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-100 text-rose-800 border border-rose-300 inline-flex items-center space-x-1">
             <Wrench className="w-3 h-3 text-rose-600" />
-            <span>Maintenance</span>
+            <span>{labelFor('status', 'MAINTENANCE')}</span>
           </span>
         );
       case 'VACANT':
@@ -369,7 +331,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
         return (
           <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
             <CheckCircle className="w-3 h-3 text-emerald-600" />
-            <span>Vacant</span>
+            <span>{labelFor('status', 'VACANT')}</span>
           </span>
         );
     }
@@ -420,7 +382,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                 {...guard()}
                 onClick={() => {
                   setSlotBulkCsvText('');
-                  setParsedBulkSlots([]);
+                  setBulkRows(null);
                   setSlotBulkSuccessMsg(null);
                   setIsSlotBulkModalOpen(true);
                 }}
@@ -429,6 +391,18 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                 <Upload className="w-4 h-4 text-emerald-400" />
                 <span>Bulk Upload Inventory</span>
               </button>
+
+              {canExport && (
+                <button
+                  onClick={handleDownloadCsv}
+                  disabled={currentSiteId === 'ALL'}
+                  title={currentSiteId === 'ALL' ? 'Select a specific site to download its inventory' : 'Download the rows now shown in the table (current filters, all pages) as CSV'}
+                  className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors flex items-center space-x-1.5 disabled:opacity-40"
+                >
+                  <Download className="w-4 h-4 text-blue-300" />
+                  <span>Download CSV</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -450,12 +424,8 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
               onChange={(e) => setBasementFilter(e.target.value)}
               className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-mono text-xs"
             >
-              <option value="ALL">All Basements</option>
-              <option value="B1">Basement B1</option>
-              <option value="B2">Basement B2</option>
-              <option value="B3">Basement B3</option>
-              <option value="Ground">Ground Floor</option>
-              <option value="Driveway">Driveway</option>
+              <option value="ALL">All Levels</option>
+              {optionsFor('basement').map((o) => <option key={o.code} value={o.code}>{o.label}</option>)}
             </select>
 
             <select
@@ -464,10 +434,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
               className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-mono text-xs"
             >
               <option value="ALL">All Statuses</option>
-              <option value="VACANT">Vacant</option>
-              <option value="OCCUPIED">Occupied</option>
-              <option value="RESERVED">Reserved</option>
-              <option value="MAINTENANCE">Maintenance</option>
+              {optionsFor('status').map((o) => <option key={o.code} value={o.code}>{o.label}</option>)}
             </select>
           </div>
         </div>
@@ -479,48 +446,38 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
             <table className="w-full text-left text-xs text-slate-700">
               <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider text-[10px] border-b border-slate-200">
                 <tr>
-                  <th className="p-3.5">Slot Number</th>
-                  <th className="p-3.5">Level</th>
-                  <th className="p-3.5">Floor Location</th>
-                  <th className="p-3.5">Type & Height</th>
-                  <th className="p-3.5">Parking Mechanism</th>
-                  <th className="p-3.5">Allocation</th>
-                  <th className="p-3.5">Status</th>
-                  <th className="p-3.5">Current Occupant</th>
+                  {INVENTORY_CSV_COLUMNS.map((name) => <th key={name} className="p-3.5">{name}</th>)}
                   <th className="p-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paginatedSlots.map((slot) => (
+                {paginatedSlots.map((slot) => {
+                  // Table = CSV: the cells are inventoryRow (labels; a legacy value reads "<value> (old)")
+                  const cells = inventoryRow(slot);
+                  return (
                   <tr key={slot.id} className="hover:bg-slate-50 transition-colors">
                     <td className="p-3.5 font-mono font-bold text-slate-900">
                       <SiteCodeChip siteId={slot.siteId} />
-                      {slot.slotNumber}
+                      {cells[0]}
                     </td>
-                    <td className="p-3.5 font-medium">{slot.basement}</td>
-                    <td className="p-3.5 text-slate-500 max-w-xs truncate">{slot.floorLocation}</td>
-                    <td className="p-3.5 font-semibold text-blue-600">
-                      {slot.slotType} ({slot.height})
-                    </td>
-                    <td className="p-3.5 text-slate-600 font-medium">
-                      {(() => {
-                        const t = (slot.parkingType || '').toUpperCase();
-                        if (t.includes('PUZZLE')) return 'Puzzle';
-                        if (t.includes('STACK')) return 'Stack';
-                        return 'Ground';
-                      })()}
-                    </td>
-                    <td className="p-3.5 font-medium">{slot.allocation}</td>
-                    <td className="p-3.5">{getSlotStatusBadge(slot.status)}</td>
+                    <td className="p-3.5 font-medium">{cells[1]}</td>
+                    <td className="p-3.5 text-slate-500 max-w-xs truncate" title={cells[2]}>{cells[2]}</td>
+                    <td className="p-3.5 font-semibold text-blue-600">{cells[3]}</td>
+                    <td className="p-3.5 text-slate-700">{cells[4]}</td>
+                    <td className="p-3.5 text-slate-600 font-medium">{cells[5]}</td>
+                    <td className="p-3.5 font-medium">{cells[6]}</td>
+                    <td className="p-3.5">{isCode('status', slot.status) ? getSlotStatusBadge(slot.status) : cells[7]}</td>
                     <td className="p-3.5">
                       {slot.currentVehicle ? (
                         <span className="font-mono font-bold bg-slate-900 text-white px-2 py-0.5 rounded shadow-sm text-[11px]">
-                          {slot.currentVehicle}
+                          {cells[8]}
                         </span>
                       ) : (
-                        <span className="text-slate-400 font-mono">-</span>
+                        <span className="text-slate-400 font-mono">{cells[8]}</span>
                       )}
                     </td>
+                    <td className="p-3.5">{cells[9]}</td>
+                    <td className="p-3.5">{cells[10]}</td>
                     <td className="p-3.5 text-right space-x-1">
 
                       <button
@@ -560,7 +517,8 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -621,105 +579,51 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
             <form onSubmit={handleSaveSlotSubmit} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1">Slot Identifier Number *</label>
+                  <label htmlFor="slot-number" className="block text-slate-700 font-bold mb-1">Slot Identifier Number *</label>
                   <input
+                    id="slot-number"
                     type="text"
-                    required
                     placeholder="e.g. B1-P01-S01"
                     value={editingSlot.slotNumber || ''}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, slotNumber: e.target.value.toUpperCase() })}
+                    onChange={(e) => setEditorField('slotNumber', e.target.value.toUpperCase())}
+                    aria-invalid={fieldErrors.slotNumber ? true : undefined}
+                    aria-describedby={fieldErrors.slotNumber ? 'slot-number-error' : undefined}
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
                   />
+                  {fieldErrors.slotNumber && <p id="slot-number-error" role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.slotNumber}</p>}
                 </div>
 
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Basement / Level *</label>
-                  <select
-                    value={editingSlot.basement || 'B1'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, basement: e.target.value as any })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-mono"
-                  >
-                    <option value="B1">Basement B1</option>
-                    <option value="B2">Basement B2</option>
-                    <option value="B3">Basement B3</option>
-                    <option value="Ground">Ground Floor</option>
-                    <option value="Driveway">Driveway</option>
-                  </select>
-                </div>
+                <FieldSelect id="slot-basement" label="Basement / Level *" field="basement" value={editingSlot.basement}
+                  error={fieldErrors.basement} onChange={(v) => setEditorField('basement', v)} />
               </div>
 
               <div>
-                <label className="block text-slate-700 font-bold mb-1">Floor Location Description</label>
+                <label htmlFor="slot-floor" className="block text-slate-700 font-bold mb-1">Floor Location Description *</label>
                 <input
+                  id="slot-floor"
                   type="text"
                   placeholder="e.g. North Wing Level 1 Stacker"
                   value={editingSlot.floorLocation || ''}
-                  onChange={(e) => setEditingSlot({ ...editingSlot, floorLocation: e.target.value })}
+                  onChange={(e) => setEditorField('floorLocation', e.target.value)}
+                  aria-invalid={fieldErrors.floorLocation ? true : undefined}
+                  aria-describedby={fieldErrors.floorLocation ? 'slot-floor-error' : undefined}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
                 />
+                {fieldErrors.floorLocation && <p id="slot-floor-error" role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.floorLocation}</p>}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Bound Vehicle Type</label>
-                  <select
-                    value={editingSlot.slotType || 'SEDAN'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, slotType: e.target.value as SlotType })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-mono"
-                  >
-                    <option value="SEDAN">Sedan</option>
-                    <option value="SUV">SUV (High Clearance)</option>
-                    <option value="EV">EV Charging Bay</option>
-                    <option value="TWO_WHEELER">Two Wheeler</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Clearance Height</label>
-                  <select
-                    value={editingSlot.height || 'Standard (2.0m)'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, height: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
-                  >
-                    <option value="Standard (2.0m)">Standard (2.0m)</option>
-                    <option value="High Clearance (2.5m)">High Clearance (2.5m)</option>
-                    <option value="Compact (1.8m)">Compact (1.8m)</option>
-                  </select>
-                </div>
+                <FieldSelect id="slot-type" label="Bound Vehicle Type *" field="slotType" value={editingSlot.slotType}
+                  error={fieldErrors.slotType} onChange={(v) => setEditorField('slotType', v)} />
+                <FieldSelect id="slot-height" label="Clearance Height *" field="height" value={editingSlot.height}
+                  error={fieldErrors.height} onChange={(v) => setEditorField('height', v)} />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Parking Type</label>
-                  <select
-                    value={(() => {
-                      const t = (editingSlot.parkingType || '').toUpperCase();
-                      if (t.includes('PUZZLE')) return 'PUZZLE';
-                      if (t.includes('STACK')) return 'STACK';
-                      return 'GROUND';
-                    })()}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, parkingType: e.target.value as any })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 font-medium"
-                  >
-                    <option value="GROUND">Ground</option>
-                    <option value="PUZZLE">Puzzle</option>
-                    <option value="STACK">Stack</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">Allocation Rule</label>
-                  <select
-                    value={editingSlot.allocation || 'General Employee'}
-                    onChange={(e) => setEditingSlot({ ...editingSlot, allocation: e.target.value as any })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600"
-                  >
-                    <option value="General Employee">General Employee</option>
-                    <option value="Executive & VIP">Executive & VIP</option>
-                    <option value="Visitor / Guest">Visitor / Guest</option>
-                    <option value="EV Charging Only">EV Charging Only</option>
-                  </select>
-                </div>
+                <FieldSelect id="slot-parking" label="Parking Type *" field="parkingType" value={editingSlot.parkingType}
+                  error={fieldErrors.parkingType} onChange={(v) => setEditorField('parkingType', v)} />
+                <FieldSelect id="slot-allocation" label="Allocation Rule *" field="allocation" value={editingSlot.allocation}
+                  error={fieldErrors.allocation} onChange={(v) => setEditorField('allocation', v)} />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -757,19 +661,12 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-700 font-bold mb-1">Slot Operational Status *</label>
-                <select
-                  value={editingSlot.status || 'VACANT'}
-                  onChange={(e) => setEditingSlot({ ...editingSlot, status: e.target.value as SlotStatus })}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 font-mono font-bold focus:outline-none focus:border-blue-600"
-                >
-                  <option value="VACANT">VACANT (Available)</option>
-                  <option value="OCCUPIED">OCCUPIED</option>
-                  <option value="RESERVED">RESERVED</option>
-                  <option value="MAINTENANCE">MAINTENANCE</option>
-                </select>
-              </div>
+              <FieldSelect id="slot-status" label="Slot Operational Status" field="status" value={editingSlot.status}
+                error={fieldErrors.status} onChange={(v) => setEditorField('status', v)} />
+
+              {missingFields.length > 0 && (
+                <p className="text-slate-600">Fill every field marked * to save the new slot.</p>
+              )}
 
               <div className="pt-3 border-t border-slate-200 flex items-center justify-end space-x-3">
                 <button
@@ -781,7 +678,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                 </button>
                 <button
                   type="submit"
-                  disabled={slotFormSaving}
+                  disabled={slotFormSaving || missingFields.length > 0}
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center space-x-2 disabled:opacity-50"
                 >
                   {slotFormSaving && <RefreshCw className="w-4 h-4 animate-spin" />}
@@ -821,7 +718,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
               <div className="flex items-center justify-between p-3 bg-blue-50/80 border border-blue-200 rounded-2xl">
                 <div>
                   <span className="font-bold text-blue-900 block">Download Template Sample CSV:</span>
-                  <span className="text-[11px] text-blue-700">Format: SlotNumber, Basement, Location, Type, Height, Mechanism, Allocation, Status, LengthM (optional), PalletLevel (optional)</span>
+                  <span className="text-[11px] text-blue-700">Columns: {TEMPLATE_HELP}. Codes or labels, any case. A downloaded inventory file imports back as it is.</span>
                 </div>
                 <button
                   onClick={handleDownloadSlotSampleCSV}
@@ -849,38 +746,55 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                   rows={4}
                   value={slotBulkCsvText}
                   onChange={handleSlotBulkTextChange}
-                  placeholder="Paste CSV lines here... (e.g. B1-P01-S01, B1, North Wing Stacker, SEDAN, Standard (2.0m), Puzzle 2-Tier, General Employee, Vacant)"
+                  placeholder={`Paste CSV lines here... (e.g. ${sampleCsv().split('\n')[1]})`}
                   className="w-full bg-slate-950 text-emerald-400 font-mono text-[11px] p-3 rounded-2xl border border-slate-800 focus:outline-none focus:border-emerald-500 placeholder-slate-600"
                 />
               </div>
 
-              {parsedBulkSlots.length > 0 && (
+              {preview.length > 0 && (
                 <div className="space-y-2">
                   <span className="font-bold text-slate-900 text-xs flex items-center space-x-1.5">
                     <Sparkles className="w-4 h-4 text-amber-500" />
-                    <span>Parsed {parsedBulkSlots.length} Slots Ready to Import:</span>
+                    <span>
+                      {bulkRows ? 'Result of the upload:' : `${sendable.length} of ${preview.length} rows ready to import${preview.length - sendable.length ? ` · ${preview.length - sendable.length} will be skipped` : ''}:`}
+                    </span>
                   </span>
                   <div className="max-h-52 overflow-y-auto border border-slate-200 rounded-2xl overflow-hidden">
                     <table className="w-full text-left text-[11px] text-slate-700">
                       <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[9px] sticky top-0">
                         <tr>
+                          <th className="p-2">Row</th>
                           <th className="p-2">Slot Number</th>
                           <th className="p-2">Level</th>
-                          <th className="p-2">Type</th>
+                          <th className="p-2">Vehicle type</th>
                           <th className="p-2">Height</th>
-                          <th className="p-2">Status</th>
+                          <th className="p-2">Result</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 bg-white">
-                        {parsedBulkSlots.map((s, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="p-2 font-mono font-bold text-slate-900">{s.slotNumber}</td>
-                            <td className="p-2 font-medium">{s.basement}</td>
-                            <td className="p-2 font-mono text-blue-600">{s.slotType}</td>
-                            <td className="p-2 text-slate-600">{s.height}</td>
-                            <td className="p-2">{getSlotStatusBadge(s.status as any)}</td>
-                          </tr>
-                        ))}
+                        {preview.map((p) => {
+                          const done = bulkRows ? bulkRows[p.row - 1] : null;
+                          const result = done ? done.result : p.action;
+                          const problems = done ? done.errors : p.errors;
+                          return (
+                            <tr key={p.row} className="hover:bg-slate-50 align-top">
+                              <td className="p-2 font-mono text-slate-500">{p.row}</td>
+                              <td className="p-2 font-mono font-bold text-slate-900">{p.slotNumber || '-'}</td>
+                              <td className="p-2 font-medium">{p.slot ? labelFor('basement', p.slot.basement) : ''}</td>
+                              <td className="p-2 font-mono text-blue-600">{p.slot ? labelFor('slotType', p.slot.slotType) : ''}</td>
+                              <td className="p-2 text-slate-600">{p.slot ? labelFor('height', p.slot.height) : ''}</td>
+                              <td className="p-2">
+                                {result === 'error' ? (
+                                  <span className="text-red-700 font-semibold">{problems.map((m, i) => <span key={i} className="block">{m}</span>)}</span>
+                                ) : (
+                                  <span className={result === 'add' || result === 'added' ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
+                                    {result === 'add' ? 'New slot' : result === 'update' ? 'Updates existing slot' : result === 'added' ? 'Added' : result === 'updated' ? 'Updated' : 'Not sent'}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -888,7 +802,7 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
               )}
 
               <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
-                <span className="text-slate-500 font-mono text-[11px]">{parsedBulkSlots.length} rows parsed</span>
+                <span className="text-slate-500 font-mono text-[11px]">{preview.length} rows parsed</span>
                 <div className="flex items-center space-x-3">
                   <button
                     onClick={() => setIsSlotBulkModalOpen(false)}
@@ -899,11 +813,11 @@ B3-2W-101,B3,East Bay Two Wheeler Rack,TWO_WHEELER,Compact (1.8m),GROUND,EMPLOYE
                   <button
                     {...guard()}
                     onClick={handleConfirmSlotBulkUpload}
-                    disabled={slotBulkUploading || parsedBulkSlots.length === 0 || !!guard().disabled}
+                    disabled={slotBulkUploading || sendable.length === 0 || !!bulkRows || !!guard().disabled}
                     className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center space-x-2 disabled:opacity-40"
                   >
                     {slotBulkUploading && <RefreshCw className="w-4 h-4 animate-spin" />}
-                    <span>Confirm & Save All ({parsedBulkSlots.length})</span>
+                    <span>Confirm & Save ({sendable.length})</span>
                   </button>
                 </div>
               </div>

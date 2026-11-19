@@ -1,0 +1,20 @@
+# Never upload these to Cloud Build / Cloud Run (005 AC-21). gcloud uses this file INSTEAD of .gitignore.
+.git/
+.gitignore
+.gcloudignore
+node_modules/
+node_modules*/
+data/
+.env*
+!.env.example
+*.bundle
+*.tar.gz
+*.log
+coverage/
+dist/
+dist-mobile/
+dist-marketing/
+build/
+docs/
+tests/
+pf-*/

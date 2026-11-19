@@ -1,7 +1,12 @@
 export type VehicleType = 'SEDAN' | 'SUV' | 'CSUV' | 'HATCHBACK' | 'TWO_WHEELER' | 'EV';
-export type SlotType = 'SEDAN' | 'SUV' | 'CSUV' | 'TWO_WHEELER' | 'EV';
+// 005: ParkingSlot.slotType / allocation / height may still hold legacy text until the migration runs; read them through
+// labelFor() in src/utils/slotFields.ts.
+export type SlotType = 'SEDAN' | 'SUV' | 'CSUV' | 'HATCHBACK' | 'TWO_WHEELER' | 'EV';
 export type ParkingType = 'PUZZLE' | 'STACK' | 'GROUND';
-export type Allocation = 'EMPLOYEE' | 'TRANSPORT' | 'VISITOR' | 'VIP' | 'HANDICAP' | 'NOT_AVAILABLE';
+export type Allocation = 'EMPLOYEE' | 'TRANSPORT' | 'VISITOR' | 'CAR_POOLING' | 'VIP' | 'HANDICAP'
+  | 'NOT_AVAILABLE'; // NOT_AVAILABLE is legacy: kept in old data, not offered (O-5)
+// 005: the five height codes. ParkingSlot.height stays `string` (old values stay readable).
+export type HeightCode = '1.8m' | '2.0m' | '2.2m' | '2.5m' | '3.0m';
 export type SlotStatus = 'VACANT' | 'OCCUPIED' | 'RESERVED' | 'MAINTENANCE';
 export type EntryType = 'MANUAL' | 'ANPR_AUTO';
 export type LogStatus = 'ACTIVE' | 'COMPLETED' | 'EXCEPTION';
@@ -351,7 +356,9 @@ export type ApiErrorCode =
   | 'ERR_SESSION_EXPIRED'
   | 'ERR_ACCOUNT_INACTIVE'
   | 'ERR_STARTING'
-  | 'ERR_PERSIST_FAILED';
+  | 'ERR_PERSIST_FAILED'
+  | 'ERR_VALIDATION'
+  | 'ERR_DUPLICATE_SLOT';
 
 export interface SecurityComplianceSummary {
   encryptionAtRest: boolean;

@@ -4,6 +4,7 @@ import { Card, ErrorState, LevelButtons, PageHeader, Select, Skeleton, Segmented
 import { formatNumber } from '../../utils/format';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
+import { optionsFor } from '../../utils/slotFields';
 import { compareSlots, isPuzzle, puzzleIdOf, slotInLevel, type LevelId, type LiveSlot } from '../../utils/slots';
 import { SlotsView, type Layout } from './SlotsView';
 import { PuzzleView, type PuzzleModule } from './PuzzleView';
@@ -36,21 +37,9 @@ function saveLayout(l: Layout) {
   }
 }
 
-const STATUS_OPTIONS = [
-  { value: 'ALL', label: 'All statuses' },
-  { value: 'VACANT', label: 'Vacant only' },
-  { value: 'OCCUPIED', label: 'Occupied only' },
-  { value: 'RESERVED', label: 'Reserved' },
-  { value: 'MAINTENANCE', label: 'Maintenance' },
-];
-const TYPE_OPTIONS = [
-  { value: 'ALL', label: 'All slot types' },
-  { value: 'EV', label: 'EV charging bay' },
-  { value: 'SUV', label: 'SUV' },
-  { value: 'CSUV', label: 'Compact SUV' },
-  { value: 'SEDAN', label: 'Sedan' },
-  { value: 'TWO_WHEELER', label: 'Two-wheeler bay' },
-];
+// 005 F3: the lists come from slotFields (one list of values for the whole app)
+const STATUS_OPTIONS = [{ value: 'ALL', label: 'All statuses' }, ...optionsFor('status').map((o) => ({ value: o.code, label: o.label }))];
+const TYPE_OPTIONS = [{ value: 'ALL', label: 'All slot types' }, ...optionsFor('slotType').map((o) => ({ value: o.code, label: o.label }))];
 
 export interface LiveParkingProps {
   /** The chosen site or 'ALL' (read-only list with a site tag on each slot). */
@@ -137,9 +126,10 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
   const levels = summary
     ? [
         { id: 'ALL', label: 'All parking', free: slots.filter((s) => s.status === 'VACANT').length, total: summary.total },
-        { id: 'B1', label: 'Basement B1', ...summary.b1 },
-        { id: 'B2', label: 'Basement B2', ...summary.b2 },
-        { id: 'B3', label: 'Basement B3', ...summary.b3 },
+        // 005 F4b: the basement levels and their labels come from slotFields (optionsFor('basement')), not a second list here
+        ...optionsFor('basement')
+          .filter((o) => /^B[0-9]$/.test(o.code) && !!summary[o.code.toLowerCase() as 'b1' | 'b2' | 'b3'])
+          .map((o) => ({ id: o.code, label: o.label, ...summary[o.code.toLowerCase() as 'b1' | 'b2' | 'b3'] })),
         { id: 'Ground', label: 'Ground / driveway', ...summary.ground },
       ].filter((l) => l.id === 'ALL' || l.total > 0)
     : [];

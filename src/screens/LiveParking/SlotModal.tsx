@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { CircleCheck, LogOut, Wrench, Clock } from 'lucide-react';
 import type { SlotStatus, VehicleType } from '../../types';
 import { Button, Modal, PlateText, Select, SiteTag, SlotCode, StatusChip, TextField, formatMetres } from '../../design-system/components';
-import { enumLabel, formatSince } from '../../utils/format';
+import { formatSince } from '../../utils/format';
+import { optionsFor, labelFor } from '../../utils/slotFields';
 import { decodeSlot, heightOf, type LiveSlot } from '../../utils/slots';
 
 export interface SlotModalProps {
@@ -15,14 +16,8 @@ export interface SlotModalProps {
   onStatus: (slot: LiveSlot, status: SlotStatus) => void;
 }
 
-const VEHICLE_TYPES: { value: VehicleType; label: string }[] = [
-  { value: 'SEDAN', label: 'Sedan' },
-  { value: 'HATCHBACK', label: 'Hatchback' },
-  { value: 'SUV', label: 'SUV' },
-  { value: 'CSUV', label: 'Compact SUV' },
-  { value: 'EV', label: 'EV' },
-  { value: 'TWO_WHEELER', label: 'Two-wheeler' },
-];
+// 005 F3: the vehicle types are the slot types of slotFields
+const VEHICLE_TYPES = optionsFor('slotType').map((o) => ({ value: o.code as VehicleType, label: o.label }));
 
 const PLATE_RE = /^[A-Z0-9]{4,10}$/;
 
@@ -89,15 +84,15 @@ export const SlotModal: React.FC<SlotModalProps> = ({ slot, siteCode, busy, onCl
         <p className="pf-modal-sub">{[decodeSlot(slot), slot.floorLocation].filter(Boolean).join(' · ')}</p>
         <dl className="pf-dl pf-dl--boxed">
           <dt>Slot type</dt>
-          <dd>{enumLabel(slot.slotType)}</dd>
+          <dd>{labelFor('slotType', slot.slotType) || '—'}</dd>
           <dt>Size (H × L)</dt>
           <dd>
             {formatMetres(heightOf(slot))} × {formatMetres(slot.lengthM)}
           </dd>
           <dt>Parking type</dt>
-          <dd>{enumLabel(slot.parkingType)}</dd>
+          <dd>{labelFor('parkingType', slot.parkingType) || '—'}</dd>
           <dt>Allocation</dt>
-          <dd>{enumLabel(slot.allocation)}</dd>
+          <dd>{labelFor('allocation', slot.allocation) || '—'}</dd>
           <dt>ANPR camera</dt>
           <dd>{slot.cameraNumber || '—'}</dd>
           {slot.parkingType !== 'GROUND' && (

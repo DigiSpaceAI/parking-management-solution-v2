@@ -155,7 +155,9 @@ test('T-4 [D4, AC-03] every admin write is stored by its own targeted save, with
   } finally { fx.stop(); }
 });
 
-test('T-5 [D4, AC-06] the full sync writes each collection on its own; one failing collection no longer stops the rest', async () => {
+// 005 D-9: an empty database is no longer full-synced (it gets the bootstrap Master only), so this test lost its trigger.
+// The same check now runs in 005-no-automatic-data.test.mjs ('006 T-5 moved') with an explicit full sync on a seeded store.
+test('T-5 [D4, AC-06] the full sync writes each collection on its own; one failing collection no longer stops the rest', { skip: 'moved to 005-no-automatic-data.test.mjs (005 D-9)' }, async () => {
   const fx = await persistentServer({ FAKE_FAIL_COMMITS: 'appRoles:1' });
   try {
     await sleep(SETTLE);

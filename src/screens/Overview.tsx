@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { OverviewToday } from '../types';
+import type { OverviewToday, OverviewZone } from '../types';
 import {
   BarChart, Card, EmptyState, ErrorState, KpiCard, OccupancyBar, PageHeader, PlateText, Skeleton, SlotCode, StatusChip, Table,
   type Column,
@@ -8,6 +8,8 @@ import { formatDayDate, formatNumber, formatTime, istHour } from '../utils/forma
 import { useAutoRefresh } from '../utils/useAutoRefresh';
 import { hrefFor, type RouteId } from '../routes';
 import { VehicleGroupSwitch, useVehicleGroup, type GroupCounts } from '../components/VehicleGroupSwitch';
+import { requestZonesView } from '../utils/groupState';
+import { emptyGroupCopy, freshOverview, groupHasNoSlots, overviewUrl, showsGroupOnlyTiles, zoneLabel } from '../utils/overviewGroup';
 
 export interface OverviewProps {
   /** One site (never 'ALL': /overview refuses it). */
@@ -31,6 +33,48 @@ function hourWindow(byHour: number[], nowHour: number): number[] {
 }
 
 /**
+ * 008 F5: the Zones block of the 2-wheeler Overview, one row per level + zone: "B1 · Zone Z1  12 free / 40" with a thin bar.
+ * With `href` a row opens Live parking, 2-wheeler, Zones (the group is already 2-wheeler; `onOpen` asks for the Zones view).
+ */
+export const ZonesBlock: React.FC<{ zones: OverviewZone[]; href?: string; onOpen?: () => void; inventoryHref?: string }> = ({ zones, href, onOpen, inventoryHref }) => {
+  const unsetOnly = zones.length > 0 && zones.every((z) => z.zone === null);
+  return (
+    <Card
+      title="Zones"
+      actions={href ? <a className="pf-link" href={href} onClick={onOpen}>View zones</a> : undefined}
+    >
+      {unsetOnly && (
+        <p className="pf-card-note">
+          Zones are not set for these slots. {inventoryHref ? <a className="pf-link pf-link--inline" href={inventoryHref}>Set a zone in Inventory.</a> : 'Set a zone in Inventory.'}
+        </p>
+      )}
+      <ul className="pf-levels pf-zones">
+        {zones.map((z) => {
+          const notFree = z.total - z.free;
+          const pctUsed = z.total > 0 ? Math.max(0, Math.min(100, (notFree / z.total) * 100)) : 0;
+          const name = zoneLabel(z);
+          return (
+            <li key={z.id}>
+              {href ? (
+                <a className="pf-levels-name pf-zone-link" href={href} onClick={onOpen}>{name}</a>
+              ) : (
+                <span className="pf-levels-name">{name}</span>
+              )}
+              <div className="pf-occ">
+                <div className="pf-occ-track" role="meter" aria-valuemin={0} aria-valuemax={z.total} aria-valuenow={notFree} aria-valuetext={`${formatNumber(z.free)} free of ${formatNumber(z.total)}`} aria-label={`${name}, not free`}>
+                  <span className="pf-occ-fill" style={{ '--pf-occ': `${pctUsed}%` } as React.CSSProperties} />
+                </div>
+                <span className="pf-occ-label">{formatNumber(z.free)} free / {formatNumber(z.total)}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+};
+
+/**
  * Site Admin Overview (002 F4, UX S2): today at the chosen site from one call,
  * GET /api/v1/overview (B3). Every figure comes from that response (AC-04); with
  * no data a KPI shows "—" and a reason (AC-05). Refreshes every 15 s (AC-11).
@@ -40,17 +84,19 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
   const { group, setGroup } = useVehicleGroup();
   const refresh = useAutoRefresh(
     async (isCurrent) => {
-      const res = await fetch('/api/v1/overview');
+      const res = await fetch(overviewUrl(group));
       if (!res.ok) return false;
       const body = (await res.json()) as OverviewToday;
       if (!isCurrent()) return false;
       setData(body);
       return true;
     },
-    [siteId]
+    [siteId, group]
   );
-  const loading = refresh.loading && !data;
-  const failed = refresh.error && !data;
+  // 008: numbers of another group or site are never shown while the right ones load
+  const d = freshOverview(data, siteId, group);
+  const loading = refresh.loading && !d;
+  const failed = refresh.error && !d;
   const today = formatDayDate(data?.asOf ?? Date.now());
   const link = (id: RouteId) => (canOpen(id) ? hrefFor(id) : undefined);
 
@@ -69,7 +115,7 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
     />
   );
 
-  const groupCounts: GroupCounts | null = data?.groups ? { '4W': data.groups['4W'], '2W': data.groups['2W'] } : null;
+  const groupCounts: GroupCounts | null = data?.groups && data.siteId === siteId ? { '4W': data.groups['4W'], '2W': data.groups['2W'] } : null;
   const switcher = <VehicleGroupSwitch counts={groupCounts} loading={loading} group={group} onChange={setGroup} />;
 
   if (failed) {
@@ -82,7 +128,19 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
     );
   }
 
-  const d = data;
+  if (d && groupHasNoSlots(d, group)) {
+    const copy = emptyGroupCopy(group);
+    return (
+      <>
+        {header}
+        {switcher}
+        <Card>
+          <EmptyState title={copy.title} text={copy.text} actions={canOpen('inventory') ? <a className="pf-btn" href={hrefFor('inventory')}>Open Inventory</a> : undefined} />
+        </Card>
+      </>
+    );
+  }
+
   const noHistory = !!d && !d.hasHistory;
   const noSlots = !!d && d.total === 0;
 
@@ -105,21 +163,21 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
         emptyReason="No vehicles logged yet"
         meta={d ? `since 00:00 · ${plural(d.exitsToday, 'exit', 'exits')}` : undefined}
       />
-      <KpiCard
+      {showsGroupOnlyTiles(group) && <KpiCard
         label="Pending pass requests"
         loading={loading}
         href={link('employees')}
         value={d ? formatNumber(d.pendingRequests) : undefined}
         meta={d ? (d.oldestPendingDays !== null && d.pendingRequests > 0 ? (d.oldestPendingDays < 1 ? 'oldest waiting under a day' : `oldest waiting ${plural(d.oldestPendingDays, 'day', 'days')}`) : 'none waiting') : undefined}
-      />
-      <KpiCard
+      />}
+      {showsGroupOnlyTiles(group) && <KpiCard
         label="Open alerts"
         loading={loading}
         href={link('alerts')}
         value={d && !noHistory ? formatNumber(d.nonParkedAlerts) : undefined}
         emptyReason="No vehicles logged yet"
         meta={d ? `${plural(d.parkedOver12h, 'vehicle', 'vehicles')} parked over 12 hours` : undefined}
-      />
+      />}
     </div>
   );
 
@@ -266,7 +324,12 @@ export const Overview: React.FC<OverviewProps> = ({ siteId, canOpen }) => {
       {switcher}
       {kpis}
       <div className="pf-cards-2">
-        {levels}
+        <div className="pf-stack">
+          {levels}
+          {group === '2W' && d && !loading && (d.zones?.length ?? 0) > 0 && (
+            <ZonesBlock zones={d.zones!} href={link('live-parking')} onOpen={requestZonesView} inventoryHref={link('inventory')} />
+          )}
+        </div>
         {attentionCard}
       </div>
       <div className="pf-cards-2">

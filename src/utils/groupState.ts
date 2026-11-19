@@ -16,3 +16,9 @@ export const otherGroup = (g: VehicleGroup): VehicleGroup => (g === '2W' ? '4W' 
 export const groupSummary = (g: VehicleGroup, c: { occupied: number; total: number }): string => `${groupName(g)}: ${formatNumber(c.occupied)} / ${formatNumber(c.total)} occupied`;
 /** Screen reader text on a switch (UX): "Showing 2-wheeler, 413 slots". */
 export const groupAnnouncement = (g: VehicleGroup, total: number): string => `Showing ${groupName(g)}, ${formatNumber(total)} slots`;
+
+// 008 F5: an Overview Zones row opens Live parking on the 2-wheeler Zones view. A one-shot request kept in memory.
+let zonesViewRequested = false;
+export const requestZonesView = (): void => { zonesViewRequested = true; };
+/** True once after requestZonesView(); Live parking calls it when it opens. */
+export const takeZonesViewRequest = (): boolean => { const r = zonesViewRequested; zonesViewRequested = false; return r; };

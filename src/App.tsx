@@ -633,7 +633,7 @@ export default function App() {
           ? wrap(<EmptyState title="Choose one site to see its overview" text="The overview covers one site at a time. Pick a site from the switcher in the top bar." />)
           : <Overview siteId={siteId} canOpen={(id) => canOpenRoute(viewer, currentRole, routeById(id))} />;
       case 'live-parking':
-        return <LiveParking siteId={siteId} onChanged={() => void lists.refresh()} />;
+        return <LiveParking siteId={siteId} onChanged={() => void lists.refresh()} canOpen={(id) => canOpenRoute(viewer, currentRole, routeById(id))} />;
       case 'logs':
         return wrap(
           listsPending ? <PageSkeleton /> : <ParkingLogs logs={logs} onRefresh={refreshAll} />,

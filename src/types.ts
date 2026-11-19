@@ -2,6 +2,8 @@ export type VehicleType = 'SEDAN' | 'SUV' | 'CSUV' | 'HATCHBACK' | 'TWO_WHEELER'
 // 005: ParkingSlot.slotType / allocation / height may still hold legacy text until the migration runs; read them through
 // labelFor() in src/utils/slotFields.ts.
 export type SlotType = 'SEDAN' | 'SUV' | 'CSUV' | 'HATCHBACK' | 'TWO_WHEELER' | 'EV';
+// 008: the two views. 2W = Two-wheeler slots; 4W = every other type (a missing or old type is 4W).
+export type VehicleGroup = '4W' | '2W';
 export type ParkingType = 'PUZZLE' | 'STACK' | 'GROUND';
 export type Allocation = 'EMPLOYEE' | 'TRANSPORT' | 'VISITOR' | 'CAR_POOLING' | 'VIP' | 'HANDICAP'
   | 'NOT_AVAILABLE'; // NOT_AVAILABLE is legacy: kept in old data, not offered (O-5)
@@ -372,6 +374,10 @@ export interface SecurityComplianceSummary {
 }
 
 // 002 B3: GET /api/v1/overview (one site, "today" = IST calendar day).
+// 008: one 2W pallet (a zone under a level) in the Overview response. zone null = the Unzoned pallet.
+export interface OverviewZone { level: string; zone: string | null; id: string; free: number; total: number }
+export interface OverviewGroupCounts { occupied: number; free: number; total: number }
+
 export interface OverviewToday {
   siteId: string;
   asOf: string;
@@ -389,6 +395,11 @@ export interface OverviewToday {
   nonParkedAlerts: number;
   latest: { vehicleNumber: string; slotNumber: string; entryTime: string; exitTime: string | null; status: string }[];
   hasHistory: boolean; // false = the site has never logged a vehicle (UI shows "—" + reason)
+  // 008 (optional, additive): `group` is echoed only when ?group= was sent; `groups` is always present;
+  // `zones` only for group=2W. With `group`, the fields above are for that group (see getSiteOverview).
+  group?: VehicleGroup;
+  groups?: Record<VehicleGroup, OverviewGroupCounts>;
+  zones?: OverviewZone[];
 }
 
 // 002 B4: GET /api/v1/sites/summary (Master Admin only), one row per site.

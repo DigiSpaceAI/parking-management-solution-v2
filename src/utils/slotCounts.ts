@@ -4,7 +4,7 @@
 // passes isFree (003b passes "Vacant and its level isn't closed").
 import type { ParkingSlot, SlotType } from '../types';
 
-export const SUMMARY_TYPES: SlotType[] = ['SEDAN', 'SUV', 'CSUV', 'TWO_WHEELER', 'EV'];
+export const SUMMARY_TYPES: SlotType[] = ['SEDAN', 'SUV', 'CSUV', 'HATCHBACK', 'TWO_WHEELER', 'EV'];
 export const LEVEL_ORDER: ParkingSlot['basement'][] = ['B1', 'B2', 'B3', 'Ground', 'Driveway'];
 
 export type SlotLike = Pick<ParkingSlot, 'status' | 'slotType' | 'basement'>;

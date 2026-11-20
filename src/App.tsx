@@ -670,7 +670,7 @@ export default function App() {
       case 'inventory':
         return wrap(
           listsPending ? <PageSkeleton /> : (
-            <InventoryMaster slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onRefresh={refreshAll} currentSiteId={siteId} />
+            <InventoryMaster slots={slots} onUpdateSlotStatus={handleUpdateSlotStatus} onRefresh={refreshAll} currentSiteId={siteId} canExport={getModuleRights(viewer, currentRole, 'ANALYTICS').canExport} />
           ),
           { updatedAt: lists.updatedAt }
         );

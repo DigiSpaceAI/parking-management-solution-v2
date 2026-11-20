@@ -127,13 +127,16 @@ test('B1 options list the levels, derived areas and slots of the chosen site onl
 
 test('B1 AC-19: roles stored before 003 (no DISPLAYS entry) take the default for their role id', async () => {
   const fx = await seededServer((d) => {
-    for (const r of d.appRoles || []) if (r.modulePermissions) delete r.modulePermissions.DISPLAYS;
+    // 005: the live boot store keeps no roles in Firestore (defaults live in memory), so store pre-003 role records here:
+    // the ids the test uses, with no DISPLAYS entry.
+    d.appRoles = ['role-site-manager', 'role-valet-supervisor', 'role-mis-auditor', 'role-gate-attendant', 'role-pre003'].map((id) => ({ id, name: id, description: 'stored before 003', modulePermissions: {} }));
+    for (const r of d.appRoles) if (r.modulePermissions) delete r.modulePermissions.DISPLAYS;
   });
   try {
     const roles = fx.readData().appRoles;
     assert.ok(roles.length >= 5 && roles.every((r) => !r.modulePermissions?.DISPLAYS), 'fixture: no stored DISPLAYS entries');
     const site = await fx.c.onboard('DSPOLD', 'Old roles site');
-    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'O-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'O-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     await fx.c.mkUser('oldAdmin', 'role-site-manager', [site.id]);
     await fx.c.mkUser('oldGate', 'role-gate-attendant', [site.id]);
     const ok = await fx.c.post('oldAdmin', '/displays', { name: 'Old', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
@@ -200,7 +203,7 @@ test('B2 at rest: only the SHA-256 is stored; replaced hashes are kept as retire
   const fx = await seededServer(() => {});
   try {
     const site = await fx.c.onboard('DSPREST', 'Rest site');
-    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'R-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'R-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const r = await fx.c.post('master', '/displays', { name: 'Rest', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
     const t1 = tokenOf(r.body.link);
     const t2 = tokenOf((await fx.c.post('master', `/displays/${r.body.display.id}/replace`, {}, { site: site.id })).body.link);

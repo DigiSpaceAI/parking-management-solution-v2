@@ -4,6 +4,7 @@ import { Card, ErrorState, LevelButtons, PageHeader, Select, Skeleton, Segmented
 import { formatNumber } from '../../utils/format';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
+import { optionsFor } from '../../utils/slotFields';
 import { compareSlots, isPuzzle, puzzleIdOf, slotInLevel, type LevelId, type LiveSlot } from '../../utils/slots';
 import { countSlots } from '../../utils/slotCounts';
 import { SlotsView, type Layout } from './SlotsView';
@@ -37,21 +38,9 @@ function saveLayout(l: Layout) {
   }
 }
 
-const STATUS_OPTIONS = [
-  { value: 'ALL', label: 'All statuses' },
-  { value: 'VACANT', label: 'Vacant only' },
-  { value: 'OCCUPIED', label: 'Occupied only' },
-  { value: 'RESERVED', label: 'Reserved' },
-  { value: 'MAINTENANCE', label: 'Maintenance' },
-];
-const TYPE_OPTIONS = [
-  { value: 'ALL', label: 'All slot types' },
-  { value: 'EV', label: 'EV charging bay' },
-  { value: 'SUV', label: 'SUV' },
-  { value: 'CSUV', label: 'Compact SUV' },
-  { value: 'SEDAN', label: 'Sedan' },
-  { value: 'TWO_WHEELER', label: 'Two-wheeler bay' },
-];
+// 005 F3: the lists come from slotFields (one list of values for the whole app)
+const STATUS_OPTIONS = [{ value: 'ALL', label: 'All statuses' }, ...optionsFor('status').map((o) => ({ value: o.code, label: o.label }))];
+const TYPE_OPTIONS = [{ value: 'ALL', label: 'All slot types' }, ...optionsFor('slotType').map((o) => ({ value: o.code, label: o.label }))];
 
 export interface LiveParkingProps {
   /** The chosen site or 'ALL' (read-only list with a site tag on each slot). */
@@ -136,18 +125,17 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
   };
   // 003 v1.5 (AC-42, S-3): every free count goes through the shared countSlots, over the same
   // slots this page shows, so the level buttons match the TV for the same slots.
+  // 005 F4b: the basement levels and their labels come from slotFields (optionsFor('basement')), not a second list here.
   const levels = data
-    ? (
-        [
-          { id: 'ALL', label: 'All parking' },
-          { id: 'B1', label: 'Basement B1' },
-          { id: 'B2', label: 'Basement B2' },
-          { id: 'B3', label: 'Basement B3' },
-          { id: 'Ground', label: 'Ground / driveway' },
-        ] as const
-      )
+    ? [
+        { id: 'ALL', label: 'All parking' },
+        ...optionsFor('basement')
+          .filter((o) => /^B[0-9]$/.test(o.code))
+          .map((o) => ({ id: o.code, label: o.label })),
+        { id: 'Ground', label: 'Ground / driveway' },
+      ]
         .map((l) => {
-          const c = countSlots(slots.filter((s) => slotInLevel(s, l.id)));
+          const c = countSlots(slots.filter((s) => slotInLevel(s, l.id as LevelId)));
           return { id: l.id, label: l.label, free: c.free, total: c.total };
         })
         .filter((l) => l.id === 'ALL' || l.total > 0)

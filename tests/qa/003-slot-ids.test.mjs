@@ -8,11 +8,11 @@ import { writeFileSync } from 'node:fs';
 import { seededServer, sleep } from './support/pf003.mjs';
 
 const UUID_ID = /^slot-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const row = (i) => ({ slotNumber: `U-${String(i).padStart(4, '0')}`, basement: ['B1', 'B2', 'B3', 'Ground'][i % 4], floorLocation: '', slotType: 'SEDAN',
+const row = (i) => ({ slotNumber: `U-${String(i).padStart(4, '0')}`, basement: ['B1', 'B2', 'B3', 'Ground'][i % 4], floorLocation: 'Level 1 near lift', slotType: 'SEDAN',
   height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' });
 
 test('R1-2: one bulk upload of 400 rows gives 400 unique ids, which survive a restart; existing ids are not changed', async () => {
-  const legacy = { id: 'slot-1700000000000-42', slotNumber: 'OLD-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' };
+  const legacy = { id: 'slot-1700000000000-42', slotNumber: 'OLD-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' };
   const fx = await seededServer(() => {});
   try {
     const site = await fx.c.onboard('UUID', 'Unique ids site');

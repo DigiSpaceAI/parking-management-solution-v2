@@ -191,7 +191,7 @@ test('B7 expiry on read: a passed end time is dropped from the feed, ended once 
   const fx = await seededServer(() => {});
   try {
     const site = await fx.c.onboard('OVREXP', 'Expiry site');
-    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'E-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'E-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const r = await fx.c.post('master', '/displays', { name: 'E', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
     const tok = tokenOf(r.body.link);
     const keep = await fx.c.post('master', '/displays/messages', { text: 'Still on', mode: 'BANNER', target: { all: true }, endsAt: istIso(3600000) }, { site: site.id });
@@ -297,7 +297,7 @@ test('B8 expiry on read: a passed forced-full end time is dropped, with one audi
   const fx = await seededServer(() => {});
   try {
     const site = await fx.c.onboard('OVRFF', 'Forced full site');
-    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'F-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'F-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const r = await fx.c.post('master', '/displays', { name: 'F', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
     const tok = tokenOf(r.body.link);
     await sleep(3500);
@@ -373,7 +373,7 @@ test('B9 validation: Site B slot, unknown slot, overlap and > 200 -> 400; AC-30 
   assert.equal(va.status, 403);
   assert.equal((await feed(d)).body.slots.some((s) => s.pinned), false, 'nothing stored');
   // A pinned slot that is deleted later is skipped in the feed and pruned on the next edit.
-  await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-B1-TMP', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: F.A.id });
+  await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-B1-TMP', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: F.A.id });
   const tmp = (await c.slots(F.A.id)).find((s) => s.slotNumber === 'A-B1-TMP');
   assert.equal((await c.post('adminA', `/displays/${d.id}/slot-rules`, { pinned: [tmp.id, S['A-B1-G02'].id] }, { site: F.A.id })).status, 200);
   await c.post('master', '/slots/delete', { slotId: tmp.id }, { site: F.A.id });

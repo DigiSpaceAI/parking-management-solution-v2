@@ -1,10 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { getFirestoreDb, markFirestoreUnavailable, isFirestoreConfigured } from './firestoreClient';
 import { istHour, istDayStartMs } from './time';
 import { selectedSlots } from './displayFeed';
 import { hasHiddenFormatChars } from './textSafety';
+import { toCode, optionsFor, heightMetres, HIGH_CLEARANCE_M, SLOT_FIELD_NAMES, type SlotField } from '../utils/slotFields';
+import { isLiveMode, isLocalDemoMode, assertLocalDemoMode } from './runtimeMode';
 
 // The site ID for all pre-existing operational data (slots, employees,
 // logs, etc.) that predates site-scoping — every seed/demo record below,
@@ -158,7 +161,13 @@ export function verifyPassword(password: string, hash?: string, salt?: string): 
 }
 
 let bootstrapDefaultsWarned = false;
-function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppUser[] } {
+// 005 AC-19: the built-in roles, built once. Used in memory only (getAppRoles); never put into store.appRoles.
+let defaultRolesCache: RolePermissionConfig[] | null = null;
+function getDefaultRoles(): RolePermissionConfig[] {
+  if (!defaultRolesCache) defaultRolesCache = getDefaultRolesAndUsers(true).roles;
+  return defaultRolesCache;
+}
+function getDefaultRolesAndUsers(rolesOnly = false): { roles: RolePermissionConfig[]; users: AppUser[] } {
   const fullAccessRights: ModuleAccessRights = {
     enabled: true,
     canCreate: true,
@@ -324,6 +333,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
   };
 
   const roles = [masterAdminRole, siteManagerRole, valetSupervisorRole, misAuditorRole, gateAttendantRole];
+  if (rolesOnly) return { roles, users: [] }; // 005: read-time role merge needs no password hashes
 
   // SECURITY: no default passwords live in source anymore. This repo is
   // public, so any password written here is a password known to everyone.
@@ -351,7 +361,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
   const adminCreds = hashPassword(bootstrapPw.length >= 12 && bootstrapPw.length <= 64 ? bootstrapPw : randomPw());
   const demoPw = process.env.DEMO_USER_PASSWORD || '';
   const demoPwOk = demoPw.length >= 12 && demoPw.length <= 64;
-  const seedDemo = process.env.SEED_DEMO_USERS === 'true';
+  const seedDemo = process.env.SEED_DEMO_USERS === 'true' && isLocalDemoMode(); // 005 AC-19: never on live
   const mkDemo = () => hashPassword(demoPwOk ? demoPw : randomPw());
   const siteCreds = mkDemo();
   const valetCreds = mkDemo();
@@ -479,6 +489,7 @@ function getDefaultRolesAndUsers(): { roles: RolePermissionConfig[]; users: AppU
 
 // Generate 1,080 Parking Slots across multi-level basements, puzzle stackers, EV stations
 function generate1080Inventory(): StoreData {
+  assertLocalDemoMode(); // 005 AC-20: the one named guard for demo data
   const { roles: defaultRoles, users: defaultUsers } = getDefaultRolesAndUsers();
   const slots: ParkingSlot[] = [];
   const employees: Employee[] = [];
@@ -957,9 +968,43 @@ const BOOTSTRAP_RETRY_MIN_MS = 10_000;
 const BOOTSTRAP_RETRY_MAX_MS = 60_000;
 let bootstrapRetryMs = BOOTSTRAP_RETRY_MIN_MS;
 
+// 005 Part B: an empty store. Live mode starts from this and fills ONLY from Firestore.
+function emptyStore(): StoreData {
+  return {
+    slots: [], employees: [], logs: [], alerts: [], registrationRequests: [], whitelistedDomains: [], sites: [],
+    invoices: [], slotChangeNotifications: [], valetTickets: [], appRoles: [], appUsers: [], overnightRequests: [],
+    demoRequests: [], displays: [], displayMessages: [], lastUpdated: new Date().toISOString(),
+  };
+}
+
+// 005 AC-20: paths that would have created records and were stopped (names only, no data).
+const seedingPrevented = new Set<string>();
+export function notePrevented(pathName: string): void {
+  if (seedingPrevented.has(pathName)) return;
+  seedingPrevented.add(pathName);
+  console.warn(`[startup][WARN] seeding prevented: ${pathName}`);
+}
+export function __seedingPreventedForTests(): string[] { return Array.from(seedingPrevented); }
+// 005 R2-4: lets a test call the demo-data builder directly (its first line is the live-mode guard).
+export function __generate1080InventoryForTests(): StoreData { return generate1080Inventory(); }
+
 export function initDB(): StoreData {
   storeInitialized = true;
-  storeReady = !isFirestoreConfigured();
+  storeReady = isLocalDemoMode();
+  if (isLiveMode()) {
+    // 005 AC-16/18: on live the boot store is EMPTY and not ready until Firestore has been loaded.
+    // A local data file is never read for content (it could be a stale or demo copy).
+    try {
+      if (fs.existsSync(DATA_FILE)) {
+        console.warn('[startup] data/pms_store.json found and ignored on live');
+        notePrevented('local-file-ignored');
+      }
+    } catch {
+      // an unreadable data dir is the same: nothing is read
+    }
+    store = emptyStore();
+    return store;
+  }
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -984,16 +1029,8 @@ export function initDB(): StoreData {
       // 2. Slots: Preserve all existing slots and user changes
       let finalSlots: ParkingSlot[] = [];
       if (loadedStore.slots && loadedStore.slots.length > 0) {
+        // 005 AC-17: no "< 1,080 slots" top-up (in any mode): a deleted slot stays deleted.
         finalSlots = loadedStore.slots;
-        // If some default slots were missing, fill only missing ones by slotNumber
-        if (finalSlots.length < 1080) {
-          const existingSlotNumbers = new Set(finalSlots.map(s => s.slotNumber.toUpperCase()));
-          for (const s of seeded.slots) {
-            if (!existingSlotNumbers.has(s.slotNumber.toUpperCase())) {
-              finalSlots.push(s);
-            }
-          }
-        }
       } else {
         finalSlots = seeded.slots;
       }
@@ -1211,60 +1248,16 @@ export function initDB(): StoreData {
         lastUpdated: loadedStore.lastUpdated || new Date().toISOString(),
       };
       saveDB();
-    } else if (isFirestoreConfigured()) {
-      // Local file is missing, but Firestore IS configured for this
-      // environment — this could mean a genuinely brand-new deployment,
-      // OR it could mean an existing site's data is sitting safely in
-      // Firestore and this is just an ephemeral container that lost its
-      // local disk copy. We can't tell the difference synchronously here.
-      // Seeding full demo data in that second case would be dangerous:
-      // it could get written back to Firestore later and silently
-      // clobber real data. So: seed only what's needed for the app to be
-      // usable at all (login accounts), leave operational data empty,
-      // and let bootstrapFirestore() (which runs right after this,
-      // before the server starts accepting requests) load the real data
-      // if it exists. If Firestore turns out to be unreachable this run
-      // too, the app stays visibly empty rather than showing fabricated
-      // demo content as if it were real.
-      console.log('[initDB] No local data file, but Firestore is configured — seeding accounts only and deferring to Firestore bootstrap for real data.');
-      const { roles: defaultRoles, users: defaultUsers } = getDefaultRolesAndUsers();
-      store = {
-        slots: [],
-        employees: [],
-        logs: [],
-        alerts: [],
-        registrationRequests: [],
-        whitelistedDomains: [
-          { id: 'dom-1', domain: 'company.com', addedBy: 'Parking Admin', createdAt: new Date().toISOString(), isActive: true },
-        ],
-        sites: [],
-        invoices: [],
-        slotChangeNotifications: [],
-        valetTickets: [],
-        appRoles: defaultRoles,
-        appUsers: defaultUsers,
-        overnightRequests: [],
-        demoRequests: [],
-        displays: [],
-        displayMessages: [],
-        lastUpdated: new Date().toISOString(),
-      };
-      // HOTFIX (2 Oct, 08 P2-3): NO saveDB() here. It full-synced this
-      // boot-time seed (default roles, bootstrap Master, dom-1 company.com)
-      // into Firestore with merge:true on every cold start, resetting changed
-      // default roles, re-adding removed domains and resetting the Master.
-      // An empty Firestore is still seeded from this store by
-      // bootstrapFirestore() ("No existing data found").
     } else {
-      // Firestore genuinely isn't configured for this environment (no
-      // project ID resolvable) — this is the local/dev case, where full
-      // demo data is expected and useful.
+      // Local demo mode only (no K_SERVICE, no project ID): full demo data is
+      // expected and useful here. Live mode returned above.
       console.log('Initializing fresh 1,080 slots database inventory...');
       const seeded = generate1080Inventory();
       store = { ...seeded, lastUpdated: new Date().toISOString() };
       saveDB();
     }
   } catch (err) {
+    // Local demo mode only (live returned above, so it can never build a demo store here).
     console.error('Error loading PMS database, initializing in-memory:', err);
     const seeded = generate1080Inventory();
     store = { ...seeded, lastUpdated: new Date().toISOString() };
@@ -1284,6 +1277,29 @@ const FIRESTORE_COLLECTIONS: (keyof StoreData)[] = [
 
 const FIRESTORE_BATCH_CHUNK = 400; // stay under Firestore's 500-write batch limit
 
+/**
+ * 006 D1: the record exactly as Firestore may store it. Records are plain JSON
+ * (strings, numbers, booleans, arrays, nested objects), so a JSON round trip
+ * drops every `undefined` at any depth and changes nothing else. Belt and
+ * braces with `ignoreUndefinedProperties` on the client.
+ */
+/**
+ * Ids made from the clock plus 3 random digits collide inside a bulk upload
+ * (hundreds of rows in the same millisecond); two records with one id become
+ * ONE document in Firestore. Pick an id that no record in `existing` has.
+ */
+function uniqueRecordId(prefix: string, existing: Array<{ id?: string }>): string {
+  const taken = new Set(existing.map((r) => r?.id));
+  for (;;) {
+    const id = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
+export function toFirestoreDoc<T>(record: T): T {
+  return JSON.parse(JSON.stringify(record)) as T;
+}
+
 function isFatalFirestoreConfigError(err: any): boolean {
   const msg = String(err?.message || err);
   return (
@@ -1295,35 +1311,44 @@ function isFatalFirestoreConfigError(err: any): boolean {
   );
 }
 
+// 006 D4/AC-06: the full sync (empty-database seed and the fallback for an
+// untargeted save) writes ONE COLLECTION AT A TIME, each in its own try, so one
+// bad record can no longer stop sites, users, roles, domains and invoices from
+// being written. A failing collection is logged as PERSIST_FAILED
+// (scope full-sync) and the rest continue. It still never deletes.
 async function syncStoreToFirestore(snapshot: StoreData) {
   const db = getFirestoreDb();
   if (!db) return;
 
-  try {
-    for (const key of FIRESTORE_COLLECTIONS) {
-      const items = snapshot[key] as unknown as Array<{ id: string }>;
-      if (!Array.isArray(items)) continue;
-
+  for (const key of FIRESTORE_COLLECTIONS) {
+    const items = snapshot[key] as unknown as Array<{ id: string }>;
+    if (!Array.isArray(items)) continue;
+    try {
       const collectionRef = db.collection(key);
       for (let i = 0; i < items.length; i += FIRESTORE_BATCH_CHUNK) {
         const chunk = items.slice(i, i + FIRESTORE_BATCH_CHUNK);
         const batch = db.batch();
         for (const item of chunk) {
           if (!item?.id) continue;
-          batch.set(collectionRef.doc(String(item.id)), item, { merge: true });
+          // 006 D1/D-4: a full replace of the cleaned record (merge would keep
+          // a field that was cleared in memory).
+          batch.set(collectionRef.doc(String(item.id)), toFirestoreDoc(item));
         }
         await batch.commit();
       }
+    } catch (err) {
+      const fatal = isFatalFirestoreConfigError(err);
+      if (fatal) markFirestoreUnavailable(String((err as any)?.message || err));
+      logPersistFailed('full-sync', err, { collection: String(key) });
+      if (fatal) return; // the client is unusable for every collection
     }
+  }
+  try {
     await db.collection('_meta').doc('store').set({
       lastUpdated: snapshot.lastUpdated,
     });
   } catch (err) {
-    if (isFatalFirestoreConfigError(err)) {
-      markFirestoreUnavailable(String((err as any)?.message || err));
-    } else {
-      console.error('[firestore] Sync failed, local JSON copy is still up to date:', err);
-    }
+    logPersistFailed('full-sync', err, { collection: '_meta' });
   }
 }
 
@@ -1438,38 +1463,104 @@ export function logDuplicateSlotIds(data: { slots?: ParkingSlot[] } = getStore()
   return dups;
 }
 
+/** The platform Master Admin rule used everywhere (src/utils/rbac.ts isMasterAdmin). */
+const isPlatformMaster = (u: AppUser): boolean => u.roleId === 'role-master-admin';
+
+/**
+ * 005 AC-16/D-6: the ONLY record the server creates by itself on live, and only
+ * when NO Platform Master Admin exists (a renamed or replaced Master counts).
+ * Writes that one document by id. Returns true when it was created.
+ */
+export async function ensureBootstrapMaster(): Promise<boolean> {
+  if (!Array.isArray(store.appUsers)) store.appUsers = [];
+  if (store.appUsers.some(isPlatformMaster)) return false;
+  const master = getDefaultRolesAndUsers().users.find((u) => u.id === 'usr-digi-master');
+  if (!master) return false;
+  store.appUsers.push(master);
+  console.log('[startup] bootstrap Master created (no Master Admin found)');
+  try {
+    await persistIds([{ collection: 'appUsers', ids: [master.id] }]);
+  } catch (err) {
+    logPersistFailed('background', err);
+  }
+  return true;
+}
+
+/** 005 AC-20: one line of counts (numbers only, no ids or names) once the store is ready. */
+function logStartupCounts(): void {
+  const n = (k: keyof StoreData) => (Array.isArray((store as any)[k]) ? ((store as any)[k] as unknown[]).length : 0);
+  const storedRoleIds = new Set((store.appRoles || []).map((r) => r.id));
+  const defaultsInMemory = getDefaultRoles().filter((r) => !storedRoleIds.has(r.id)).length;
+  const parts = FIRESTORE_COLLECTIONS.map((k) => `${String(k)}=${n(k)}${k === 'appRoles' && defaultsInMemory > 0 ? `(+${defaultsInMemory} default in memory)` : ''}`);
+  console.log(`[startup] mode=${isLiveMode() ? 'live' : 'local-demo'} store=${isLiveMode() ? 'firestore' : 'local'} counts: ${parts.join(' ')}`);
+  logDuplicateSlotNumbers();
+  logDuplicateSlotIds(); // 003 R1-2
+  if (seedingPrevented.size > 0) console.warn(`[startup][WARN] seeding prevented: ${Array.from(seedingPrevented).join(', ')}`);
+}
+
+/** 005 AC-15: counts only (no slot ids, plates or numbers); nothing is merged or deleted. */
+function logDuplicateSlotNumbers(): void {
+  const seen: Record<string, number> = {};
+  for (const sl of store.slots || []) {
+    const k = `${slotSiteOf(sl)}|${slotNumberKey(sl.slotNumber)}`;
+    seen[k] = (seen[k] || 0) + 1;
+  }
+  let numbers = 0;
+  const sites: Record<string, true> = {};
+  for (const k of Object.keys(seen)) if (seen[k] > 1) { numbers++; sites[k.split('|')[0]] = true; }
+  if (numbers > 0) console.warn(`[slots] duplicate slot numbers: ${numbers} number(s) at ${Object.keys(sites).length} site(s). Delete the extra slots in Inventory.`);
+}
+
+function scheduleBootstrapRetry(wait: number): void {
+  setTimeout(() => {
+    bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
+  }, wait).unref?.();
+}
+
 export async function bootstrapFirestore(): Promise<void> {
-  const db = getFirestoreDb();
-  if (!db) {
-    logDuplicateSlotIds();
-    // Firestore unavailable this run (not configured, or disabled after a
-    // fatal config error): nothing can be written to it, so the local store
-    // is all there is.
+  if (!isLiveMode()) {
+    // Local demo (no Cloud Run, no project id): Firestore is never used; the local store is all there is.
     storeReady = true;
+    logStartupCounts();
+    return;
+  }
+  const db = getFirestoreDb();
+  if (!db || !isFirestoreConfigured()) {
+    // 005 AC-18 (B-G4, B-G5): live without a usable Firestore never serves a demo or empty store as real.
+    storeReady = false;
+    console.error('[firestore][CRITICAL] live mode but Firestore unavailable — not serving');
+    scheduleBootstrapRetry(BOOTSTRAP_RETRY_MAX_MS);
     return;
   }
 
   const { data: remote, failed } = await loadStoreFromFirestore();
   if (remote) {
+    // 005 AC-16/17: exactly what Firestore holds. No merge with a seed, no top-up, no empty-collection fill.
     store = remote;
     storeReady = true;
     console.log('[firestore] Loaded existing data from Firestore.');
     logDuplicateSlotIds(); // in Firestore (keyed by id) they are already one document each
     rotateKnownDefaultPasswords();
+    await ensureBootstrapMaster();
+    startDriftWatch();
+    logStartupCounts();
   } else if (failed) {
-    // Loading genuinely failed (quota, timeout, network): do NOT reseed,
-    // and do NOT go "ready" on the boot-time seed store (a later sync of it
+    // Loading genuinely failed (quota, timeout, network): do NOT seed,
+    // and do NOT go "ready" on the boot-time store (a later sync of it
     // would overwrite real data). Stay at 503 and retry with backoff.
     const wait = bootstrapRetryMs;
     bootstrapRetryMs = Math.min(bootstrapRetryMs * 2, BOOTSTRAP_RETRY_MAX_MS);
     console.warn(`[firestore] Load failed (see error above) — NOT reseeding; API stays at 503 ERR_STARTING; retrying in ${wait / 1000}s.`);
-    setTimeout(() => {
-      bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
-    }, wait).unref?.();
+    scheduleBootstrapRetry(wait);
   } else {
-    console.log('[firestore] No existing data found — seeding Firestore from local store.');
-    await syncStoreToFirestore(store);
+    // Firestore is genuinely empty (0 documents). D-9: write ONLY the bootstrap Master.
+    // No default roles (kept in memory by getAppRoles), no domain, no sites.
+    console.log('[firestore] No existing data found — creating the bootstrap Master Admin only.');
+    store = emptyStore();
     storeReady = true;
+    await ensureBootstrapMaster();
+    startDriftWatch();
+    logStartupCounts();
   }
 }
 
@@ -1501,64 +1592,114 @@ export async function bootstrapFirestore(): Promise<void> {
 // two functions directly implicated in this bug: vehicle entry and exit,
 // which mutate ParkingLog and ParkingSlot records — the exact data this
 // bug was destroying.
-async function syncSpecificRecords(
-  updates: { collection: keyof StoreData; ids: string[] }[]
-): Promise<void> {
+// 006 B2 (D2): the persistence core. Writes or deletes exactly the ids it is
+// given, in order, in batches of at most FIRESTORE_BATCH_CHUNK (400) operations,
+// and THROWS when a batch fails (it used to only log, and one batch held every
+// id, so an upload of more than 500 slots was never saved).
+//   - id found in memory      -> set(doc, toFirestoreDoc(record))   (full replace)
+//   - id not in memory        -> delete(doc)                        (D3)
+//   - ACTIVE log whose stored copy is COMPLETED -> not written (status guard)
+// Runs one call at a time (a queue) and reads memory when its turn comes, so
+// two overlapping saves of the same record always end with the newest state.
+export interface PersistTarget { collection: keyof StoreData; ids: string[] }
+
+export class PersistError extends Error {
+  collections: Record<string, string[]>;
+  constructor(reason: string, collections: Record<string, string[]>) {
+    super(reason);
+    this.name = 'PersistError';
+    this.collections = collections;
+  }
+}
+
+let persistQueue: Promise<unknown> = Promise.resolve();
+export function persistIds(targets: PersistTarget[]): Promise<void> {
+  const run = persistQueue.then(() => persistIdsNow(targets));
+  persistQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function persistIdsNow(targets: PersistTarget[]): Promise<void> {
+  // Local demo mode (no Firestore project, not on Cloud Run): the local JSON copy is the store.
+  if (isLocalDemoMode()) return;
   const db = getFirestoreDb();
-  if (!db) return;
+  if (!db) {
+    throw new PersistError('Firestore unavailable', Object.fromEntries(targets.map((t) => [String(t.collection), t.ids.slice(0, 20)])));
+  }
 
-  try {
-    for (const { collection, ids } of updates) {
-      if (ids.length === 0) continue;
-      const items = store[collection] as unknown as Array<{ id: string }>;
-      if (!Array.isArray(items)) continue;
-
-      const collectionRef = db.collection(collection);
-      const batch = db.batch();
-      for (const id of ids) {
-        const record = items.find((item) => item?.id === id);
-        if (!record) continue;
-
-        // Anomaly detection (checklist requirement: alert on any
-        // COMPLETED -> ACTIVE reversion, since this should never happen
-        // during normal operation). Only meaningful for ParkingLog
-        // records, which carry a 'status' field with these exact values.
-        if (collection === 'logs' && (record as any).status === 'ACTIVE') {
-          try {
-            const existingDoc = await collectionRef.doc(id).get();
-            const existingData = existingDoc.data();
-            if (existingData?.status === 'COMPLETED') {
-              logSecurityEvent({
-                action: 'LOG_STATUS_REVERSION_BLOCKED',
-                actor: 'SYSTEM',
-                actorRole: 'SYSTEM',
-                ipAddress: '127.0.0.1',
-                targetResource: `logs/${id}`,
-                status: 'BLOCKED_UNAUTHORIZED',
-                details: `Prevented a completed parking log (${id}) from being overwritten back to ACTIVE status. This indicates a stale in-memory copy on this server instance — investigate multi-instance divergence.`,
-              });
-              // Do not write this record — the existing COMPLETED state
-              // in Firestore is more authoritative than this instance's
-              // stale in-memory copy.
-              continue;
-            }
-          } catch {
-            // If the anomaly check itself fails, fall through to the
-            // write rather than silently dropping a legitimate update —
-            // the check is a safety net, not a hard gate.
-          }
-        }
-
-        batch.set(collectionRef.doc(id), record, { merge: true });
+  type Op = { collection: string; id: string; record: object | null };
+  const ops: Op[] = [];
+  for (const target of targets) {
+    const wanted = new Set(target.ids.map(String));
+    if (wanted.size === 0) continue;
+    const items = store[target.collection] as unknown as Array<{ id: string }>;
+    const found = new Map<string, object>();
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (item && wanted.has(String(item.id)) && !found.has(String(item.id))) found.set(String(item.id), item);
       }
-      await batch.commit();
     }
-  } catch (err) {
-    if (isFatalFirestoreConfigError(err)) {
-      markFirestoreUnavailable(String((err as any)?.message || err));
-    } else {
-      console.error('[firestore] Targeted sync failed:', err);
+    wanted.forEach((id) => ops.push({ collection: String(target.collection), id, record: found.get(id) || null }));
+  }
+
+  for (let i = 0; i < ops.length; i += FIRESTORE_BATCH_CHUNK) {
+    const chunk = ops.slice(i, i + FIRESTORE_BATCH_CHUNK);
+    try {
+      // Anomaly guard (checklist requirement): never overwrite a COMPLETED log
+      // with a stale ACTIVE copy. One getAll per chunk, not one get per log.
+      const activeLogs = chunk.filter((o) => o.collection === 'logs' && o.record && (o.record as any).status === 'ACTIVE');
+      const blocked = new Set<string>();
+      if (activeLogs.length > 0) {
+        try {
+          const snaps = await db.getAll(...activeLogs.map((o) => db.collection('logs').doc(o.id)));
+          snaps.forEach((snap, k) => {
+            if (snap.exists && (snap.data() as any)?.status === 'COMPLETED') blocked.add(activeLogs[k].id);
+          });
+        } catch {
+          // The check is a safety net, not a gate: if it fails, write.
+        }
+        blocked.forEach((id) => logSecurityEvent({
+          action: 'LOG_STATUS_REVERSION_BLOCKED',
+          actor: 'SYSTEM',
+          actorRole: 'SYSTEM',
+          ipAddress: '127.0.0.1',
+          targetResource: `logs/${id}`,
+          status: 'BLOCKED_UNAUTHORIZED',
+          details: `Prevented a completed parking log (${id}) from being overwritten back to ACTIVE status. This indicates a stale in-memory copy on this server instance — investigate multi-instance divergence.`,
+        }));
+      }
+
+      const batch = db.batch();
+      let n = 0;
+      for (const op of chunk) {
+        if (blocked.has(op.id) && op.collection === 'logs') continue;
+        const ref = db.collection(op.collection).doc(op.id);
+        if (op.record) batch.set(ref, toFirestoreDoc(op.record));
+        else batch.delete(ref);
+        n++;
+      }
+      if (n > 0) await batch.commit();
+    } catch (err: any) {
+      if (isFatalFirestoreConfigError(err)) markFirestoreUnavailable(String(err?.message || err));
+      const failed: Record<string, string[]> = {};
+      for (const op of chunk) (failed[op.collection] = failed[op.collection] || []).push(op.id);
+      throw new PersistError(String(err?.message || err), failed);
     }
+  }
+}
+
+/** One structured line on stderr (Cloud Logging parses it as JSON). Ids only: no names, plates, emails, bodies. */
+export function logPersistFailed(scope: 'request' | 'background' | 'full-sync', err: unknown, extra: { method?: string; route?: string; rolledBack?: boolean; collection?: string } = {}): void {
+  const reason = String((err as any)?.message || err).replace(/\s+/g, ' ').slice(0, 200);
+  const cols = err instanceof PersistError ? err.collections : extra.collection ? { [extra.collection]: [] as string[] } : {};
+  const names = Object.keys(cols);
+  const lines = names.length > 0 ? names : [''];
+  for (const collection of lines) {
+    const ids = (cols as Record<string, string[]>)[collection] || [];
+    console.error(JSON.stringify({
+      severity: 'ERROR', event: 'PERSIST_FAILED', scope, ...(extra.method ? { method: extra.method } : {}), ...(extra.route ? { route: extra.route } : {}),
+      collection, count: ids.length, ids: ids.slice(0, 20), reason, ...(extra.rolledBack !== undefined ? { rolledBack: extra.rolledBack } : {}),
+    }));
   }
 }
 
@@ -1600,22 +1741,14 @@ function writeLocalCopy() {
   }
 }
 
-// 002 B6: targeted Firestore delete (a full sync never deletes, so a removed
-// record would otherwise come back on the next cold start). Same "no write
-// before the store is loaded" rule as every sync (2 Oct hotfix).
-async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): Promise<void> {
+// 002 B6 / 006 D3: delete records that were already removed from memory.
+// A thin wrapper over the persistence core (kept for callers on other branches).
+export async function deleteFirestoreDocs(collection: keyof StoreData, ids: string[]): Promise<void> {
   if (!storeReady || ids.length === 0) return;
-  const db = getFirestoreDb();
-  if (!db) return;
   try {
-    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
-      const batch = db.batch();
-      for (const id of ids.slice(i, i + FIRESTORE_BATCH_CHUNK)) batch.delete(db.collection(collection).doc(id));
-      await batch.commit();
-    }
+    await persistIds([{ collection, ids }]);
   } catch (err) {
-    if (isFatalFirestoreConfigError(err)) markFirestoreUnavailable(String((err as any)?.message || err));
-    else console.error('[firestore] Targeted delete failed:', err);
+    logPersistFailed('background', err);
   }
 }
 
@@ -1629,7 +1762,127 @@ export function noteSlotSetChanged() {
   slotSetVersion++;
 }
 
-export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string[] }[]) {
+// ---------------------------------------------------------------------------
+// 006 B5 (D5, AC-04/07): the reply waits for the save; a failed save is rolled
+// back and answered 503 instead of "success". The context lives for one API
+// write request (AsyncLocalStorage); saveDB() registers its save there.
+// ---------------------------------------------------------------------------
+export interface PersistCtx { pending: Promise<void>[]; ids: Map<string, Set<string>>; responded: boolean }
+const persistALS = new AsyncLocalStorage<PersistCtx>();
+export function newPersistCtx(): PersistCtx { return { pending: [], ids: new Map(), responded: false }; }
+export function runInPersistContext<T>(ctx: PersistCtx, fn: () => T): T { return persistALS.run(ctx, fn); }
+
+/** D-2: put memory back to what Firestore holds for these ids. Returns false if the read failed. */
+async function refreshIds(ids: Map<string, Set<string>>): Promise<boolean> {
+  const db = getFirestoreDb();
+  if (!db) return false;
+  try {
+    for (const [collection, set] of ids) {
+      const all = Array.from(set);
+      for (let i = 0; i < all.length; i += FIRESTORE_BATCH_CHUNK) {
+        const chunk = all.slice(i, i + FIRESTORE_BATCH_CHUNK);
+        const snaps = await db.getAll(...chunk.map((id) => db.collection(collection).doc(id)));
+        const arr = (store as any)[collection] as Array<{ id: string }> | undefined;
+        if (!Array.isArray(arr)) continue;
+        snaps.forEach((snap, k) => {
+          const id = chunk[k];
+          const idx = arr.findIndex((r) => String(r?.id) === id);
+          if (snap.exists) {
+            const rec = { ...(snap.data() as object), id } as any;
+            if (idx >= 0) arr[idx] = rec; else arr.push(rec);
+          } else {
+            for (let j = arr.length - 1; j >= 0; j--) if (String(arr[j]?.id) === id) arr.splice(j, 1);
+          }
+        });
+      }
+    }
+    writeLocalCopy();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Waits for the request's saves. ok:false = at least one failed (memory already rolled back or the API is held at ERR_STARTING). */
+export async function settlePersistCtx(ctx: PersistCtx, info: { method: string; route: string }): Promise<{ ok: true } | { ok: false; notReady: boolean }> {
+  const errors: unknown[] = [];
+  while (ctx.pending.length > 0) {
+    const batch = ctx.pending.splice(0);
+    const results = await Promise.allSettled(batch);
+    for (const r of results) if (r.status === 'rejected') errors.push(r.reason);
+  }
+  if (errors.length === 0) return { ok: true };
+  const refreshed = await refreshIds(ctx.ids);
+  for (const err of errors) logPersistFailed('request', err, { method: info.method, route: info.route, rolledBack: refreshed });
+  if (!refreshed) {
+    // Cannot even read Firestore: memory may differ from it. Stop serving and let
+    // the bootstrap retry reload the whole store.
+    storeReady = false;
+    setTimeout(() => {
+      bootstrapFirestore().catch((err) => console.error('[firestore] Bootstrap retry failed:', err));
+    }, Math.min(bootstrapRetryMs, 5000)).unref?.();
+  }
+  return { ok: false, notReady: !refreshed };
+}
+
+// 006 D5: a drift watch. Compares the number of documents per collection with
+// the number of distinct ids in memory and logs a WARNING; it fixes nothing.
+let driftIntervalMs = 10 * 60_000;
+let driftRecheckMs = 30_000;
+let driftTimer: NodeJS.Timeout | null = null;
+export function __setDriftTimersForTests(intervalMs: number, recheckMs: number): void { driftIntervalMs = intervalMs; driftRecheckMs = recheckMs; }
+
+async function driftMismatches(): Promise<Array<{ collection: string; memory: number; firestore: number }>> {
+  const db = getFirestoreDb();
+  const out: Array<{ collection: string; memory: number; firestore: number }> = [];
+  if (!db) return out;
+  for (const key of FIRESTORE_COLLECTIONS) {
+    const items = (store as any)[key] as Array<{ id: string }> | undefined;
+    if (!Array.isArray(items)) continue;
+    const memory = new Set(items.map((r) => String(r?.id))).size;
+    const snap = await db.collection(key).count().get();
+    const firestore = Number(snap.data().count);
+    if (memory !== firestore) out.push({ collection: String(key), memory, firestore });
+  }
+  return out;
+}
+
+export async function checkPersistDrift(): Promise<void> {
+  if (!storeReady || !isFirestoreConfigured()) return;
+  try {
+    if ((await driftMismatches()).length === 0) return;
+    await new Promise((r) => setTimeout(r, driftRecheckMs)); // a save in flight is not drift
+    if (!storeReady) return;
+    for (const m of await driftMismatches()) {
+      console.warn(JSON.stringify({ severity: 'WARNING', event: 'PERSIST_DRIFT', collection: m.collection, memory: m.memory, firestore: m.firestore }));
+    }
+  } catch {
+    // a failed check is not a finding
+  }
+}
+
+function startDriftWatch(): void {
+  if (driftTimer || !isFirestoreConfigured()) return;
+  void checkPersistDrift();
+  driftTimer = setInterval(() => { void checkPersistDrift(); }, driftIntervalMs);
+  driftTimer.unref?.();
+}
+
+// 006 AC-03: after ready, every save names the records it changed. A call with
+// no targets is a bug on that call site: it is counted and logged (with its
+// caller) and still falls back to the debounced full sync so nothing is lost.
+let untargetedAfterReady = 0;
+let lastUntargetedCaller = '';
+export function __persistCountersForTests() {
+  return { untargetedAfterReady, lastUntargetedCaller };
+}
+
+export interface SaveOptions {
+  /** D-3: never blocks or fails the request (sign-in's lastLoginAt). A failure is only logged. */
+  bestEffort?: boolean;
+}
+
+export function saveDB(targetedSync?: PersistTarget[], _opts: SaveOptions = {}) {
   writeLocalCopy();
 
   // Hotfix (2 Oct): no Firestore sync of any kind before the real data is
@@ -1639,11 +1892,31 @@ export function saveDB(targetedSync?: { collection: keyof StoreData; ids: string
     return;
   }
 
-  if (targetedSync && targetedSync.length > 0) {
-    void syncSpecificRecords(targetedSync);
-  } else {
-    scheduleDebouncedFullSync();
+  if (targetedSync) {
+    if (targetedSync.length > 0) {
+      const ctx = persistALS.getStore();
+      if (ctx && !_opts.bestEffort && !ctx.responded) {
+        // D-1: inside an API write the reply waits for this save (server.ts gate).
+        const p = persistIds(targetedSync);
+        p.catch(() => undefined); // the gate reads the outcome; never an unhandled rejection
+        ctx.pending.push(p);
+        for (const t of targetedSync) {
+          const set = ctx.ids.get(String(t.collection)) || new Set<string>();
+          t.ids.forEach((id) => set.add(String(id)));
+          ctx.ids.set(String(t.collection), set);
+        }
+      } else {
+        persistIds(targetedSync).catch((err) => logPersistFailed('background', err));
+      }
+    }
+    return;
   }
+  // Local demo: the local copy is the store.
+  if (isLocalDemoMode()) return;
+  untargetedAfterReady++;
+  lastUntargetedCaller = (new Error().stack || '').split('\n')[2]?.trim() || '';
+  console.warn(`[persist] untargeted saveDB() after ready — falling back to a full sync. Caller: ${lastUntargetedCaller}`);
+  scheduleDebouncedFullSync();
 }
 
 export type ClearableCollection = 'logs' | 'slotChangeNotifications' | 'valetTickets';
@@ -1683,17 +1956,10 @@ export async function clearHistoricalRecords(
 ): Promise<ClearHistoryResult> {
   const storeData = getStore();
   const result: ClearHistoryResult = {};
-  const db = getFirestoreDb();
-
-  const deleteFromFirestore = async (collectionName: string, ids: string[]) => {
-    if (!db || ids.length === 0) return;
-    for (let i = 0; i < ids.length; i += FIRESTORE_BATCH_CHUNK) {
-      const chunk = ids.slice(i, i + FIRESTORE_BATCH_CHUNK);
-      const batch = db.batch();
-      chunk.forEach((id) => batch.delete(db.collection(collectionName).doc(id)));
-      await batch.commit();
-    }
-  };
+  // 006 D3: the removed ids are deleted in Firestore through the persistence
+  // core (chunked; a failure is reported by the request's reply gate, which
+  // restores the records from Firestore).
+  const targets: PersistTarget[] = [];
 
   try {
     if (collections.includes('logs')) {
@@ -1702,7 +1968,7 @@ export async function clearHistoricalRecords(
       );
       const removeIds = new Set(toRemove.map((l) => l.id));
       storeData.logs = storeData.logs.filter((l) => !removeIds.has(l.id));
-      await deleteFromFirestore('logs', [...removeIds]);
+      targets.push({ collection: 'logs', ids: [...removeIds] });
       result.logs = removeIds.size;
     }
 
@@ -1712,7 +1978,7 @@ export async function clearHistoricalRecords(
       );
       const removeIds = new Set(toRemove.map((n) => n.id));
       storeData.slotChangeNotifications = storeData.slotChangeNotifications.filter((n) => !removeIds.has(n.id));
-      await deleteFromFirestore('slotChangeNotifications', [...removeIds]);
+      targets.push({ collection: 'slotChangeNotifications', ids: [...removeIds] });
       result.slotChangeNotifications = removeIds.size;
     }
 
@@ -1723,14 +1989,14 @@ export async function clearHistoricalRecords(
       );
       const removeIds = new Set(toRemove.map((t) => t.id));
       storeData.valetTickets = storeData.valetTickets.filter((t) => !removeIds.has(t.id));
-      await deleteFromFirestore('valetTickets', [...removeIds]);
+      targets.push({ collection: 'valetTickets', ids: [...removeIds] });
       result.valetTickets = removeIds.size;
     }
   } catch (err: any) {
-    console.error('[firestore] clearHistoricalRecords failed partway through:', err?.message || err);
+    console.error('[clearHistoricalRecords] failed partway through:', err?.message || err);
   }
 
-  saveDB();
+  saveDB(targets.filter((t) => t.ids.length > 0));
   return result;
 }
 
@@ -1743,6 +2009,68 @@ export function getStore(): StoreData {
     initDB();
   }
   return store;
+}
+
+// 005 B4 (AC-07): one-time slot field fix. Dry run by default. Only maps whole values through toCode (no guessing);
+// values that are already codes are left alone; anything else (NOT_AVAILABLE, unknown, empty) is untouched and listed.
+const MIGRATED_FIELDS: SlotField[] = ['slotType', 'allocation', 'height', 'parkingType'];
+
+export interface SlotMigrationSite {
+  siteId: string;
+  changed: { slotType: number; allocation: number; height: number; parkingType: number };
+  slotsChanged: number;
+  untouched: { field: SlotField; value: string; count: number; slotIds: string[] }[];
+}
+export interface SlotMigrationResult { apply: boolean; sites: SlotMigrationSite[]; slotsChanged: number; changedSlotIds: string[] }
+
+export async function migrateSlotFields(apply: boolean): Promise<SlotMigrationResult> {
+  const slots = getStore().slots;
+  const bySite: { [siteId: string]: SlotMigrationSite } = {};
+  const untouchedKey: { [k: string]: { field: SlotField; value: string; count: number; slotIds: string[] } } = {};
+  const edits: { slot: ParkingSlot; field: SlotField; from: any; to: string }[] = [];
+  const changedIds: { [id: string]: boolean } = {};
+  const changedBySite: { [siteId: string]: { [id: string]: boolean } } = {};
+
+  slots.forEach((slot) => {
+    const siteId = slot.siteId || DEFAULT_SITE_ID;
+    const site = bySite[siteId] || (bySite[siteId] = { siteId, changed: { slotType: 0, allocation: 0, height: 0, parkingType: 0 }, slotsChanged: 0, untouched: [] });
+    MIGRATED_FIELDS.forEach((field) => {
+      const cur: any = (slot as any)[field];
+      const isCode = optionsFor(field).some((o) => o.code === cur);
+      if (isCode) return;
+      const code = toCode(field, cur);
+      if (code !== null) {
+        edits.push({ slot, field, from: cur, to: code });
+        site.changed[field as 'slotType' | 'allocation' | 'height' | 'parkingType']++;
+        changedIds[slot.id] = true;
+        (changedBySite[siteId] || (changedBySite[siteId] = {}))[slot.id] = true;
+      } else {
+        const value = cur === undefined || cur === null ? '' : String(cur).slice(0, 60);
+        const key = siteId + '|' + field + '|' + value;
+        const u = untouchedKey[key] || (untouchedKey[key] = { field, value, count: 0, slotIds: [] });
+        if (u.count === 0) site.untouched.push(u);
+        u.count++;
+        u.slotIds.push(slot.id);
+      }
+    });
+  });
+  const sites = Object.keys(bySite).sort().map((id) => {
+    const site = bySite[id];
+    site.slotsChanged = Object.keys(changedBySite[id] || {}).length;
+    return site;
+  });
+  const changedSlotIds = Object.keys(changedIds);
+  const result: SlotMigrationResult = { apply, sites, slotsChanged: changedSlotIds.length, changedSlotIds: changedSlotIds };
+  if (!apply || edits.length === 0) return result;
+
+  edits.forEach((e) => { (e.slot as any)[e.field] = e.to; });
+  try {
+    await persistIds([{ collection: 'slots', ids: changedSlotIds }]); // one targeted write of only the changed ids
+  } catch (err) {
+    edits.forEach((e) => { (e.slot as any)[e.field] = e.from; }); // memory must not run ahead of the database
+    throw err;
+  }
+  return result;
 }
 
 // Rules Engine: Find best vacant slot based on vehicle height, slotType, allocation, basement
@@ -1764,7 +2092,7 @@ export function findBestSlot(vehicleType: VehicleType, heightNeeded: string = '2
 
   // 2. Strict match for SUV height clearance (>= 2.5m)
   if (vehicleType === 'SUV') {
-    const suvSlot = vacantSlots.find(s => s.slotType === 'SUV' || (parseFloat(s.height) >= 2.5));
+    const suvSlot = vacantSlots.find(s => s.slotType === 'SUV' || heightMetres(s.height) >= HIGH_CLEARANCE_M);
     if (suvSlot) return suvSlot;
   }
 
@@ -1875,7 +2203,9 @@ export function processVehicleEntry(params: {
 
   storeData.logs.unshift(newLog);
 
-  // Clear non-parked alert if previously flagged
+  // Clear non-parked alert if previously flagged (006 D3: those alert documents
+  // are deleted in Firestore too, in the same save as the slot and log).
+  const clearedAlertIds = storeData.alerts.filter(a => a.vehicleNumber.toUpperCase() === cleanVehicleNum).map(a => a.id);
   storeData.alerts = storeData.alerts.filter(a => a.vehicleNumber.toUpperCase() !== cleanVehicleNum);
 
   // Targeted sync: only push the exact slot and log this request just
@@ -1884,6 +2214,7 @@ export function processVehicleEntry(params: {
   saveDB([
     { collection: 'slots', ids: [targetSlot.id] },
     { collection: 'logs', ids: [newLog.id] },
+    ...(clearedAlertIds.length > 0 ? [{ collection: 'alerts' as const, ids: clearedAlertIds }] : []),
   ]);
 
   return {
@@ -2071,8 +2402,10 @@ export function runNonParkedRosterScan(): { scanTime: string; totalActiveEmploye
       if (existing) {
         newAlerts.push(existing);
       } else {
+        let alertId = `alert-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+        while (newAlerts.some((a) => a.id === alertId)) alertId = `alert-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         const createdAlert: NonParkedAlert = {
-          id: `alert-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+          id: alertId,
           siteId: emp.siteId,
           employeeId: emp.employeeId,
           employeeName: emp.name,
@@ -2090,8 +2423,10 @@ export function runNonParkedRosterScan(): { scanTime: string; totalActiveEmploye
     }
   });
 
+  // 006 D3: alerts that are no longer raised are deleted in Firestore too.
+  const oldAlertIds = storeData.alerts.map((a) => a.id);
   storeData.alerts = newAlerts;
-  saveDB();
+  saveDB([{ collection: 'alerts', ids: [...oldAlertIds, ...newAlerts.map((a) => a.id)] }]);
 
   return {
     scanTime: new Date().toLocaleTimeString(),
@@ -2153,7 +2488,7 @@ export function saveOrUpdateEmployee(empData: Partial<Employee>, deferSync: bool
     return updated;
   } else {
     const newEmp: Employee = {
-      id: empData.id || `emp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: empData.id || uniqueRecordId('emp', storeData.employees),
       siteId: empData.siteId || DEFAULT_SITE_ID,
       employeeId: empData.employeeId || `EMP-${1000 + storeData.employees.length + 1}`,
       name: empData.name || 'New Whitelist Employee',
@@ -2334,43 +2669,100 @@ function applyDimensions(slot: ParkingSlot, dims: SlotDimensions) {
 // cameraNumber, updatedAt, …) comes from the stored record or the server,
 // never from the request body (closes the mass-assignment gap of the old
 // `...slotData` spread). siteId is decided by the route (siteForSave).
-export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: boolean = false): ParkingSlot {
+// 005 B2: validated slot save.
+//  - A client-sent id that does not exist means a NEW slot; new ids are always made by the server (never the client's).
+//  - Only the fields that CHANGE are validated on update (legacy stored values survive unrelated edits, AC-02).
+//    On create every field is checked and nothing is defaulted (AC-14); status defaults to VACANT.
+//  - Slot numbers are unique per site (trim + upper-case): a create or a rename onto a used number is a 409 (AC-11/12).
+export type SlotSaveFailure = {
+  ok: false; status: 400 | 409; errorCode: 'ERR_VALIDATION' | 'ERR_DUPLICATE_SLOT'; field?: string; value?: string; allowed?: string[]; message: string;
+};
+export type SlotSaveSuccess = { ok: true; slot: ParkingSlot; created: boolean; changed: string[] };
+export type SlotSaveResult = SlotSaveFailure | SlotSaveSuccess;
+export const isSlotSaveFailure = (r: SlotSaveResult): r is SlotSaveFailure => r.ok === false;
+
+const SLOT_FIELD_LABELS: Record<SlotField, string> = SLOT_FIELD_NAMES;
+const SLOT_FIELD_ORDER: SlotField[] = ['basement', 'slotType', 'height', 'parkingType', 'allocation', 'status'];
+const hasValue = (v: unknown): boolean => v !== undefined && v !== null && String(v).trim() !== '';
+const slotSiteOf = (s: { siteId?: string }): string => s.siteId || DEFAULT_SITE_ID;
+
+export function slotNumberKey(n: unknown): string { return String(n === undefined || n === null ? '' : n).trim().toUpperCase(); }
+
+function fieldFailure(field: SlotField, missing: boolean, value?: unknown): SlotSaveFailure {
+  const opts = optionsFor(field);
+  const label = SLOT_FIELD_LABELS[field];
+  return {
+    ok: false, status: 400, errorCode: 'ERR_VALIDATION', field, allowed: opts.map((o) => o.code),
+    ...(value !== undefined && hasValue(value) ? { value: String(value).slice(0, 40) } : {}),
+    message: missing ? `${label} is required. Choose one of: ${opts.map((o) => o.label).join(', ')}.` : `${label} must be one of: ${opts.map((o) => o.label).join(', ')}.`,
+  };
+}
+
+export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, opts: { deferSync?: boolean; matchByNumber?: boolean } = {}): SlotSaveResult {
   const storeData = getStore();
   noteSlotSetChanged(); // 003: the slot object is replaced or added
   const now = new Date().toISOString();
-  let existingIndex = -1;
   const dims = parseSlotDimensions(slotData).values; // routes validate first; invalid values are ignored here
+  const targetSite = slotData.siteId || DEFAULT_SITE_ID;
+  const numberKey = slotNumberKey(slotData.slotNumber);
 
-  if (slotData.id) {
-    existingIndex = storeData.slots.findIndex(s => s.id === slotData.id);
-  } else if (slotData.slotNumber) {
-    // Match on siteId + slotNumber together, not slotNumber alone — two
-    // different sites can legitimately have the same slot number (e.g.
-    // both using "B1-P01-S01"), and matching by number only would treat
-    // them as the same slot and silently overwrite one with the other.
-    // Same fix, same reasoning as the identical change in
-    // saveOrUpdateEmployee above — resolve missing siteId on both
-    // sides, don't strictly compare against literally undefined.
-    const targetSiteId = slotData.siteId || DEFAULT_SITE_ID;
-    existingIndex = storeData.slots.findIndex(
-      s => s.slotNumber.toUpperCase() === slotData.slotNumber!.toUpperCase() && (s.siteId || DEFAULT_SITE_ID) === targetSiteId
-    );
+  // 1. Find the stored slot: by id (the editor) or, for CSV import, by number at the site.
+  let existingIndex = -1;
+  if (opts.matchByNumber) {
+    existingIndex = storeData.slots.findIndex((s) => slotNumberKey(s.slotNumber) === numberKey && slotSiteOf(s) === targetSite);
+  } else if (slotData.id) {
+    existingIndex = storeData.slots.findIndex((s) => s.id === slotData.id);
+  }
+  const existing = existingIndex >= 0 ? storeData.slots[existingIndex] : undefined;
+
+  // 2. Validate: changed fields only on update, every field on create.
+  const values: Partial<Record<SlotField, string>> = {};
+  for (const field of SLOT_FIELD_ORDER) {
+    const raw = (slotData as any)[field];
+    if (existing) {
+      const stored = (existing as any)[field];
+      if (!hasValue(raw) || String(raw) === String(stored)) { values[field] = stored; continue; } // unchanged: stored back as is
+    } else if (!hasValue(raw)) {
+      if (field === 'status') { values[field] = 'VACANT'; continue; }
+      return fieldFailure(field, true);
+    }
+    const code = toCode(field, raw);
+    if (code === null) return fieldFailure(field, false, raw);
+    values[field] = code;
+  }
+  const floorLocation = typeof slotData.floorLocation === 'string' ? slotData.floorLocation.trim() : '';
+  if (!existing && !floorLocation) {
+    return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'floorLocation', message: 'Floor location is required.' };
+  }
+  if (!numberKey) {
+    return { ok: false, status: 400, errorCode: 'ERR_VALIDATION', field: 'slotNumber', message: 'Slot Number is required.' };
   }
 
-  if (existingIndex >= 0) {
-    const existing = storeData.slots[existingIndex];
-    const status = slotData.status || existing.status;
+  // 3. Unique number per site (create, a rename onto another slot's number, or a
+  // move to another site): always checked against the site the slot will be in.
+  const finalNumber = numberKey || (existing ? slotNumberKey(existing.slotNumber) : '');
+  const siteForCheck = existing ? (slotData.siteId || existing.siteId || DEFAULT_SITE_ID) : targetSite;
+  if (!existing || finalNumber !== slotNumberKey(existing.slotNumber) || siteForCheck !== slotSiteOf(existing)) {
+    const clash = storeData.slots.some((s) => s !== existing && slotNumberKey(s.slotNumber) === finalNumber && slotSiteOf(s) === siteForCheck);
+    if (clash) {
+      return { ok: false, status: 409, errorCode: 'ERR_DUPLICATE_SLOT', field: 'slotNumber', message: `Slot ${finalNumber} already exists at this site — edit that slot instead.` };
+    }
+  }
+
+  // 4. Write.
+  if (existing) {
+    const status = values.status as ParkingSlot['status'];
     const updated: ParkingSlot = {
       ...existing,
       siteId: slotData.siteId || existing.siteId,
-      slotNumber: (slotData.slotNumber || existing.slotNumber).trim().toUpperCase(),
-      basement: slotData.basement || existing.basement,
-      floorLocation: slotData.floorLocation || existing.floorLocation,
+      slotNumber: finalNumber,
+      basement: values.basement as ParkingSlot['basement'],
+      floorLocation: floorLocation || existing.floorLocation,
       puzzleNumber: slotData.puzzleNumber !== undefined ? (slotData.puzzleNumber || undefined) : existing.puzzleNumber,
-      slotType: slotData.slotType || existing.slotType,
-      height: slotData.height || existing.height,
-      parkingType: slotData.parkingType || existing.parkingType,
-      allocation: slotData.allocation || existing.allocation,
+      slotType: values.slotType as ParkingSlot['slotType'],
+      height: values.height as string,
+      parkingType: values.parkingType as ParkingSlot['parkingType'],
+      allocation: values.allocation as ParkingSlot['allocation'],
       status,
       // Only the stored vehicle is kept (a vehicle is set by entry/exit, never
       // by a slot save); a VACANT slot has none.
@@ -2378,37 +2770,34 @@ export function saveOrUpdateSlot(slotData: Partial<ParkingSlot>, deferSync: bool
       updatedAt: now,
     };
     applyDimensions(updated, dims);
+    const tracked: Array<keyof ParkingSlot> = ['slotNumber', 'basement', 'floorLocation', 'puzzleNumber', 'slotType', 'height', 'parkingType', 'allocation', 'status', 'lengthM', 'palletLevel'];
+    const changed = tracked.filter((k) => String((existing as any)[k] ?? '') !== String((updated as any)[k] ?? '')).map(String);
     storeData.slots[existingIndex] = updated;
+    noteSlotSetChanged(); // 003: the slot object is replaced
     // deferSync lets a caller doing many updates in a loop (bulkUploadSlots)
-    // batch them into one sync at the end, instead of each iteration
-    // triggering its own immediate targeted write — see bulkUploadSlots
-    // below for why that distinction matters.
-    if (!deferSync) saveDB([{ collection: 'slots', ids: [updated.id] }]);
-    return updated;
-  } else {
-    const newSlot: ParkingSlot = {
-      // 003 R1-2: always a server-made random id for a NEW slot (save, bulk
-      // upload). slot-<ms>-<0..999> collided within one bulk upload; an id the
-      // client sends that doesn't exist yet is not used either. Existing ids
-      // are never changed (the update branch above keeps them).
-      id: `slot-${crypto.randomUUID()}`,
-      siteId: slotData.siteId || DEFAULT_SITE_ID,
-      slotNumber: (slotData.slotNumber || 'B1-P01-S01').trim().toUpperCase(),
-      basement: slotData.basement || 'B1',
-      floorLocation: slotData.floorLocation || 'Level 1 Stacker',
-      ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
-      slotType: slotData.slotType || 'SEDAN',
-      height: slotData.height || 'Standard (2.0m)',
-      parkingType: slotData.parkingType || 'PUZZLE',
-      allocation: slotData.allocation || 'EMPLOYEE',
-      status: slotData.status || 'VACANT',
-      updatedAt: now,
-    };
-    applyDimensions(newSlot, dims);
-    storeData.slots.unshift(newSlot);
-    if (!deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
-    return newSlot;
+    // batch them into one targeted write at the end instead of one per row.
+    if (!opts.deferSync) saveDB([{ collection: 'slots', ids: [updated.id] }]);
+    return { ok: true, slot: updated, created: false, changed };
   }
+  const newSlot: ParkingSlot = {
+    id: `slot-${crypto.randomUUID()}`, // always server-made (003 R1-2: random, so a bulk upload never collides); a client id is never used
+    siteId: targetSite,
+    slotNumber: finalNumber,
+    basement: values.basement as ParkingSlot['basement'],
+    floorLocation,
+    ...(slotData.puzzleNumber ? { puzzleNumber: slotData.puzzleNumber } : {}),
+    slotType: values.slotType as ParkingSlot['slotType'],
+    height: values.height as string,
+    parkingType: values.parkingType as ParkingSlot['parkingType'],
+    allocation: values.allocation as ParkingSlot['allocation'],
+    status: values.status as ParkingSlot['status'],
+    updatedAt: now,
+  };
+  applyDimensions(newSlot, dims);
+  storeData.slots.unshift(newSlot);
+  noteSlotSetChanged(); // 003: a slot is added
+  if (!opts.deferSync) saveDB([{ collection: 'slots', ids: [newSlot.id] }]);
+  return { ok: true, slot: newSlot, created: true, changed: [] };
 }
 
 /**
@@ -2429,53 +2818,69 @@ export function deleteSlot(slotId: string, force: boolean = false): { success: b
   }
 
   storeData.slots = storeData.slots.filter((s) => s.id !== slotId);
-  saveDB();
+  saveDB([{ collection: 'slots', ids: [slotId] }]); // 006 D3: removed from Firestore too
 
   return { success: true, message: `Slot ${slot.slotNumber} deleted.` };
 }
 
-// Bulk Upload Slot Inventory
-export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[] } {
+// Bulk Upload Slot Inventory (005 B3, AC-05/AC-13)
+//  - Matching is by slot number at the site only: a row's own id is ignored.
+//  - Every field goes through toCode; an unknown value is a row error naming the field, and the row is skipped.
+//  - A number repeated INSIDE the file makes every occurrence a row error (none is saved).
+//  - A number that exists at the site updates that slot; never a second slot.
+export interface SlotUploadRow { row: number; slotNumber: string; result: 'added' | 'updated' | 'error'; errors?: string[] }
+export function bulkUploadSlots(list: Array<Partial<ParkingSlot>>): { added: number; updated: number; total: number; errors: string[]; rows: SlotUploadRow[] } {
   let added = 0;
   let updated = 0;
   const changedIds: string[] = [];
   const errors: string[] = [];
+  const rows: SlotUploadRow[] = [];
+
+  // Numbers repeated inside the file (per site): row numbers of every occurrence.
+  const occurrences: Record<string, number[]> = {};
+  list.forEach((item, index) => {
+    if (!item || !item.slotNumber) return;
+    const key = `${item.siteId || DEFAULT_SITE_ID}|${slotNumberKey(item.slotNumber)}`;
+    (occurrences[key] = occurrences[key] || []).push(index + 1);
+  });
+
+  const fail = (index: number, num: string, messages: string[]) => {
+    for (const m of messages) errors.push(`Row ${index + 1}${num ? ` (${num})` : ''}: ${m}`);
+    rows.push({ row: index + 1, slotNumber: num, result: 'error', errors: messages });
+  };
 
   for (const [index, item] of list.entries()) {
-    if (!item.slotNumber) continue;
+    const num = slotNumberKey(item && item.slotNumber);
+    // 005 R2-2: a row without a slot number gets a result row too, so an API client can map results back.
+    if (!item || !num) { fail(index, '', ['Slot number is required.']); continue; }
+    const same = occurrences[`${item.siteId || DEFAULT_SITE_ID}|${num}`] || [];
+    if (same.length > 1) {
+      fail(index, num, [`Slot number repeated in this file (rows ${same.join(', ')}).`]);
+      continue;
+    }
     // 002 B1: a bad Length / Pallet level is a row error; the row is skipped.
     const dimErrors = parseSlotDimensions(item).errors;
     if (Object.keys(dimErrors).length > 0) {
-      errors.push(`Row ${index + 1} (${String(item.slotNumber).trim().toUpperCase()}): ${Object.values(dimErrors).join(' ')}`);
+      fail(index, num, Object.values(dimErrors));
       continue;
     }
-    const storeData = getStore();
-    const cleanSlotNum = item.slotNumber.trim().toUpperCase();
-
-    // Same reasoning as the identical fix in bulkUploadEmployees above.
-    const targetSiteId = item.siteId || DEFAULT_SITE_ID;
-    const existing = storeData.slots.find(
-      s => s.slotNumber.toUpperCase() === cleanSlotNum && (s.siteId || DEFAULT_SITE_ID) === targetSiteId
-    );
-
-    if (existing) {
-      updated++;
-    } else {
-      added++;
+    // deferSync=true: each row updates in memory and the local JSON backup;
+    // the rows are written to Firestore in one targeted batch below.
+    const r = saveOrUpdateSlot({ ...item, id: undefined }, { deferSync: true, matchByNumber: true });
+    if (isSlotSaveFailure(r)) {
+      fail(index, num, [r.value ? `${r.message} (got "${r.value}")` : r.message]);
+      continue;
     }
-    // deferSync=true: each row updates in-memory and the local JSON
-    // backup, but doesn't trigger its own Firestore write — a bulk
-    // upload of hundreds of rows would otherwise mean hundreds of
-    // individual immediate writes instead of one real batch.
-    const saved = saveOrUpdateSlot(item, true);
-    changedIds.push(saved.id);
+    if (r.created) added++; else updated++;
+    rows.push({ row: index + 1, slotNumber: num, result: r.created ? 'added' : 'updated' });
+    changedIds.push(r.slot.id);
   }
 
   if (changedIds.length > 0) {
     saveDB([{ collection: 'slots', ids: changedIds }]);
   }
 
-  return { added, updated, total: getStore().slots.length, errors };
+  return { added, updated, total: getStore().slots.length, errors, rows };
 }
 
 // ==========================================
@@ -2600,22 +3005,20 @@ export function updateDemoRequestStatus(id: string, status: DemoRequestStatus, n
 // copy are the only copies.
 export async function deleteDemoRequest(id: string): Promise<'deleted' | 'not-found' | 'failed'> {
   const storeData = getStore();
-  if (!(storeData.demoRequests || []).some((r) => r.id === id)) return 'not-found';
-  if (isFirestoreConfigured()) {
-    const db = getFirestoreDb();
-    if (!db || !storeReady) return 'failed';
-    try {
-      const batch = db.batch();
-      batch.delete(db.collection('demoRequests').doc(id));
-      await batch.commit();
-    } catch (err) {
-      console.error('[firestore] Demo request delete failed; record kept:', (err as Error)?.message || err);
-      return 'failed';
-    }
+  const index = (storeData.demoRequests || []).findIndex((r) => r.id === id);
+  if (index < 0) return 'not-found';
+  if (isFirestoreConfigured() && (!getFirestoreDb() || !storeReady)) return 'failed';
+  // 006 D3: remove from memory, delete through the persistence core; on a
+  // failed delete put the record back (kept) and say so.
+  const [removed] = storeData.demoRequests.splice(index, 1);
+  try {
+    await persistIds([{ collection: 'demoRequests', ids: [id] }]);
+  } catch (err) {
+    console.error('[firestore] Demo request delete failed; record kept:', (err as Error)?.message || err);
+    const current = getStore();
+    if (!current.demoRequests.some((r) => r.id === id)) current.demoRequests.splice(Math.min(index, current.demoRequests.length), 0, removed);
+    return 'failed';
   }
-  // Re-read: the list may have changed while the delete was awaited.
-  const current = getStore();
-  current.demoRequests = (current.demoRequests || []).filter((r) => r.id !== id);
   writeLocalCopy();
   return 'deleted';
 }
@@ -2631,8 +3034,7 @@ export function expireDemoRequests(now: Date = new Date()): number {
   if (expired.length === 0) return 0;
   const gone = new Set(expired);
   storeData.demoRequests = storeData.demoRequests.filter((r) => !gone.has(r.id));
-  writeLocalCopy();
-  void deleteFirestoreDocs('demoRequests', expired);
+  saveDB([{ collection: 'demoRequests', ids: expired }]); // local copy + Firestore delete (006 D3)
   return expired.length;
 }
 
@@ -2671,7 +3073,7 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
   if (existing) {
     if (!existing.isActive) {
       existing.isActive = true;
-      saveDB();
+      saveDB([{ collection: 'whitelistedDomains', ids: [existing.id] }]);
       return { success: true, message: `Domain @${cleanDomain} re-activated on Whitelist.`, domain: existing };
     }
     return { success: false, message: `Domain @${cleanDomain} is ALREADY on the Whitelist.` };
@@ -2687,7 +3089,7 @@ export function addWhitelistedDomain(domainInput: string, addedBy: string = 'Par
   };
 
   storeData.whitelistedDomains.push(newDom);
-  saveDB();
+  saveDB([{ collection: 'whitelistedDomains', ids: [newDom.id] }]);
 
   return {
     success: true,
@@ -2716,7 +3118,7 @@ export function removeWhitelistedDomain(domainId: string): { success: boolean; m
 
   const removed = storeData.whitelistedDomains[idx];
   storeData.whitelistedDomains.splice(idx, 1);
-  saveDB();
+  saveDB([{ collection: 'whitelistedDomains', ids: [removed.id] }]); // 006 D3
 
   return {
     success: true,
@@ -2811,7 +3213,7 @@ export function submitRegistrationRequest(data: Partial<RegistrationRequest>): {
     storeData.registrationRequests = [];
   }
   storeData.registrationRequests.unshift(newRequest);
-  saveDB();
+  saveDB([{ collection: 'registrationRequests', ids: [newRequest.id] }]);
 
   return {
     success: true,
@@ -2870,7 +3272,10 @@ export function approveRegistrationRequest(requestId: string): { success: boolea
     registrationType: req.registrationType || 'EMPLOYEE_SELF',
   });
 
-  saveDB();
+  saveDB([
+    { collection: 'registrationRequests', ids: [req.id] },
+    { collection: 'employees', ids: [newEmp.id] },
+  ]);
 
   return {
     success: true,
@@ -2894,7 +3299,7 @@ export function rejectRegistrationRequest(requestId: string, reason?: string): {
   req.reviewedAt = new Date().toISOString();
   req.rejectionReason = reason || 'Rejected by Parking Admin';
 
-  saveDB();
+  saveDB([{ collection: 'registrationRequests', ids: [req.id] }]);
 
   return {
     success: true,
@@ -3131,17 +3536,21 @@ export function migrateSiteData(fromSiteId: string, toSiteId: string): { success
   const storeData = getStore();
   const resolveSiteId = (x: { siteId?: string }) => x.siteId || DEFAULT_SITE_ID;
   const migrated: Record<string, number> = {};
+  const movedIds: PersistTarget[] = []; // 006 D4: every moved record is written as itself
 
-  const migrateCollection = <T extends { siteId?: string }>(items: T[], label: string) => {
+  const migrateCollection = <T extends { siteId?: string; id?: string }>(items: T[], label: string) => {
     let count = 0;
+    const ids: string[] = [];
     for (const item of items) {
       if (resolveSiteId(item) === fromSiteId) {
         item.siteId = toSiteId;
         count++;
+        if (item.id) ids.push(item.id);
       }
     }
     migrated[label] = count;
     noteSlotSetChanged(); // 003: slots may have moved site
+    if (ids.length > 0) movedIds.push({ collection: label as keyof StoreData, ids });
   };
 
   migrateCollection(storeData.slots, 'slots');
@@ -3158,7 +3567,7 @@ export function migrateSiteData(fromSiteId: string, toSiteId: string): { success
     return { success: false, message: `No records found under site '${fromSiteId}' — nothing to migrate.`, migrated };
   }
 
-  saveDB();
+  saveDB(movedIds);
 
   return {
     success: true,
@@ -3361,7 +3770,8 @@ export function bulkUploadRegistrations(
   let added = 0;
   let updated = 0;
   const errors: string[] = [];
-
+  const touchedRequests: string[] = [];
+  const touchedEmployees: string[] = [];
 
   items.forEach((item, index) => {
     const email = (item.email || '').trim().toLowerCase();
@@ -3410,7 +3820,7 @@ export function bulkUploadRegistrations(
       if (autoApprove) {
         existing.status = 'APPROVED';
         existing.reviewedAt = now;
-        saveOrUpdateEmployee({
+        touchedEmployees.push(saveOrUpdateEmployee({
           employeeId: existing.employeeId,
           siteId: existing.siteId,
           name: existing.name,
@@ -3424,12 +3834,13 @@ export function bulkUploadRegistrations(
           status: 'ACTIVE',
           isActive: true,
           registrationType: reqType,
-        });
+        }, true).id);
       }
+      touchedRequests.push(existing.id);
       updated++;
     } else {
       const newReq: RegistrationRequest = {
-        id: `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        id: uniqueRecordId('req', storeData.registrationRequests),
         siteId: item.siteId || DEFAULT_SITE_ID,
         employeeId: item.employeeId || `EMP-${2000 + Math.floor(Math.random() * 8000)}`,
         name: name,
@@ -3447,7 +3858,7 @@ export function bulkUploadRegistrations(
       };
 
       if (isApproved) {
-        saveOrUpdateEmployee({
+        touchedEmployees.push(saveOrUpdateEmployee({
           siteId: newReq.siteId,
           employeeId: newReq.employeeId,
           name: newReq.name,
@@ -3461,15 +3872,21 @@ export function bulkUploadRegistrations(
           status: 'ACTIVE',
           isActive: true,
           registrationType: reqType,
-        });
+        }, true).id);
       }
 
       storeData.registrationRequests.unshift(newReq);
+      touchedRequests.push(newReq.id);
       added++;
     }
   });
 
-  saveDB();
+  // 006 D4: write exactly the records this upload touched (deferred employee
+  // saves above, one chunked write here).
+  saveDB([
+    { collection: 'registrationRequests', ids: touchedRequests },
+    { collection: 'employees', ids: touchedEmployees },
+  ]);
 
   return {
     success: true,
@@ -3605,10 +4022,10 @@ export function changeVehicleSlot(
 }
 
 // --- Platform Master Site Configuration & Invoicing Functions ---
-export function getSites(): SiteConfig[] {
-  const storeData = getStore();
-  if (!storeData.sites || storeData.sites.length === 0) {
-    storeData.sites = [
+// 005 AC-20: the demo sites, built only in local demo mode (the guard throws on live).
+function buildDemoSites(): SiteConfig[] {
+  assertLocalDemoMode();
+  return [
       {
         id: 'site-1',
         siteCode: 'SITE-BLR-01',
@@ -3663,8 +4080,18 @@ export function getSites(): SiteConfig[] {
         onboardedAt: new Date(Date.now() - 30 * 86400000).toISOString(),
         updatedAt: new Date().toISOString(),
       },
-    ];
-    saveDB();
+  ];
+}
+
+export function getSites(): SiteConfig[] {
+  const storeData = getStore();
+  if (!storeData.sites || storeData.sites.length === 0) {
+    if (isLocalDemoMode()) {
+      storeData.sites = buildDemoSites(); // local demo: in memory only, no saveDB()
+    } else {
+      storeData.sites = storeData.sites || []; // 005 AC-17/19 (B-G1): live never creates sites
+      if (storeReady) notePrevented('getSites');
+    }
   }
   return storeData.sites;
 }
@@ -3741,7 +4168,10 @@ export function onboardSite(siteInput: Partial<SiteConfig>): { success: boolean;
   };
   storeData.invoices.unshift(initialInvoice);
 
-  saveDB();
+  saveDB([
+    { collection: 'sites', ids: [newSite.id] },
+    { collection: 'invoices', ids: [initialInvoice.id] },
+  ]);
 
   return {
     success: true,
@@ -3769,7 +4199,7 @@ export function updateSiteStatus(
     delete site.holdReason;
   }
 
-  saveDB();
+  saveDB([{ collection: 'sites', ids: [site.id] }]);
 
   const statusLabel = status === 'ACTIVE' ? 'RESUMED / ACTIVE' : status === 'ON_HOLD' ? 'PLACED ON HOLD' : 'DEACTIVATED';
   return {
@@ -3789,7 +4219,7 @@ export function deleteSite(siteId: string): { success: boolean; message: string 
   const removed = storeData.sites[idx];
   storeData.sites.splice(idx, 1);
 
-  saveDB();
+  saveDB([{ collection: 'sites', ids: [removed.id] }]); // 006 D3
 
   return {
     success: true,
@@ -3857,7 +4287,7 @@ export function updateSitePricing(siteId: string, pricing: SitePricing): { succe
   site.pricing = pricing;
   site.updatedAt = new Date().toISOString();
 
-  saveDB();
+  saveDB([{ collection: 'sites', ids: [site.id] }]);
 
   return {
     success: true,
@@ -3909,7 +4339,7 @@ export function generateSiteInvoice(data: {
   if (!storeData.invoices) storeData.invoices = [];
   storeData.invoices.unshift(newInvoice);
 
-  saveDB();
+  saveDB([{ collection: 'invoices', ids: [newInvoice.id] }]);
 
   return {
     success: true,
@@ -3929,7 +4359,7 @@ export function updateInvoiceStatus(
   if (!inv) return { success: false, message: 'Invoice not found.' };
 
   inv.status = status;
-  saveDB();
+  saveDB([{ collection: 'invoices', ids: [inv.id] }]);
 
   return {
     success: true,
@@ -3944,8 +4374,7 @@ export function updateInvoiceStatus(
 export function getValetTickets(): ValetTicket[] {
   const storeData = getStore();
   if (!storeData.valetTickets) {
-    storeData.valetTickets = [];
-    saveDB();
+    storeData.valetTickets = []; // an empty array, no record: nothing to save (006 D4)
   }
   return storeData.valetTickets;
 }
@@ -4092,14 +4521,16 @@ export function requestValetRetrieval(query: string, siteId?: string): { success
 // USER MANAGEMENT & RBAC SERVICE FUNCTIONS
 // ==========================================
 
+// 005 AC-19 (B-G3): stored roles + every built-in role whose id is not stored, merged per call.
+// store.appRoles is never changed here and nothing is saved, so a later full sync can never write a default role.
 export function getAppRoles(): RolePermissionConfig[] {
   const storeData = getStore();
-  if (!storeData.appRoles || storeData.appRoles.length === 0) {
-    const { roles: defaultRoles } = getDefaultRolesAndUsers();
-    storeData.appRoles = defaultRoles;
-    saveDB();
-  }
-  return storeData.appRoles;
+  const stored = storeData.appRoles || [];
+  const have = new Set(stored.map((r) => r.id));
+  const missing = getDefaultRoles().filter((r) => !have.has(r.id));
+  if (missing.length === 0) return stored;
+  if (stored.length === 0 && storeReady) notePrevented('getAppRoles');
+  return [...stored, ...missing];
 }
 
 export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { success: boolean; message: string; role?: RolePermissionConfig } {
@@ -4107,7 +4538,12 @@ export function saveAppRole(roleConfig: Partial<RolePermissionConfig>): { succes
   if (!storeData.appRoles) storeData.appRoles = [];
 
   if (roleConfig.id) {
-    const index = storeData.appRoles.findIndex((r) => r.id === roleConfig.id);
+    let index = storeData.appRoles.findIndex((r) => r.id === roleConfig.id);
+    if (index === -1) {
+      // 005: a built-in role lives only in memory until a Master edits it; then it is stored (by id).
+      const builtIn = getDefaultRoles().find((r) => r.id === roleConfig.id);
+      if (builtIn) { storeData.appRoles.push(JSON.parse(JSON.stringify(builtIn))); index = storeData.appRoles.length - 1; }
+    }
     if (index !== -1) {
       storeData.appRoles[index] = { ...storeData.appRoles[index], ...roleConfig } as RolePermissionConfig;
       // Real bug fixed here, same class already fixed for passwords
@@ -4174,7 +4610,7 @@ export function deleteAppRole(roleId: string): { success: boolean; message: stri
   }
 
   storeData.appRoles = storeData.appRoles.filter((r) => r.id !== roleId);
-  saveDB();
+  saveDB([{ collection: 'appRoles', ids: [roleId] }]); // 006 D3
 
   return { success: true, message: `Role '${role.roleName}' removed successfully.` };
 }
@@ -4218,9 +4654,14 @@ export function toPublicUsers(users: AppUser[]): PublicAppUser[] {
 export function getAppUsers(): AppUser[] {
   const storeData = getStore();
   if (!storeData.appUsers || storeData.appUsers.length === 0) {
-    const { users: defaultUsers } = getDefaultRolesAndUsers();
-    storeData.appUsers = defaultUsers;
-    saveDB();
+    if (isLocalDemoMode()) {
+      // Local demo only: the defaults live in memory (and the local copy); no Firestore write.
+      storeData.appUsers = getDefaultRolesAndUsers().users;
+    } else {
+      // 005 AC-19: live never builds or writes default users here; the bootstrap Master comes only from ensureBootstrapMaster().
+      storeData.appUsers = storeData.appUsers || [];
+      if (storeReady) notePrevented('getAppUsers');
+    }
   }
   return storeData.appUsers;
 }
@@ -4253,7 +4694,7 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
   if (!storeData.appUsers) storeData.appUsers = [];
 
   // Match role name
-  const role = (storeData.appRoles || []).find((r) => r.id === userData.roleId);
+  const role = getAppRoles().find((r) => r.id === userData.roleId);
   const roleName = role ? role.roleName : userData.roleName || 'Site Facility Manager';
 
   // Site Names lookup
@@ -4317,7 +4758,7 @@ export function saveAppUser(userData: Partial<AppUser>, requestingUserId?: strin
       // passwordSalt, id, createdAt, siteScopeType, ...). Only these fields
       // are editable here; passwords go through plainPassword / reset tokens.
       const nextRoleId = userData.roleId !== undefined ? userData.roleId : existing.roleId;
-      const nextRole = (storeData.appRoles || []).find((r) => r.id === nextRoleId);
+      const nextRole = getAppRoles().find((r) => r.id === nextRoleId);
       const pick = <K extends keyof AppUser>(k: K): AppUser[K] => (userData[k] !== undefined ? (userData[k] as AppUser[K]) : existing[k]);
       const nextScopeType = pick('siteScopeType');
       const nextSiteIds = pick('assignedSiteIds');
@@ -4513,7 +4954,7 @@ export function deleteAppUser(userId: string, requestingUserId?: string): { succ
   }
 
   storeData.appUsers = storeData.appUsers.filter((u) => u.id !== userId);
-  saveDB();
+  saveDB([{ collection: 'appUsers', ids: [userId] }]); // 006 D3
 
   return { success: true, message: `User '${user.fullName}' removed from the system.` };
 }
@@ -4578,6 +5019,9 @@ export function saveDisplay(display: LiveDisplay) {
   saveDB([{ collection: 'displays', ids: [display.id] }]);
 }
 
+// 006: every display write below ends in saveDB([{ collection, ids }]) = persistIds by id (targeted, no
+// batch/set/delete here, never an untargeted saveDB()). Inside an API write it is registered with the
+// reply gate (failed save -> rolled back, 503 ERR_PERSIST_FAILED); from a TV poll it is a background save.
 // Last seen (03 "Online / last seen"): persisted at most every 10 minutes per
 // display, in ONE targeted write for every display that is due (B6: a write
 // per display rewrote the whole local copy each time). Not a display change.
@@ -4678,7 +5122,9 @@ export function validateDisplayInput(
   return { values, errors };
 }
 
-export function createDisplay(siteId: string, values: Required<DisplayInput>, actor: string): LiveDisplay {
+// `save: false`: the caller saves right after (the create route issues the credential, which saves once), so a
+// transient failure can't leave the display stored behind a 503.
+export function createDisplay(siteId: string, values: Required<DisplayInput>, actor: string, opts: { save?: boolean } = {}): LiveDisplay {
   const storeData = getStore();
   if (!storeData.displays) storeData.displays = [];
   const now = new Date().toISOString();
@@ -4702,7 +5148,7 @@ export function createDisplay(siteId: string, values: Required<DisplayInput>, ac
   };
   if (values.layout && values.layout !== 'SLOT_CARDS') display.layout = values.layout;
   storeData.displays.push(display);
-  saveDisplay(display);
+  if (opts.save !== false) saveDisplay(display);
   return display;
 }
 
@@ -4804,8 +5250,8 @@ export function pruneDisplayMessages(siteId: string, nowMs = Date.now()): string
   if (old.length === 0) return [];
   const gone = new Set(old);
   storeData.displayMessages = storeData.displayMessages.filter((m) => !gone.has(m.id));
-  writeLocalCopy();
-  void deleteFirestoreDocs('displayMessages', old);
+  // 006: by id through persistIds (ids gone from memory are deleted); inside an API write the reply waits for it and a failure rolls back (503).
+  saveDB([{ collection: 'displayMessages', ids: old }]);
   return old;
 }
 

@@ -62,7 +62,7 @@ for (let s = 0; s < SITES; s++) {
   const r = (await call('POST', '/sites/onboard', { body: { siteName: `Load ${s}`, siteCode: `LD${s}`, city: 'Pune', totalSlots: SLOTS_PER_SITE } })).json();
   const site = r.site.id;
   const rows = Array.from({ length: SLOTS_PER_SITE }, (_, i) => ({ slotNumber: `S${s}-${levels[i % 4]}-${String(i).padStart(4, '0')}`, basement: levels[i % 4],
-    floorLocation: '', slotType: i % 9 === 0 ? 'TWO_WHEELER' : 'SEDAN', height: '2.0m', parkingType: i % 3 === 0 ? 'GROUND' : 'PUZZLE', allocation: 'EMPLOYEE', status: 'VACANT' }));
+    floorLocation: 'Level 1 near lift', slotType: i % 9 === 0 ? 'TWO_WHEELER' : 'SEDAN', height: '2.0m', parkingType: i % 3 === 0 ? 'GROUND' : 'PUZZLE', allocation: 'EMPLOYEE', status: 'VACANT' }));
   for (let i = 0; i < rows.length; i += 120) await call('POST', '/slots/bulk-upload', { site, body: { slots: rows.slice(i, i + 120) } });
   sites.push({ id: site, codes: rows.map((x) => x.slotNumber) });
 }

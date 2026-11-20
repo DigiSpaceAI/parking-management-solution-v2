@@ -3,6 +3,7 @@
  * One rule each, so cards, list rows, the puzzle view and the modal agree.
  */
 import type { ParkingSlot, SlotStatus } from '../types';
+import { heightMetres } from './slotFields';
 
 /** /slots adds these to each slot (002 B1/B2); they are API extras, not stored fields. */
 export interface LiveSlot extends ParkingSlot {
@@ -30,24 +31,35 @@ export function isPuzzle(slot: Pick<ParkingSlot, 'parkingType'>): boolean {
   return slot.parkingType === 'PUZZLE';
 }
 
-/** Height in metres: the API's `heightM`, else parsed from the stored text ("2.0m"); null when unknown. */
+/** Height in metres: the API's `heightM`, else read by the shared parser (codes "2.5m" and old labels "High Clearance (2.5m)"); null when unknown. */
 export function heightOf(slot: Pick<LiveSlot, 'heightM' | 'height'>): number | null {
   if (typeof slot.heightM === 'number' && slot.heightM > 0) return slot.heightM;
-  const n = parseFloat(String(slot.height ?? '').replace(',', '.'));
+  const n = heightMetres(slot.height);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** The line that explains a slot code: "Puzzle 03 · Pallet 1", "Ground · Bay 14", "Stack · Bay 2". */
-export function decodeSlot(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber' | 'slotNumber' | 'palletLevel' | 'floorLocation'>): string {
+/**
+ * The line that explains a slot code: "Puzzle 03 · Pallet 1", "Ground · Bay 14", "Stack · Bay 2".
+ * Slot cards pass `withPallet = false` (005 AC-25: no level or pallet text on a card): "Puzzle 03".
+ */
+export function decodeSlot(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber' | 'slotNumber' | 'palletLevel' | 'floorLocation'>, withPallet = true): string {
   if (isPuzzle(slot)) {
     const pid = puzzleIdOf(slot);
     const p = /P(\d+)$/i.exec(pid);
-    const level = palletLevelOf(slot);
+    const level = withPallet ? palletLevelOf(slot) : null;
     return [`Puzzle ${p ? p[1] : pid}`, level ? `Pallet ${level}` : null].filter(Boolean).join(' · ');
   }
   const kind = slot.parkingType === 'STACK' ? 'Stack' : 'Ground';
   const bay = /(\d+)$/.exec(slot.slotNumber || '');
   return bay ? `${kind} · Bay ${Number(bay[1])}` : [kind, slot.floorLocation].filter(Boolean).join(' · ');
+}
+
+/**
+ * The decode line on a Live parking slot card (005 AC-25): never a Puzzle / Pallet / Level line.
+ * A puzzle slot gets none (its stacker is named by the stacker header); ground and stack slots keep "Ground · Bay 14".
+ */
+export function cardDecode(slot: Pick<ParkingSlot, 'parkingType' | 'puzzleNumber' | 'slotNumber' | 'palletLevel' | 'floorLocation'>): string {
+  return isPuzzle(slot) ? '' : decodeSlot(slot, false);
 }
 
 /** Vacant first, then reserved, maintenance, occupied; then slot code in natural order. */

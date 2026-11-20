@@ -18,7 +18,7 @@ before(async () => {
   for (const k of Object.keys(entries)) mod[k] = await import(pathToFileURL(join(out, `${k}.js`)).href);
 });
 
-const s = (id, slotNumber, basement, parkingType, status, extra = {}) => ({ id, slotNumber, basement, parkingType, status, slotType: 'SEDAN', allocation: 'EMPLOYEE', floorLocation: '', height: '2.0m', ...extra });
+const s = (id, slotNumber, basement, parkingType, status, extra = {}) => ({ id, slotNumber, basement, parkingType, status, slotType: 'SEDAN', allocation: 'EMPLOYEE', floorLocation: 'Level 1 near lift', height: '2.0m', ...extra });
 const SLOTS = [
   s('1', 'B1-010', 'B1', 'GROUND', 'OCCUPIED', { currentVehicle: 'KA01AB1234', heightM: 2.1 }),
   s('2', 'B1-002', 'B1', 'GROUND', 'VACANT'),

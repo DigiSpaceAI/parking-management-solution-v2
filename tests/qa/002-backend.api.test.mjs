@@ -32,7 +32,7 @@ async function startServer({ fake = false, env = {} } = {}) {
   const workDir = mkdtempSync(path.join(tmpdir(), 'pf-r1b-'));
   const fullEnv = { ...process.env, ...BASE_ENV, ...DEMO_ENV, PORT: String(port), PF_REPO: REPO,
     FIREBASE_PROJECT_ID: '', GOOGLE_CLOUD_PROJECT: '', GCLOUD_PROJECT: '', ...env };
-  const args = fake ? [path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs'), 'server'] : [path.join(REPO, 'server.ts')];
+  const args = fake ? [path.join(REPO, 'tests', 'qa', 'support', 'coldstart-harness.mjs'), 'server'] : [path.join(REPO, 'tests', 'qa', 'support', 'pf005.mjs'), 'server']; // 005 D-7: K_SERVICE means live; the non-fake case boots against an empty fake Firestore
   const proc = spawn(TSX, args, { cwd: workDir, env: fullEnv, stdio: 'pipe' });
   let log = ''; proc.stdout.on('data', (d) => (log += d)); proc.stderr.on('data', (d) => (log += d));
   let exited = null; proc.on('exit', (c) => (exited = c));
@@ -104,7 +104,7 @@ before(async () => {
   F.A = await c.onboard('RBA', 'R1b Site A');
   F.B = await c.onboard('RBB', 'R1b Site B');
   for (const [s, p] of [[F.A, 'A'], [F.B, 'B']]) {
-    const r = await c.post('master', '/slots/bulk-upload', { slots: [slot(`${p}-01`), slot(`${p}-02`), slot(`${p}-03`), slot(`${p}-04`, { basement: 'Ground', parkingType: 'FLAT' })] }, { site: s.id });
+    const r = await c.post('master', '/slots/bulk-upload', { slots: [slot(`${p}-01`), slot(`${p}-02`), slot(`${p}-03`), slot(`${p}-04`, { basement: 'Ground', parkingType: 'GROUND' })] }, { site: s.id });
     assert.ok(r.body.success, JSON.stringify(r.body));
   }
   F.adminA = await c.mkUser('adminA', 'role-site-manager', [F.A.id]);

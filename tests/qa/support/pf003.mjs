@@ -135,7 +135,7 @@ export async function seededServer(mutate, env = {}) {
   const s = await startServer({ fake: true, env: { FAKE_DATA_FILE: dataFile, ...env } });
   const cl = client(s);
   await cl.login('master', MASTER_EMAIL);
-  return { srv: s, c: cl, dataFile, readData: () => JSON.parse(readFileSync(dataFile, 'utf-8')),
+  return { srv: s, c: cl, dataFile, readData: () => { for (let i = 0; ; i++) { try { return JSON.parse(readFileSync(dataFile, 'utf-8')); } catch (e) { if (i > 20) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); } } }, // the fake rewrites the file on each commit
     async restart(extraEnv = {}) { s.stop(); const s2 = await startServer({ fake: true, env: { FAKE_DATA_FILE: dataFile, ...env, ...extraEnv } }); const c2 = client(s2); await c2.login('master', MASTER_EMAIL); return { srv: s2, c: c2 }; },
     stop: () => { s.stop(); try { rmSync(dir, { recursive: true, force: true }); } catch {} } };
 }

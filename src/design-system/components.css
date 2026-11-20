@@ -254,7 +254,6 @@
   .pf-slot-hit:focus-visible { box-shadow: var(--focus-ring); border-radius: var(--radius-lg); }
   .pf-slot-band { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; font: 600 var(--text-small-size)/var(--text-small-line) var(--font-text); }
   .pf-slot-band svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; }
-  .pf-slot-band .pf-slot-band-end { margin-left: auto; font-weight: 500; }
   .pf-slot-band--vacant { background: var(--success-50); color: var(--success-700); }
   .pf-slot-band--occupied { background: var(--danger-600); color: var(--on-navy); }
   .pf-slot-band--reserved { background: var(--warning-50); color: var(--warning-700); }

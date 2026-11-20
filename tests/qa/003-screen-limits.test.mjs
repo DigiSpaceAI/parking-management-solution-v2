@@ -11,11 +11,11 @@ const HOP = '198.51.100.7'; // inside the test Hosting range
 const CLOUD = { K_SERVICE: 'parkflows-test', DEMO_HOSTING_EGRESS_CIDRS: '198.51.100.0/24' };
 
 async function setup(env = {}) {
-  const srv = await startServer({ env });
+  const srv = await startServer({ fake: true, env: { EMPTY_FIRESTORE: '1', ...env } }) // 005/006: Cloud Run mode is live mode, so it needs the fake Firestore;
   const c = client(srv);
   await c.login('master', MASTER_EMAIL);
   const site = await c.onboard('LIM', 'Limits site');
-  await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+  await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
   const mk = async () => {
     const r = await c.post('master', '/displays', { name: 'TV', location: '', selection: sel }, { site: site.id });
     return { id: r.body.display.id, token: /#k=(.+)$/.exec(r.body.link)[1] };

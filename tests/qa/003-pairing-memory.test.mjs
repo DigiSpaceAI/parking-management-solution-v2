@@ -49,7 +49,7 @@ test('S3-2 API: after a warm-up flood, two more floods of 60,000 random pair sec
     const c = client(srv);
     await c.login('master', MASTER_EMAIL);
     const site = await c.onboard('MEM', 'Memory site');
-    await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'M-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'M-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const d = (await c.post('master', '/displays', { name: 'Mem', location: '', selection: sel }, { site: site.id })).body.display;
     const warm = await flood(srv.base, 60_000);
     assert.equal((warm[200] || 0), 0, 'no random secret is ever "waiting"');

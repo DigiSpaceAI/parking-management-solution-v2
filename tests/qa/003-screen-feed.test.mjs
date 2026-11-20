@@ -99,7 +99,7 @@ test('B3 unchanged answers, v changes on a slot change, and the change is visibl
 });
 
 test('B3 AC-21: deleted slots drop out; none left -> EMPTY, and the console flags it', async () => {
-  const add = await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-TMP-1', basement: 'B3', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'STACK', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: F.A.id });
+  const add = await c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'A-TMP-1', basement: 'B3', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'STACK', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: F.A.id });
   assert.ok(add.body.success);
   const tmp = (await c.slots(F.A.id)).find((s) => s.slotNumber === 'A-TMP-1');
   const d = await mkDisplay(sel({ slotIds: [tmp.id] }));
@@ -187,7 +187,7 @@ test('B3 last seen is persisted (targeted) on the first poll, not on every poll'
   const fx = await seededServer(() => {});
   try {
     const site = await fx.c.onboard('FEEDLS', 'Last seen site');
-    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await fx.c.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const r = await fx.c.post('master', '/displays', { name: 'LS', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });
     const tok = tokenOf(r.body.link);
     const poll = () => fx.c.call(null, 'GET', '/screen/feed', { headers: { 'x-display-token': tok } });
@@ -245,7 +245,7 @@ test('B4 100 TVs x 20 polls skip the global /api/ limiter (and logins still work
     const cl = client(s);
     await cl.login('master', MASTER_EMAIL);
     const site = await cl.onboard('LOADT', 'Load site');
-    await cl.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await cl.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'L-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const tokens = [];
     for (let i = 0; i < 100; i++) {
       const r = await cl.post('master', '/displays', { name: `TV ${i}`, location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id });

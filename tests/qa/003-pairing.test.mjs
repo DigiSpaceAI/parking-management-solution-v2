@@ -111,7 +111,7 @@ test('B5 an expired code -> 410 for the TV and 400 for the admin; the 201st pend
     const cl = client(s);
     await cl.login('master', MASTER_EMAIL);
     const site = await cl.onboard('PAIRX', 'Pair expiry site');
-    await cl.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'X-1', basement: 'B1', floorLocation: '', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
+    await cl.post('master', '/slots/bulk-upload', { slots: [{ slotNumber: 'X-1', basement: 'B1', floorLocation: 'Level 1 near lift', slotType: 'SEDAN', height: '2.0m', parkingType: 'GROUND', allocation: 'EMPLOYEE', status: 'VACANT' }] }, { site: site.id });
     const d = (await cl.post('master', '/displays', { name: 'X', location: '', selection: sel({ levels: ['B1'] }) }, { site: site.id })).body.display;
     const p = await start(cl);
     assert.equal(p.body.expiresIn, 2);

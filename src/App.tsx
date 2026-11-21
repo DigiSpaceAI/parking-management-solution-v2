@@ -11,6 +11,7 @@ import { useToast, ErrorState, EmptyState, PageHeader, type NavGroup } from './d
 import { useAutoRefresh } from './utils/useAutoRefresh';
 import { LiveParking } from './screens/LiveParking';
 import { Overview } from './screens/Overview';
+import { VehicleGroupProvider } from './components/VehicleGroupSwitch';
 import { SiteAdminReports } from './components/SiteAdminReports';
 import { AnalyticsPredictive } from './components/AnalyticsPredictive';
 import { InventoryMaster } from './components/InventoryMaster';
@@ -633,7 +634,7 @@ export default function App() {
           ? wrap(<EmptyState title="Choose one site to see its overview" text="The overview covers one site at a time. Pick a site from the switcher in the top bar." />)
           : <Overview siteId={siteId} canOpen={(id) => canOpenRoute(viewer, currentRole, routeById(id))} />;
       case 'live-parking':
-        return <LiveParking siteId={siteId} onChanged={() => void lists.refresh()} />;
+        return <LiveParking siteId={siteId} onChanged={() => void lists.refresh()} canOpen={(id) => canOpenRoute(viewer, currentRole, routeById(id))} />;
       case 'logs':
         return wrap(
           listsPending ? <PageSkeleton /> : <ParkingLogs logs={logs} onRefresh={refreshAll} />,
@@ -737,6 +738,7 @@ export default function App() {
 
   return (
     <SiteContext.Provider value={siteContextValue}>
+      <VehicleGroupProvider siteId={currentSiteId}>
       <AppShell
         user={currentUser}
         viewAs={viewAsUser}
@@ -779,6 +781,7 @@ export default function App() {
           </div>
         )}
       </AppShell>
+      </VehicleGroupProvider>
     </SiteContext.Provider>
   );
 }

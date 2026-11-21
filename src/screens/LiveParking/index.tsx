@@ -1,15 +1,22 @@
 import React, { useMemo, useState } from 'react';
 import type { SlotStatus, VehicleType } from '../../types';
-import { Card, ErrorState, LevelButtons, PageHeader, Select, Skeleton, SegmentedControl, TabPanel, TextField, useToast } from '../../design-system/components';
+import { Card, EmptyState, ErrorState, LevelButtons, PageHeader, Select, Skeleton, SegmentedControl, TabPanel, TextField, useToast } from '../../design-system/components';
 import { formatNumber } from '../../utils/format';
 import { useAutoRefresh } from '../../utils/useAutoRefresh';
 import { COPY_SAVE_ERROR, saveErrorMessage, useSiteContext } from '../../utils/withSite';
 import { optionsFor } from '../../utils/slotFields';
-import { compareSlots, isPuzzle, puzzleIdOf, slotInLevel, type LevelId, type LiveSlot } from '../../utils/slots';
-import { countSlots } from '../../utils/slotCounts';
+import { compareSlots, isPuzzle, puzzleIdOf, type LiveSlot } from '../../utils/slots';
+import { effectiveLevel, levelTabs, zonePallets } from '../../utils/liveZones';
+import { takeZonesViewRequest } from '../../utils/groupState';
+import { hrefFor, type RouteId } from '../../routes';
+import { emptyGroupCopy } from '../../utils/overviewGroup';
 import { SlotsView, type Layout } from './SlotsView';
 import { PuzzleView, type PuzzleModule } from './PuzzleView';
+import { ZonesView } from './ZonesView';
 import { SlotModal } from './SlotModal';
+import { VehicleGroupSwitch, useVehicleGroup, type GroupCounts } from '../../components/VehicleGroupSwitch';
+import { inGroup } from '../../utils/vehicleGroup';
+import { countSlots } from '../../utils/slotCounts';
 
 interface SlotsResponse {
   slots?: LiveSlot[];
@@ -40,13 +47,16 @@ function saveLayout(l: Layout) {
 
 // 005 F3: the lists come from slotFields (one list of values for the whole app)
 const STATUS_OPTIONS = [{ value: 'ALL', label: 'All statuses' }, ...optionsFor('status').map((o) => ({ value: o.code, label: o.label }))];
-const TYPE_OPTIONS = [{ value: 'ALL', label: 'All slot types' }, ...optionsFor('slotType').map((o) => ({ value: o.code, label: o.label }))];
+// 008: the 4-wheeler page offers the four-wheeler types only; the 2-wheeler page has one type and no type filter
+const TYPE_OPTIONS = [{ value: 'ALL', label: 'All slot types' }, ...optionsFor('slotType').filter((o) => o.code !== 'TWO_WHEELER').map((o) => ({ value: o.code, label: o.label }))];
 
 export interface LiveParkingProps {
   /** The chosen site or 'ALL' (read-only list with a site tag on each slot). */
   siteId: string;
   /** Tell the shell to refresh its badge counts after an entry or exit. */
   onChanged?: () => void;
+  /** Whether the viewer may open a page; the "Open Inventory" link of the empty state shows only then (L-5). */
+  canOpen?: (id: RouteId) => boolean;
 }
 
 /**
@@ -55,12 +65,14 @@ export interface LiveParkingProps {
  * Data from GET /slots (B1/B2 extras: heightM, lengthM, palletLevel, inSince), refreshed
  * every 15 s and straight after the user's own action. Entry and exit live only here (AC-11).
  */
-export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) => {
+export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged, canOpen }) => {
   const toast = useToast();
   const site = useSiteContext();
+  const { group, setGroup } = useVehicleGroup();
   const [data, setData] = useState<SlotsResponse | null>(null);
-  const [view, setView] = useState<'slots' | 'puzzle'>('slots');
-  const [level, setLevel] = useState<LevelId>('ALL');
+  // 2-wheeler: 'slots' (All slots) | 'zones'. 4-wheeler: 'slots' | 'puzzle'. An Overview Zones row asks for 'zones' once.
+  const [view, setView] = useState<'slots' | 'puzzle' | 'zones'>(() => (takeZonesViewRequest() ? 'zones' : 'slots'));
+  const [levelChoice, setLevelChoice] = useState<string>('ALL');
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('ALL');
   const [type, setType] = useState('ALL');
@@ -83,8 +95,20 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
     [siteId]
   );
 
-  const slots = data?.slots ?? [];
-  const levelSlots = useMemo(() => slots.filter((s) => slotInLevel(s, level)), [slots, level]);
+  const allSlots = data?.slots ?? [];
+  // 008 F4: the switcher's totals come from the one counter (countSlots), over every slot of the site
+  const groupCounts: GroupCounts | null = data
+    ? (Object.fromEntries((['4W', '2W'] as const).map((g) => {
+        const gs = allSlots.filter((s) => inGroup(s, g));
+        return [g, { occupied: gs.filter((s) => s.status === 'OCCUPIED').length, total: countSlots(gs).total }];
+      })) as GroupCounts)
+    : null;
+  // 008: everything below follows the chosen group; the level tabs come from the inventory (no clubbing)
+  const slots = useMemo(() => allSlots.filter((s) => inGroup(s, group)), [allSlots, group]);
+  const tabs = useMemo(() => levelTabs(slots), [slots]);
+  const level = effectiveLevel(tabs, levelChoice);
+  const levelSlots = useMemo(() => slots.filter((s) => level === 'ALL' || s.basement === level), [slots, level]);
+  const viewNow: 'slots' | 'puzzle' | 'zones' = group === '2W' ? (view === 'zones' ? 'zones' : 'slots') : view === 'puzzle' ? 'puzzle' : 'slots';
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const compact = needle.replace(/[^a-z0-9]/g, '');
@@ -123,23 +147,11 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
     reserved: levelSlots.filter((s) => s.status === 'RESERVED').length,
     maintenance: levelSlots.filter((s) => s.status === 'MAINTENANCE').length,
   };
-  // 003 v1.5 (AC-42, S-3): every free count goes through the shared countSlots, over the same
-  // slots this page shows, so the level buttons match the TV for the same slots.
-  // 005 F4b: the basement levels and their labels come from slotFields (optionsFor('basement')), not a second list here.
-  const levels = data
-    ? [
-        { id: 'ALL', label: 'All parking' },
-        ...optionsFor('basement')
-          .filter((o) => /^B[0-9]$/.test(o.code))
-          .map((o) => ({ id: o.code, label: o.label })),
-        { id: 'Ground', label: 'Ground / driveway' },
-      ]
-        .map((l) => {
-          const c = countSlots(slots.filter((s) => slotInLevel(s, l.id as LevelId)));
-          return { id: l.id, label: l.label, free: c.free, total: c.total };
-        })
-        .filter((l) => l.id === 'ALL' || l.total > 0)
-    : [];
+  const levels = tabs;
+  const pallets = useMemo(() => zonePallets(levelSlots, filtered), [levelSlots, filtered]);
+  // 008 AC-08: the site has slots, none of this group: the page body is the empty state
+  const groupEmpty = !!data && allSlots.length > 0 && slots.length === 0;
+  const allUnzoned = pallets.length > 0 && pallets.every((p) => p.zone === null);
 
   // Any filter change goes back to page 1 (AC-14).
   const resetPages = () => {
@@ -150,7 +162,12 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
     setQ('');
     setStatus('ALL');
     setType('ALL');
-    setLevel('ALL');
+    setLevelChoice('ALL');
+    resetPages();
+  };
+  const changeGroup = (g: typeof group) => {
+    setGroup(g);
+    setType('ALL');
     resetPages();
   };
   const setLayout = (l: Layout) => {
@@ -202,12 +219,19 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
         <SegmentedControl
           idBase="lp-view"
           label="View"
-          value={view}
-          onChange={(id) => setView(id as 'slots' | 'puzzle')}
-          options={[
-            { id: 'slots', label: 'Live parking slots', count: filtered.length },
-            { id: 'puzzle', label: 'Puzzle wise status', count: modules.length },
-          ]}
+          value={viewNow}
+          onChange={(id) => setView(id as 'slots' | 'puzzle' | 'zones')}
+          options={
+            group === '2W'
+              ? [
+                  { id: 'slots', label: 'All slots', count: filtered.length, disabled: loading },
+                  { id: 'zones', label: 'Zones', count: pallets.length, disabled: loading },
+                ]
+              : [
+                  { id: 'slots', label: 'Live parking slots', count: filtered.length, disabled: loading },
+                  { id: 'puzzle', label: 'Puzzle wise status', count: modules.length, disabled: loading },
+                ]
+          }
         />
       }
     />
@@ -217,6 +241,7 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
     return (
       <>
         {header}
+        <VehicleGroupSwitch counts={null} group={group} onChange={changeGroup} />
         <ErrorState title="Couldn't load the slots" onRetry={() => void refresh.refresh()} />
       </>
     );
@@ -225,6 +250,17 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
   return (
     <>
       {header}
+      <VehicleGroupSwitch counts={groupCounts} loading={loading} group={group} onChange={changeGroup} />
+      {groupEmpty ? (
+        <Card>
+          <EmptyState
+            title={emptyGroupCopy(group).title}
+            text={emptyGroupCopy(group).text}
+            actions={canOpen?.('inventory') ? <a className="pf-btn" href={hrefFor('inventory')}>Open Inventory</a> : undefined}
+          />
+        </Card>
+      ) : (
+      <>
       <Card className="pf-lp-filters">
         {loading ? (
           <Skeleton variant="block" />
@@ -234,7 +270,7 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
             levels={levels}
             value={level}
             onChange={(id) => {
-              setLevel(id as LevelId);
+              setLevelChoice(id);
               resetPages();
             }}
           />
@@ -243,7 +279,7 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
           <TextField
             label="Search"
             fieldClassName="pf-grow"
-            placeholder="Slot (B1-P01), plate (MH12) or location"
+            placeholder={group === '2W' ? 'Slot (B1-Z1-001), plate (MH12) or location' : 'Slot (B1-P01), plate (MH12) or location'}
             value={q}
             onChange={(e) => {
               setQ(e.target.value);
@@ -259,15 +295,17 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
               resetPages();
             }}
           />
-          <Select
-            label="Slot type"
-            options={TYPE_OPTIONS}
-            value={type}
-            onChange={(e) => {
-              setType(e.target.value);
-              resetPages();
-            }}
-          />
+          {group === '4W' && (
+            <Select
+              label="Slot type"
+              options={TYPE_OPTIONS}
+              value={type}
+              onChange={(e) => {
+                setType(e.target.value);
+                resetPages();
+              }}
+            />
+          )}
         </div>
         <dl className="pf-sumfigs" aria-label="Summary for this level">
           <div className="pf-sumfig">
@@ -293,7 +331,7 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
         </dl>
       </Card>
 
-      <TabPanel idBase="lp-view" id={view}>
+      <TabPanel idBase="lp-view" id={viewNow}>
         {loading ? (
           <Card>
             <div className="pf-slot-grid">
@@ -302,7 +340,9 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
               ))}
             </div>
           </Card>
-        ) : view === 'slots' ? (
+        ) : viewNow === 'zones' ? (
+          <ZonesView pallets={pallets} allUnzoned={allUnzoned} onOpen={(s) => setSelectedId(s.id)} onClearFilters={clearFilters} />
+        ) : viewNow === 'slots' ? (
           <SlotsView
             slots={filtered}
             page={page}
@@ -331,6 +371,8 @@ export const LiveParking: React.FC<LiveParkingProps> = ({ siteId, onChanged }) =
           />
         )}
       </TabPanel>
+      </>
+      )}
 
       <SlotModal
         slot={selected}

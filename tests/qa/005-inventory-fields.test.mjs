@@ -189,7 +189,7 @@ test('T-9 [AC-06] export = the table: its columns, labels, filters, order, IST f
   assert.equal(all.status, 200);
   assert.match(all.headers.get('content-disposition'), /filename="inventory_IFB_\d{4}-\d{2}-\d{2}_\d{4}\.csv"/);
   const lines = all.text.trim().split('\n');
-  const cols = '"Slot number","Level","Floor location","Vehicle type","Height","Parking type","Allocation","Status","Current occupant","Length (m)","Pallet level"';
+  const cols = '"Slot number","Level","Zone","Floor location","Vehicle type","Height","Parking type","Allocation","Status","Current occupant","Length (m)","Pallet level"';
   assert.equal(lines[0], cols);
   const slotsB = await c.slots(B.id);
   assert.equal(lines.length - 1, slotsB.length);
@@ -199,7 +199,7 @@ test('T-9 [AC-06] export = the table: its columns, labels, filters, order, IST f
   assert.ok(fl[0].startsWith('"EXP-1"') && fl[1].startsWith('"EXP-2"') || fl[0].startsWith('"EXP-2"'), 'only the filtered rows');
   const row1 = f.text.split('\n').find((l) => l.startsWith('"EXP-1"'));
   assert.ok(row1.includes('"\'=SUM(A1)"'), 'formula guard: ' + row1);
-  assert.equal(row1, '"EXP-1","Basement B2","\'=SUM(A1)","EV","Extra high (3.0 m)","Ground","Handicap","Vacant","-","",""', 'labels, the dash for no occupant, empty length and pallet');
+  assert.equal(row1, '"EXP-1","Basement B2","","\'=SUM(A1)","EV","Extra high (3.0 m)","Ground","Handicap","Vacant","-","",""', 'labels, the dash for no occupant, empty length and pallet');
   const none = await get('&status=OCCUPIED');
   assert.equal(none.text.trim().split('\n').length, 1, 'header only when nothing matches');
   assert.equal((await c.get('master', '/export/reports?type=slots', { site: B.id })).headers.get('content-type').split(';')[0], 'text/csv');

@@ -755,3 +755,37 @@
     .pf-skip { display: inline-flex; align-items: center; }
   }
 }
+
+/* 008 F4: vehicle group switcher (tokens only) */
+@layer components {
+  .pf-vgs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
+  .pf-vgs .pf-card-note { margin: 0; }
+  @media (max-width: 639.98px) {
+    .pf-vgs .pf-seg { display: flex; width: 100%; }
+    .pf-vgs .pf-seg-btn { flex: 1; justify-content: center; }
+  }
+}
+
+/* 008 F5: Zones rows on the 2-wheeler Overview (tokens only) */
+@layer components {
+  .pf-zones li { position: relative; }
+  .pf-zones .pf-occ { min-width: 0; }
+  .pf-zone-link { color: inherit; text-decoration: none; }
+  .pf-zone-link::after { content: ''; position: absolute; inset: calc(var(--space-2) * -1) 0; }
+  .pf-zone-link:hover { text-decoration: underline; }
+  .pf-zone-link:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+}
+
+/* 008 F6: 2-wheeler Zones view on Live parking (tokens only; tiles reuse .pf-tile) */
+@layer components {
+  .pf-zones-level { margin: 0; font: var(--type-title-3); }
+  .pf-zone-pallets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+  @media (max-width: 1279.98px) { .pf-zone-pallets { grid-template-columns: minmax(0, 1fr); } }
+  .pf-zone-pallet { display: flex; flex-direction: column; gap: var(--space-3); }
+  .pf-zone-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
+  .pf-zone-head h4 { margin: 0; font: var(--type-title-3); }
+  .pf-ztiles { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: var(--space-2); }
+  .pf-ztile { min-height: var(--touch-min); height: auto; padding: var(--space-1); }
+  .pf-ztile b { font-weight: 700; }
+  .pf-ztile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+}

@@ -54,8 +54,11 @@ test('F3 static: Live parking keeps no list of its own', () => {
   assert.match(src('src/design-system/components/SlotCard.tsx'), /labelFor\('slotType', slotType\)/);
 });
 
-test('F3 round 2 (finding 4b): the Live parking basement level buttons come from optionsFor("basement")', () => {
+test('F3 round 2 (finding 4b), updated by 008 AC-04: the level buttons still take their labels from slotFields (no club, no label written by hand)', () => {
   const idx = src('src/screens/LiveParking/index.tsx');
+  const lz = src('src/utils/liveZones.ts');
   assert.doesNotMatch(idx, /label: 'Basement B[123]'/, 'no level label written by hand');
-  assert.match(idx, /optionsFor\('basement'\)\s*\.filter\(\(o\) => \/\^B\[0-9\]\$\/\.test\(o\.code\)/, 'built from the basement list, B-levels only (Ground keeps its own button)');
+  assert.doesNotMatch(idx + lz, /Ground \/ driveway/, '008: Ground and Driveway are separate levels');
+  assert.match(lz, /isCode\('basement', level\) \? labelFor\('basement', level\)/, 'a listed level is labelled by the basement list');
 });
+

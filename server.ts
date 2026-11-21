@@ -141,10 +141,11 @@ import {
   extractSessionToken,
   loadAuditLogsFromFirestore
 } from './src/server/security';
-import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow } from './src/types';
+import { VehicleType, EntryType, SlotStatus, ApiErrorCode, AppModuleId, SiteSummaryRow, VehicleGroup } from './src/types';
 import { countSlots } from './src/utils/slotCounts';
 import { isLocalDemoMode } from './src/server/runtimeMode';
 import { isMasterAdmin } from './src/utils/rbac';
+import { isVehicleGroup } from './src/utils/vehicleGroup';
 import { slotMatchesFilters, compareInventory, inventoryRow, INVENTORY_CSV_COLUMNS, heightMetres } from './src/utils/slotFields';
 
 // Initialize PMS Store with 1,080 parking inventory slots
@@ -2013,16 +2014,20 @@ app.post('/api/v1/slots/delete', requirePermission('INVENTORY', 'canDelete'), (r
 // 3e. Bulk Upload Slot Inventory Endpoint
 app.post('/api/v1/slots/bulk-upload', requirePermission('INVENTORY', 'canCreate'), (req, res) => {
   try {
-    const { slots: list } = req.body;
+    const { slots: list, createOnly } = req.body;
     if (!Array.isArray(list) || list.length === 0) {
       return res.status(400).json({ success: false, message: 'Invalid or empty slots array for bulk upload.' });
+    }
+    // 008 B3: optional createOnly (boolean). Anything else is refused, never read as "update by number".
+    if (createOnly !== undefined && typeof createOnly !== 'boolean') {
+      return res.status(400).json({ success: false, errorCode: 'ERR_VALIDATION', field: 'createOnly', message: 'createOnly must be true or false.' });
     }
     const site = resolveSite(req, res, { allowAll: false });
     if (site === null) return;
     const store = getStore();
     if (!stampBulkRows(req, res, site, list, (row: any) => (row.id ? store.slots.find((sl) => sl.id === row.id) : undefined))) return;
 
-    const result = bulkUploadSlots(list);
+    const result = bulkUploadSlots(list, { createOnly: createOnly === true });
     res.json({
       success: true,
       message: `Bulk slot upload successful! Added ${result.added} new slots, updated ${result.updated} existing slots. Total slot inventory: ${result.total}`
@@ -2262,7 +2267,12 @@ app.get('/api/v1/sites/summary', requireMasterAdminView, (req, res) => {
 app.get('/api/v1/overview', requirePermission('FLOOR_PLAN', 'view'), (req, res) => {
   const siteId = resolveSite(req, res, { allowAll: false });
   if (siteId === null) return;
-  const overview = getSiteOverview(siteId);
+  // 008 B2: optional ?group=4W|2W (case as written). Anything else is a 400; absent = all slots, as before.
+  const rawGroup = req.query.group;
+  if (rawGroup !== undefined && !isVehicleGroup(rawGroup)) {
+    return res.status(400).json({ success: false, errorCode: 'ERR_VALIDATION', field: 'group', allowed: ['4W', '2W'], message: 'group must be 4W or 2W.' });
+  }
+  const overview = getSiteOverview(siteId, Date.now(), rawGroup as VehicleGroup | undefined);
   const { platesUnmasked } = piiAccess(req);
   if (!platesUnmasked) {
     overview.latest = overview.latest.map((l) => ({ ...l, vehicleNumber: maskLicensePlate(l.vehicleNumber, false) }));

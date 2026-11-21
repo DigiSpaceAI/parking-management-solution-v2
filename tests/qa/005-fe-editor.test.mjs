@@ -105,7 +105,7 @@ test('F1 static: the editor keeps no list of its own and sends no client-made id
   assert.doesNotMatch(editor, /<option/, 'the editor writes no option by hand: FieldSelect builds them from slotFields');
   assert.doesNotMatch(comp, /toLowerCase\(\)\.replace\(\/\[\^a-z0-9_-\]\/g/, 'no id made from the slot number');
   assert.doesNotMatch(comp, /Math\.random\(\)/, 'no random slot number');
-  assert.match(comp, /disabled=\{slotFormSaving \|\| missingFields\.length > 0\}/);
+  assert.match(comp, /disabled=\{slotFormSaving \|\| missingFields\.length > 0 \|\| zoneBlocked\}/);
 });
 
 test('F1 round 2 (finding 3): a server 400 for Floor location is shown next to the Floor location input', () => {

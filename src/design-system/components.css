@@ -782,6 +782,7 @@
   .pf-zone-pallets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
   @media (max-width: 1279.98px) { .pf-zone-pallets { grid-template-columns: minmax(0, 1fr); } }
   .pf-zone-pallet { display: flex; flex-direction: column; gap: var(--space-3); }
+  .pf-zone-pallet .pf-occ-track { flex: 0 0 auto; } /* 008 obs. 2: the bar must not grow when the card is stretched by a taller grid neighbour */
   .pf-zone-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
   .pf-zone-head h4 { margin: 0; font: var(--type-title-3); }
   .pf-ztiles { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: var(--space-2); }
